@@ -2,7 +2,7 @@ import React, { useState, useCallback, useMemo, useRef, useEffect } from "react"
 
 /* ═══════════  tokens  ═══════════ */
 
-const LIGHT = {
+const C = {
   bg: "#EDF1F8",
   card: "#FFFFFF",
   ink: "#1B2440",
@@ -15,30 +15,7 @@ const LIGHT = {
   muted: "#8A93AC",
   dot: "#D5DBE8",
   line: "#E6EBF4",
-  overlay: "rgba(255,255,255,0.96)",
-  coachBg: "#E9F1FF",
 };
-
-/* High contrast — vivid arrows on near-black, easier in low light and for
-   anyone who finds the pale board hard to read. */
-const DARK = {
-  bg: "#080C1A",
-  card: "#121A31",
-  ink: "#EAF0FF",
-  accent: "#4C8DFF",
-  go: "#22C58A",
-  stop: "#FF9B3D",
-  danger: "#FF5C7A",
-  gold: "#FFC24B",
-  flow: "#A78BFA",
-  muted: "#8592BC",
-  dot: "#27334F",
-  line: "#222E4C",
-  overlay: "rgba(8,12,26,0.96)",
-  coachBg: "#16223F",
-};
-
-const C = { ...LIGHT, __dark: false };
 
 const DIRS = {
   right: { dx: 1, dy: 0, angle: 0 },
@@ -392,7 +369,7 @@ const PALETTES = {
 const PALETTE_KEYS = Object.keys(PALETTES);
 const toneFor = (dir, theme) => {
   const p = PALETTES[theme] || PALETTES.ink;
-  return p.base ? C.ink : p[dir] || C.ink;
+  return p.base || p[dir] || "#1B2440";
 };
 
 
@@ -412,185 +389,6 @@ function parseMask(key) {
   const cells = new Set();
   s.rows.forEach((row, r) => [...row].forEach((ch, c) => ch === "#" && cells.add(r * cols + c)));
   return { name: s.name, rows, cols, cells };
-}
-
-
-/* ═══════════  endless shapes  ═══════════
-   The 17 hand-drawn masks stay as the collectable set. Past level 60 the game
-   builds new silhouettes from a seed — mirrored so they read as designed
-   rather than random, then cleaned so there are no spurs or holes. Level 200
-   is the same shape for every player, everywhere. */
-
-const CURATED_UNTIL = 60;
-const FORM_A = ["Twin", "Wide", "Tall", "Round", "Sharp", "Split", "Deep", "Open", "Half", "Broad"];
-const FORM_B = ["Bloom", "Arch", "Crest", "Drift", "Prism", "Wave", "Knot", "Spire", "Vault", "Ridge"];
-
-function refineMask(cells, W, H) {
-  let set = new Set(cells);
-  const nb = (i) => {
-    const x = i % W, y = (i / W) | 0, out = [];
-    if (x > 0) out.push(i - 1);
-    if (x < W - 1) out.push(i + 1);
-    if (y > 0) out.push(i - W);
-    if (y < H - 1) out.push(i + W);
-    return out;
-  };
-  for (let pass = 0; pass < 2; pass++) {       // close small holes
-    const add = [];
-    for (let i = 0; i < W * H; i++)
-      if (!set.has(i) && nb(i).filter((n) => set.has(n)).length >= 3) add.push(i);
-    add.forEach((i) => set.add(i));
-  }
-  for (let pass = 0; pass < 2; pass++) {       // shave lonely spurs
-    const del = [];
-    set.forEach((i) => {
-      if (nb(i).filter((n) => set.has(n)).length < 2) del.push(i);
-    });
-    del.forEach((i) => set.delete(i));
-  }
-  const seen = new Set();                      // keep the largest island only
-  let best = [];
-  set.forEach((start) => {
-    if (seen.has(start)) return;
-    const stack = [start], comp = [];
-    seen.add(start);
-    while (stack.length) {
-      const c = stack.pop();
-      comp.push(c);
-      nb(c).forEach((n) => {
-        if (set.has(n) && !seen.has(n)) { seen.add(n); stack.push(n); }
-      });
-    }
-    if (comp.length > best.length) best = comp;
-  });
-  return new Set(best);
-}
-
-function cropMask(set, W, H) {
-  let x0 = W, x1 = -1, y0 = H, y1 = -1;
-  set.forEach((i) => {
-    const x = i % W, y = (i / W) | 0;
-    if (x < x0) x0 = x;
-    if (x > x1) x1 = x;
-    if (y < y0) y0 = y;
-    if (y > y1) y1 = y;
-  });
-  const w = x1 - x0 + 1, h = y1 - y0 + 1;
-  const out = new Set();
-  set.forEach((i) => {
-    const x = i % W - x0, y = ((i / W) | 0) - y0;
-    out.add(y * w + x);
-  });
-  return { cols: w, rows: h, cells: out };
-}
-
-function proceduralMask(seed) {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const rnd = mulberry32(seed * 7919 + attempt);
-    const W = 9 + ((rnd() * 5) | 0);
-    const H = 9 + ((rnd() * 4) | 0);
-    const fourFold = rnd() < 0.3;
-    const half = Math.ceil(W / 2);
-    const vHalf = fourFold ? Math.ceil(H / 2) : H;
-    const raw = new Set();
-
-    const blobs = 4 + ((rnd() * 3) | 0);
-    for (let b = 0; b < blobs; b++) {
-      const bx = rnd() * half;
-      const by = rnd() * vHalf;
-      const rx = 0.9 + rnd() * 1.7;
-      const ry = 0.9 + rnd() * 2.1;
-      for (let y = 0; y < vHalf; y++)
-        for (let x = 0; x < half; x++) {
-          const dx = (x - bx) / rx, dy = (y - by) / ry;
-          if (dx * dx + dy * dy <= 1) raw.add(y * W + x);
-        }
-    }
-
-    // carve a notch or hollow, otherwise silhouettes come out as slabs
-    if (rnd() < 0.55) {
-      const cx0 = rnd() * half * 0.9;
-      const cy0 = rnd() * vHalf;
-      const cr = 0.8 + rnd() * 1.5;
-      for (let y = 0; y < vHalf; y++)
-        for (let x = 0; x < half; x++) {
-          const dx = (x - cx0) / cr, dy = (y - cy0) / cr;
-          if (dx * dx + dy * dy <= 1) raw.delete(y * W + x);
-        }
-    }
-
-    const mirrored = new Set(raw);
-    raw.forEach((i) => {
-      const y = (i / W) | 0, x = i % W;
-      mirrored.add(y * W + (W - 1 - x));
-    });
-    if (fourFold) {
-      [...mirrored].forEach((i) => {
-        const y = (i / W) | 0, x = i % W;
-        mirrored.add((H - 1 - y) * W + x);
-      });
-    }
-
-    const cleaned = refineMask(mirrored, W, H);
-    if (cleaned.size < 36 || cleaned.size > 108) continue;
-    const m = cropMask(cleaned, W, H);
-    if (m.cols < 7 || m.rows < 7) continue;
-    if (m.cells.size / (m.cols * m.rows) > 0.86) continue;  // near-rectangles read as unfinished
-    const name = `${FORM_A[(seed * 3) % FORM_A.length]} ${FORM_B[(seed * 5) % FORM_B.length]}`;
-    return { ...m, name, procedural: true };
-  }
-  return { ...parseMask("diamond11"), procedural: true };
-}
-
-
-/* ═══════════  shape codes  ═══════════
-   A mask packs into a short code, so a shape someone draws can be sent to a
-   friend and played on their phone, exactly as drawn. */
-
-function encodeMask(cols, rows, cells) {
-  const n = cols * rows;
-  const bytes = new Uint8Array(Math.ceil(n / 8));
-  for (let i = 0; i < n; i++) if (cells.has(i)) bytes[i >> 3] |= 128 >> (i & 7);
-  let bin = "";
-  bytes.forEach((b) => (bin += String.fromCharCode(b)));
-  return `${cols}x${rows}-${btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
-}
-
-function decodeMask(code) {
-  const m = /^(\d+)x(\d+)-([A-Za-z0-9\-_]+)$/.exec((code || "").trim());
-  if (!m) return null;
-  const cols = +m[1], rows = +m[2];
-  if (cols < 4 || rows < 4 || cols > 18 || rows > 18) return null;
-  let b64 = m[3].replace(/-/g, "+").replace(/_/g, "/");
-  while (b64.length % 4) b64 += "=";
-  try {
-    const bin = atob(b64);
-    const cells = new Set();
-    for (let i = 0; i < cols * rows; i++) {
-      const b = bin.charCodeAt(i >> 3) || 0;
-      if (b & (128 >> (i & 7))) cells.add(i);
-    }
-    if (cells.size < 20) return null;
-    return { cols, rows, cells, name: "Shared shape", custom: true };
-  } catch {
-    return null;
-  }
-}
-
-function tidyDrawing(cols, rows, cells) {
-  let x0 = cols, x1 = -1, y0 = rows, y1 = -1;
-  cells.forEach((i) => {
-    const x = i % cols, y = (i / cols) | 0;
-    if (x < x0) x0 = x;
-    if (x > x1) x1 = x;
-    if (y < y0) y0 = y;
-    if (y > y1) y1 = y;
-  });
-  if (x1 < 0) return null;
-  const w = x1 - x0 + 1, h = y1 - y0 + 1;
-  const out = new Set();
-  cells.forEach((i) => out.add((((i / cols) | 0) - y0) * w + (i % cols - x0)));
-  return { cols: w, rows: h, cells: out };
 }
 
 /* ═══════════  generation  ═══════════ */
@@ -705,29 +503,11 @@ function measureFreedom(pieces, cols, rows) {
   return n ? sum / n : 1;
 }
 
-function makeLevelFromMask(mask, tierIdx = 3) {
-  const tier = TIERS[tierIdx];
-  let best = null;
-  for (let i = 0; i < 5; i++) {
-    const pieces = buildBoard(mask, tier);
-    if (pieces.length < 3) continue;
-    const gap = Math.abs(measureFreedom(pieces, mask.cols, mask.rows) - tier.freedom);
-    if (!best || gap < best.gap) best = { pieces, gap };
-  }
-  if (!best) best = { pieces: buildBoard(mask, tier), gap: 1 };
-  return {
-    mask, pieces: best.pieces, tier, tierIndex: tierIdx, stepInTier: 1,
-    hearts: tier.hearts, hints: tier.hints, undos: tier.undos,
-  };
-}
-
 function makeLevel(level, seed) {
   if (seed !== undefined) RND = mulberry32(seed);
   const { tier, index, step: stepInTier } = tierFor(level);
-  const mask =
-    seed === undefined && level > CURATED_UNTIL
-      ? proceduralMask(level)
-      : parseMask(tier.pool[(seed !== undefined ? seed : level - 1) % tier.pool.length]);
+  const key = tier.pool[(seed !== undefined ? seed : level - 1) % tier.pool.length];
+  const mask = parseMask(key);
   const tries = mask.cells.size > 90 ? 4 : 7;
 
   let best = null;
@@ -913,10 +693,8 @@ export default function ArrowEscapeV2() {
   const [sfxOn, setSfxOn] = useState(true);
   const [musicOn, setMusicOn] = useState(true);
   const [theme, setTheme] = useState("ink");
-  const [dark, setDark] = useState(false);
   const [coachSeen, setCoachSeen] = useState(true);
   const [collected, setCollected] = useState([]);
-  const [customs, setCustoms] = useState([]);
   const [view, setView] = useState({ scale: 1, tx: 0, ty: 0 });
   const [snap, setSnap] = useState(false);
   const [levelKey, setLevelKey] = useState(0);
@@ -927,8 +705,6 @@ export default function ArrowEscapeV2() {
   const viewport = useRef(null);
   const ptrs = useRef(new Map());
   const gest = useRef(null);
-
-  if (C.__dark !== dark) applyTheme(dark); // keep S and CSS in step with the theme
 
   const { mask, pieces, tier, tierIndex, stepInTier } = setup;
   const { cols, rows } = mask;
@@ -989,10 +765,8 @@ export default function ArrowEscapeV2() {
         setSfxOn(p.sfx !== false);
         setMusicOn(p.music !== false);
         setTheme(p.theme || "ink");
-        setDark(!!p.dark);
         setCoachSeen(!!p.coachSeen);
         setCollected(p.collected ?? []);
-        setCustoms(p.customs ?? []);
         setStreak(p.streak ?? 0);
         setDailyDone(p.lastDaily === todayKey());
         if (p.level > 1) {
@@ -1062,37 +836,6 @@ export default function ArrowEscapeV2() {
     [applySetup]
   );
 
-  const startCustom = useCallback(
-    (mask) => {
-      setMode("custom");
-      setPanel(null);
-      applySetup(makeLevelFromMask(mask), false);
-    },
-    [applySetup]
-  );
-
-  const saveCustom = useCallback(
-    (code) => {
-      setCustoms((cur) => {
-        const next = [code, ...cur.filter((c) => c !== code)].slice(0, 12);
-        persist({ customs: next });
-        return next;
-      });
-    },
-    [persist]
-  );
-
-  const deleteCustom = useCallback(
-    (code) => {
-      setCustoms((cur) => {
-        const next = cur.filter((c) => c !== code);
-        persist({ customs: next });
-        return next;
-      });
-    },
-    [persist]
-  );
-
   const startDaily = useCallback(() => {
     setMode("daily");
     applySetup(makeLevel(24, hashStr(todayKey())));
@@ -1109,15 +852,10 @@ export default function ArrowEscapeV2() {
 
   const restart = useCallback(() => {
     if (mode === "daily") startDaily();
-    else if (mode === "custom") applySetup(makeLevelFromMask(setup.mask), false);
     else startJourney(level);
-  }, [mode, level, startDaily, startJourney, applySetup, setup.mask]);
+  }, [mode, level, startDaily, startJourney]);
 
   const nextLevel = useCallback(() => {
-    if (mode === "custom") {
-      startJourney(level);
-      return;
-    }
     if (mode === "daily") {
       startJourney(level);
       return;
@@ -1221,7 +959,7 @@ export default function ArrowEscapeV2() {
             setPhase("cleared");
             Snd.win();
             setCollected((cur) => {
-              if (!COLLECTABLE.includes(mask.name) || cur.includes(mask.name)) return cur;
+              if (cur.includes(mask.name)) return cur;
               const nc = [...cur, mask.name];
               persist({ collected: nc });
               return nc;
@@ -1236,9 +974,7 @@ export default function ArrowEscapeV2() {
               });
               return fin;
             });
-            if (mode === "custom") {
-              /* a drawn board is a one-off — leave journey progress alone */
-            } else if (mode === "daily") {
+            if (mode === "daily") {
               setStreak((st) => {
                 const ns = dailyDone ? st : st + 1;
                 persist({ streak: ns, lastDaily: todayKey() });
@@ -1533,9 +1269,6 @@ export default function ArrowEscapeV2() {
         >
           <Speaker on={sfxOn || musicOn} />
         </button>
-        <button style={S.gear} onClick={() => setPanel(panel === "studio" ? null : "studio")} aria-label="Shape studio">
-          <Pencil />
-        </button>
         <button style={S.gear} onClick={() => setPanel(panel === "collection" ? null : "collection")} aria-label="Collection">
           <Trophy />
         </button>
@@ -1568,31 +1301,12 @@ export default function ArrowEscapeV2() {
               ))}
             </div>
           </div>
-          <div style={S.themeRow}>
-            <span style={S.tglLabel}>Board theme</span>
-            <div style={{ display: "flex", gap: 10 }}>
-              {[false, true].map((d) => (
-                <button
-                  key={String(d)}
-                  onClick={() => { setDark(d); persist({ dark: d }); }}
-                  style={{ ...S.themeTile, borderColor: dark === d ? C.accent : "transparent" }}
-                >
-                  <ThemePreview dark={d} />
-                  <span style={S.themeName}>{d ? "High contrast" : "Default"}</span>
-                </button>
-              ))}
-            </div>
-          </div>
           <div style={S.tip}>
             <b>Hold</b> an arrow to check its path — ✓ clear, ✕ blocked. <b>Pinch</b> to zoom.
             <br />
             Clearing an arrow that <b>frees others</b> scores far more. Find the order that unlocks the most.
           </div>
         </div>
-      )}
-
-      {panel === "studio" && (
-        <ShapeStudio onPlay={startCustom} saved={customs} onSave={saveCustom} onDelete={deleteCustom} />
       )}
 
       {panel === "collection" && (
@@ -1619,12 +1333,12 @@ export default function ArrowEscapeV2() {
       <div style={S.bar}>
         <div style={S.barLeft}>
           <div style={S.lvl}>
-            {mode === "custom" ? "Your board" : mode === "daily" ? "Daily" : `Level ${level}`}
+            {mode === "daily" ? "Daily" : `Level ${level}`}
           </div>
           <div style={S.sub}>
             <span style={{ color: C.accent }}>{mask.name}</span>
             <span style={S.dotSep}>·</span>
-            <span>{mode === "custom" ? "drawn by you" : mode === "daily" ? "worldwide" : tier.name}</span>
+            <span>{mode === "daily" ? "worldwide" : tier.name}</span>
             <span style={S.dotSep}>·</span>
             <span>{alive.size} left</span>
           </div>
@@ -1633,10 +1347,7 @@ export default function ArrowEscapeV2() {
         <div style={S.barMid}>
           {shield && <span style={S.shieldTag}>🛡</span>}
           {zen ? (
-            <>
-              <span style={S.zenInf}>∞</span>
-              <span style={S.zenTag}>ZEN</span>
-            </>
+            <span style={S.zenTag}>ZEN</span>
           ) : (
             Array.from({ length: maxHearts }).map((_, i) => (
               <span key={i} className={heartPop && i === hearts ? "hbreak" : ""} style={S.inl}>
@@ -1844,7 +1555,7 @@ export default function ArrowEscapeV2() {
             </div>
 
             <button style={S.winBtn} onClick={(e) => { e.stopPropagation(); nextLevel(); }}>
-              {mode === "journey" ? "Next Level" : "Back to Journey"}
+              {mode === "daily" ? "Back to Journey" : "Next Level"}
             </button>
             <button style={S.winGhost} onClick={(e) => { e.stopPropagation(); restart(); }}>
               Replay for a better score
@@ -1857,184 +1568,6 @@ export default function ArrowEscapeV2() {
 }
 
 /* ═══════════  small components  ═══════════ */
-
-function ShapeStudio({ onPlay, saved, onSave, onDelete }) {
-  const N = 11;
-  const [cells, setCells] = useState(new Set());
-  const [codeIn, setCodeIn] = useState("");
-  const [msg, setMsg] = useState("");
-  const paint = useRef(null);
-
-  const toggle = (i, mode) => {
-    setCells((prev) => {
-      const next = new Set(prev);
-      if (mode === "add") next.add(i);
-      else next.delete(i);
-      return next;
-    });
-  };
-
-  const down = (i) => (e) => {
-    e.preventDefault();
-    const mode = cells.has(i) ? "del" : "add";
-    paint.current = mode;
-    toggle(i, mode);
-  };
-  const over = (i) => () => paint.current && toggle(i, paint.current);
-
-  useEffect(() => {
-    const up = () => (paint.current = null);
-    window.addEventListener("pointerup", up);
-    return () => window.removeEventListener("pointerup", up);
-  }, []);
-
-  const mirror = () =>
-    setCells((prev) => {
-      const next = new Set(prev);
-      prev.forEach((i) => {
-        const y = (i / N) | 0, x = i % N;
-        if (x < Math.ceil(N / 2)) next.add(y * N + (N - 1 - x));
-      });
-      return next;
-    });
-
-  const build = () => {
-    const t = tidyDrawing(N, N, cells);
-    if (!t || t.cells.size < 24) {
-      setMsg("Draw at least 24 squares");
-      setTimeout(() => setMsg(""), 2200);
-      return null;
-    }
-    return { ...t, name: "Your shape", custom: true };
-  };
-
-  const play = () => {
-    const m = build();
-    if (m) onPlay(m);
-  };
-
-  const save = () => {
-    const m = build();
-    if (!m) return;
-    onSave(encodeMask(m.cols, m.rows, m.cells));
-    setMsg("Saved");
-    setTimeout(() => setMsg(""), 1600);
-  };
-
-  const copy = () => {
-    const m = build();
-    if (!m) return;
-    const code = encodeMask(m.cols, m.rows, m.cells);
-    try {
-      navigator.clipboard.writeText(code);
-      setMsg("Code copied");
-    } catch {
-      setMsg(code);
-    }
-    setTimeout(() => setMsg(""), 2600);
-  };
-
-  const openCode = () => {
-    const m = decodeMask(codeIn);
-    if (!m) {
-      setMsg("That code doesn't look right");
-      setTimeout(() => setMsg(""), 2200);
-      return;
-    }
-    onPlay(m);
-  };
-
-  return (
-    <div style={S.settings} className="ovin">
-      <div style={S.colTitle}>Draw a shape</div>
-      <div style={S.studioGrid}>
-        {Array.from({ length: N * N }).map((_, i) => (
-          <button
-            key={i}
-            onPointerDown={down(i)}
-            onPointerEnter={over(i)}
-            style={{ ...S.studioCell, background: cells.has(i) ? C.accent : C.bg }}
-            aria-label={`cell ${i}`}
-          />
-        ))}
-      </div>
-
-      <div style={S.studioRow}>
-        <button style={S.chip} onClick={mirror}>Mirror</button>
-        <button style={S.chip} onClick={() => setCells(new Set())}>Clear</button>
-        <button style={S.chip} onClick={save}>Save</button>
-        <button style={S.chip} onClick={copy}>Copy code</button>
-      </div>
-
-      <button style={{ ...S.primary, marginTop: 10 }} onClick={play}>Play this shape</button>
-
-      {saved.length > 0 && (
-        <>
-          <div style={{ ...S.colTitle, marginTop: 16 }}>Your shapes</div>
-          <div style={S.savedRow}>
-            {saved.map((code) => {
-              const m = decodeMask(code);
-              if (!m) return null;
-              return (
-                <div key={code} style={S.savedItem}>
-                  <button style={S.savedBtn} onClick={() => onPlay(m)} aria-label="Play saved shape">
-                    <svg viewBox={`0 0 ${m.cols} ${m.rows}`} style={{ width: 44, height: 44 }}>
-                      {[...m.cells].map((i) => (
-                        <rect key={i} x={(i % m.cols) + 0.12} y={((i / m.cols) | 0) + 0.12}
-                              width={0.76} height={0.76} rx={0.22} fill={C.accent} />
-                      ))}
-                    </svg>
-                  </button>
-                  <button style={S.savedX} onClick={() => onDelete(code)} aria-label="Delete">✕</button>
-                </div>
-              );
-            })}
-          </div>
-        </>
-      )}
-
-      <div style={{ ...S.colTitle, marginTop: 16 }}>Play a shared code</div>
-      <div style={S.studioRow}>
-        <input
-          value={codeIn}
-          onChange={(e) => setCodeIn(e.target.value)}
-          placeholder="paste a code"
-          style={S.codeInput}
-        />
-        <button style={S.chip} onClick={openCode}>Open</button>
-      </div>
-
-      {msg && <div style={S.studioMsg}>{msg}</div>}
-      <div style={S.tip}>
-        Anything you draw becomes a real puzzle — the board is generated inside your
-        shape and is always solvable. Send the code to a friend and they play the
-        exact same board.
-      </div>
-    </div>
-  );
-}
-
-function ThemePreview({ dark }) {
-  const cols = dark
-    ? ["#4C8DFF", "#FF5C7A", "#A78BFA", "#FFC24B"]
-    : ["#2F7BF6", "#FF4D6A", "#8B5CF6", "#F59E0B"];
-  return (
-    <svg viewBox="0 0 104 78" style={{ width: 66, height: 50, borderRadius: 9, background: dark ? "#080C1A" : "#FFFFFF", display: "block" }}>
-      {Array.from({ length: 12 }).map((_, i) => {
-        const x = 16 + (i % 4) * 24;
-        const y = 18 + Math.floor(i / 4) * 21;
-        const c = cols[i % 4];
-        const rot = [0, 90, 180, 270][(i * 3) % 4];
-        return (
-          <g key={i} transform={`rotate(${rot} ${x} ${y})`}>
-            <path d={`M ${x - 8} ${y} H ${x + 2}`} stroke={c} strokeWidth="3.2" strokeLinecap="round" />
-            <path d={`M ${x - 1} ${y - 4} L ${x + 5} ${y} L ${x - 1} ${y + 4}`} stroke={c} strokeWidth="3.2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-          </g>
-        );
-      })}
-    </svg>
-  );
-}
 
 function Toggle({ label, hint, on, onChange }) {
   return (
@@ -2098,12 +1631,6 @@ const Speaker = ({ on }) => (
     )}
   </svg>
 );
-const Pencil = () => (
-  <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-    <path d="M4 20h4L19.5 8.5a2.5 2.5 0 00-3.5-3.5L4.5 16.5 4 20z" stroke={C.muted} strokeWidth="1.9" strokeLinejoin="round" />
-    <path d="M14.5 6.5l3.5 3.5" stroke={C.muted} strokeWidth="1.9" strokeLinecap="round" />
-  </svg>
-);
 const Trophy = () => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
     <path d="M7 4h10v5a5 5 0 01-10 0V4zM7 6H4v1a3 3 0 003 3M17 6h3v1a3 3 0 01-3 3M9 20h6M12 14v6" stroke={C.muted} strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
@@ -2117,7 +1644,7 @@ const TinyArrow = () => (
 
 /* ═══════════  css  ═══════════ */
 
-const makeCSS = (C) => `
+const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@600;800;900&family=DM+Mono:wght@500&display=swap');
 @keyframes settleIn{0%{opacity:0;transform:translateY(6px)}100%{opacity:1;transform:translateY(0)}}
 .settle{animation:settleIn 300ms ease backwards;animation-delay:var(--d,0ms)}
@@ -2151,13 +1678,11 @@ button:focus-visible{outline:3px solid ${C.accent};outline-offset:3px}
 @media (prefers-reduced-motion: reduce){.settle,.snake,.chev-out,.dep-fade,.ring,.shake,.flash,.hint,.hbreak,.starpop,.ovin,.confetti,.badge-in,.pop{animation-duration:1ms!important}}
 `;
 
-let CSS = makeCSS(C);
-
 /* ═══════════  styles  ═══════════ */
 
 const BOARD_W = "min(93vw, 412px)";
 
-const makeStyles = (C) => ({
+const S = {
   bar: { width: BOARD_W, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8 },
   barLeft: { minWidth: 0 },
   lvl: { fontWeight: 900, fontSize: 17, letterSpacing: "-0.02em", lineHeight: 1.15 },
@@ -2180,19 +1705,6 @@ const makeStyles = (C) => ({
   tglTrack: { width: 40, height: 22, borderRadius: 999, padding: 2, flexShrink: 0, transition: "background 200ms ease" },
   tglKnob: { display: "block", width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "transform 200ms cubic-bezier(.34,1.4,.64,1)", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" },
   tip: { marginTop: 8, padding: "10px 12px", background: C.bg, borderRadius: 12, fontSize: 12, fontWeight: 600, color: C.muted, lineHeight: 1.5 },
-  studioGrid: { display: "grid", gridTemplateColumns: "repeat(11, 1fr)", gap: 3, touchAction: "none", marginBottom: 12 },
-  studioCell: { aspectRatio: "1 / 1", border: "none", borderRadius: 4, padding: 0, cursor: "pointer" },
-  studioRow: { display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" },
-  chip: { flex: 1, minWidth: 74, background: C.bg, border: "none", borderRadius: 999, padding: "9px 10px", fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 12, color: C.ink, cursor: "pointer" },
-  codeInput: { flex: 2, minWidth: 120, background: C.bg, border: "none", borderRadius: 999, padding: "10px 14px", fontFamily: "'DM Mono', monospace", fontSize: 12, color: C.ink, outline: "none" },
-  savedRow: { display: "flex", gap: 8, flexWrap: "wrap" },
-  savedItem: { position: "relative" },
-  savedBtn: { background: C.bg, border: "none", borderRadius: 12, padding: 6, cursor: "pointer", display: "block" },
-  savedX: { position: "absolute", top: -5, right: -5, width: 19, height: 19, borderRadius: "50%", background: C.danger, color: "#fff", border: "none", fontSize: 10, fontWeight: 800, cursor: "pointer", lineHeight: 1 },
-  studioMsg: { marginTop: 10, fontSize: 12, fontWeight: 800, color: C.accent, textAlign: "center" },
-  themeTile: { display: "flex", flexDirection: "column", alignItems: "center", gap: 5, background: C.bg, border: "2px solid transparent", borderRadius: 12, padding: 7, cursor: "pointer" },
-  themeName: { fontSize: 9.5, fontWeight: 800, color: C.muted, letterSpacing: "0.02em" },
-  zenInf: { fontSize: 17, fontWeight: 900, color: C.go, marginRight: 6 },
   themeRow: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 2px" },
   swatch: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 2, padding: 4, borderRadius: 10, border: "2px solid transparent", background: C.bg, cursor: "pointer" },
   swatchDot: { width: 8, height: 8, borderRadius: 2 },
@@ -2200,7 +1712,7 @@ const makeStyles = (C) => ({
   colGrid: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 },
   colItem: { display: "flex", flexDirection: "column", alignItems: "center", gap: 4, background: C.bg, borderRadius: 14, padding: "12px 6px" },
   colName: { fontSize: 11, fontWeight: 800, color: C.muted },
-  coach: { width: BOARD_W, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, background: C.coachBg, border: "none", borderRadius: 12, padding: "8px 12px", marginBottom: 8, cursor: "pointer", textAlign: "left" },
+  coach: { width: BOARD_W, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, background: "#E9F1FF", border: "none", borderRadius: 12, padding: "8px 12px", marginBottom: 8, cursor: "pointer", textAlign: "left" },
   coachText: { fontSize: 12, fontWeight: 600, color: C.ink, fontFamily: "'Nunito',sans-serif" },
   coachX: { fontSize: 12, color: C.muted, fontWeight: 800 },
   tierRow: { width: BOARD_W, display: "flex", gap: 3, marginBottom: 10 },
@@ -2214,7 +1726,7 @@ const makeStyles = (C) => ({
   fill: { height: "100%", borderRadius: 999, background: C.accent, transition: "width 360ms cubic-bezier(.4,0,.2,1)" },
   viewport: { width: "100%", borderRadius: 12, overflow: "hidden", touchAction: "none", overscrollBehavior: "contain" },
   svg: { width: "100%", height: "auto", display: "block", overflow: "visible" },
-  overlay: { position: "absolute", inset: 0, borderRadius: 24, background: C.overlay, display: "flex", alignItems: "center", justifyContent: "center", backdropFilter: "blur(3px)" },
+  overlay: { position: "absolute", inset: 0, borderRadius: 24, background: "rgba(255,255,255,0.96)", display: "flex", alignItems: "center", justifyContent: "center", backdropFilter: "blur(3px)" },
   ovCard: { textAlign: "center", padding: 24, width: "100%", maxWidth: 280 },
   ovTitle: { fontWeight: 900, fontSize: 21, marginBottom: 6 },
   ovSub: { fontSize: 13, color: C.muted, marginBottom: 20, fontWeight: 600, lineHeight: 1.45 },
@@ -2228,20 +1740,9 @@ const makeStyles = (C) => ({
   winInner: { position: "relative", textAlign: "center", width: "100%", maxWidth: 320 },
   winKicker: { color: "rgba(255,255,255,0.92)", fontWeight: 800, fontSize: 15 },
   winTitle: { color: "#fff", fontWeight: 900, fontSize: 27, letterSpacing: "-0.02em", margin: "6px 0 18px" },
-  winCard: { background: C.card, borderRadius: 22, padding: 20, boxShadow: "0 14px 40px rgba(0,40,90,0.28)" },
+  winCard: { background: "#fff", borderRadius: 22, padding: 20, boxShadow: "0 14px 40px rgba(0,40,90,0.28)" },
   winStars: { display: "flex", gap: 10, justifyContent: "center", margin: "18px 0 6px" },
   winMeta: { color: "rgba(255,255,255,0.92)", fontSize: 13, fontWeight: 700, marginBottom: 18 },
   winBtn: { display: "block", width: "100%", background: "#fff", color: C.accent, border: "none", borderRadius: 999, padding: "14px 30px", fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 15, cursor: "pointer", boxShadow: "0 6px 20px rgba(0,40,90,0.22)" },
   winGhost: { display: "block", width: "100%", marginTop: 10, background: "transparent", color: "#fff", border: "none", padding: 10, fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 14, cursor: "pointer" },
-});
-
-let S = makeStyles(C);
-
-function applyTheme(dark) {
-  Object.assign(C, dark ? DARK : LIGHT);
-  C.__dark = dark;
-  S = makeStyles(C);
-  CSS = makeCSS(C);
-}
-
-
+};
