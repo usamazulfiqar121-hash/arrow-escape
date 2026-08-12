@@ -566,9 +566,9 @@ function buildBoard(mask, { maxLen, coverage, tightness, pieces: target }) {
   const pieces = [];
   const all = [...cells];
   const fillTarget = Math.round(cells.size * coverage);
-  const BANDS = [[0.3, 0.6], [0.6, 1.0], [1.0, 1.5], [1.5, 2.3]];
+  const BANDS = [[0.6, 0.9], [0.9, 1.2], [1.2, 1.6], [1.6, 2.2]];
   // average snake length needed to cover the shape in `target` arrows
-  const avgLen = Math.min(maxLen, Math.max(1.6, (fillTarget / Math.max(target || 40, 6)) * 1.55));
+  const avgLen = Math.min(maxLen, Math.max(3.2, (fillTarget / Math.max(target || 40, 6)) * 1.45));
   let filled = 0;
   let fails = 0;
 
@@ -600,7 +600,7 @@ function buildBoard(mask, { maxLen, coverage, tightness, pieces: target }) {
       continue;
     }
     // when space runs short, stop insisting the body can grow
-    if (fails < 60 && options.some((o) => o.grow)) options = options.filter((o) => o.grow);
+    if (fails < 150 && options.some((o) => o.grow)) options = options.filter((o) => o.grow);
     options.sort((a, b) => b.len - a.len);
     const chosen = RND() < tightness ? options[0] : options[(RND() * options.length) | 0];
     const D = DIRS[chosen.d];
@@ -612,10 +612,18 @@ function buildBoard(mask, { maxLen, coverage, tightness, pieces: target }) {
     // early = long runs while there is space, later = shorter fillers.
     // repeated failures mean the board is tight, so shrink further.
     const prog = filled / fillTarget;
-    const squeeze = fails > 120 ? 0.25 : fails > 45 ? 0.5 : fails > 15 ? 0.75 : 1;
+    const squeeze = fails > 260 ? 0.3 : fails > 150 ? 0.55 : fails > 60 ? 0.8 : 1;
     const band = BANDS[Math.max(0, Math.min(3, Math.floor((1 - prog) * 4 + (RND() * 1.4 - 0.7))))];
     const want = Math.max(1, Math.min(maxLen,
       Math.round(avgLen * squeeze * (band[0] + RND() * (band[1] - band[0])))));
+
+    const back0 = step(head, -D.dx, -D.dy, cols, rows);
+    const canGrow = back0 !== null && cells.has(back0) && !occupied.has(back0) && !ownLane.has(back0);
+    // a dot-sized arrow wastes a cell; hold out while there is still room
+    if (want > 1 && !canGrow && fails < 200) {
+      fails++;
+      continue;
+    }
     if (want > 1) {
       const back = step(head, -D.dx, -D.dy, cols, rows);
       if (back !== null && cells.has(back) && !occupied.has(back) && !ownLane.has(back)) {
@@ -634,7 +642,7 @@ function buildBoard(mask, { maxLen, coverage, tightness, pieces: target }) {
           if (!open.length) break;
           const straight = open.find((o) => o.d.dx === run.dx && o.d.dy === run.dy);
           // keep going straight most of the time — bends become deliberate, not noise
-          const pick = straight && RND() < 0.68 ? straight : open[(RND() * open.length) | 0];
+          const pick = straight && RND() < 0.84 ? straight : open[(RND() * open.length) | 0];
           cur = pick.nx;
           run = { dx: pick.d.dx, dy: pick.d.dy };
           body.push(cur);
@@ -742,7 +750,7 @@ function makeLevel(level, seed) {
   const raw =
     seed === undefined && level > CURATED_UNTIL
       ? artMask(level) || proceduralMask(level)
-      : parseMask(tier.pool[(seed !== undefined ? seed : level - 1) % tier.pool.length]);
+      : parseMask(curatedKey(seed !== undefined ? (seed % 9973) + 1 : level));
   const mask = fitMask(raw, tier.maxCells);
   const tries = mask.cells.size > 240 ? 2 : mask.cells.size > 90 ? 4 : 7;
 
@@ -830,7 +838,7 @@ const BADGES = [
    build it is absent, so every read throws and the game silently forgets
    everything on close. Fall back to localStorage, then to memory. */
 
-const SAVE_KEY = "arrowv2:save";
+const SAVE_KEY = "arrowv2:save";  // unchanged on purpose — renaming it would wipe every player's progress
 
 const Store = (() => {
   const mem = new Map();
@@ -1019,39 +1027,63 @@ const THUMB = { Cat: "catArt", Dog: "dogArt", Elephant: "elephantArt", Butterfly
 
 /* ═══════════  tiers  ═══════════ */
 
+
+/* Every hand-drawn shape, walked in a seeded order so nothing repeats until
+   the whole set has been played. The old per-tier pools held 3-4 masks each,
+   which meant the same silhouette returned every few levels. */
+const ART_POOL = [
+  "catArt", "dogArt", "elephantArt", "butterflyArt", "umbrellaArt", "anchorArt",
+  "trophyArt", "crownArt", "treeArt", "fishArt", "birdArt", "guitarArt",
+  "hourglassArt", "keyArt", "mushroomArt", "rocketArt",
+];
+
+function shuffledCycle(cycle) {
+  const order = [...ART_POOL];
+  const r = mulberry32(cycle * 7717 + 91);
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = (r() * (i + 1)) | 0;
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  return order;
+}
+
+function curatedKey(level) {
+  const n = ART_POOL.length;
+  const cycle = Math.floor((level - 1) / n);
+  const order = shuffledCycle(cycle);
+  // a fresh shuffle can open with a shape the last cycle just closed on, so
+  // push any of the previous cycle's final four out of the opening four
+  if (cycle > 0) {
+    const tail = shuffledCycle(cycle - 1).slice(-4);
+    for (let i = 0; i < 4; i++) {
+      if (!tail.includes(order[i])) continue;
+      for (let j = 4; j < n; j++) {
+        if (tail.includes(order[j])) continue;
+        [order[i], order[j]] = [order[j], order[i]];
+        break;
+      }
+    }
+  }
+  return order[(level - 1) % n];
+}
+
 const TIERS = [
-  { name: "Warm Up", span: 2, pool: ["rocketArt", "keyArt", "hourglassArt"],
-    maxLen: 4, hearts: 3, hints: 3, undos: 3, coverage: 0.88, tightness: 0.62, freedom: 0.15, pieces: 22, maxCells: 70 },
-  { name: "Little Easy", span: 3, pool: ["birdArt", "hourglassArt", "rocketArt", "mushroomArt"],
-    maxLen: 4, hearts: 3, hints: 3, undos: 3, coverage: 0.89, tightness: 0.66, freedom: 0.1341, pieces: 26, maxCells: 88 },
-  { name: "Easy", span: 4, pool: ["keyArt", "umbrellaArt", "birdArt", "guitarArt"],
-    maxLen: 5, hearts: 3, hints: 3, undos: 2, coverage: 0.9, tightness: 0.7, freedom: 0.1199, pieces: 30, maxCells: 108 },
-  { name: "Easy Plus", span: 5, pool: ["rocketArt", "birdArt", "hourglassArt", "heart9"],
-    maxLen: 5, hearts: 3, hints: 2, undos: 2, coverage: 0.9, tightness: 0.74, freedom: 0.1072, pieces: 35, maxCells: 130 },
-  { name: "Little Medium", span: 6, pool: ["mushroomArt", "birdArt", "keyArt", "umbrellaArt"],
-    maxLen: 6, hearts: 3, hints: 2, undos: 2, coverage: 0.91, tightness: 0.77, freedom: 0.0958, pieces: 40, maxCells: 155 },
-  { name: "Medium", span: 8, pool: ["catArt", "guitarArt", "anchorArt", "mushroomArt"],
-    maxLen: 6, hearts: 3, hints: 2, undos: 2, coverage: 0.92, tightness: 0.8, freedom: 0.0857, pieces: 45, maxCells: 182 },
-  { name: "Medium Plus", span: 10, pool: ["dogArt", "umbrellaArt", "crownArt", "catArt"],
-    maxLen: 7, hearts: 3, hints: 2, undos: 2, coverage: 0.92, tightness: 0.83, freedom: 0.0766, pieces: 50, maxCells: 210 },
-  { name: "Tricky", span: 12, pool: ["treeArt", "trophyArt", "fishArt", "dogArt"],
-    maxLen: 8, hearts: 3, hints: 2, undos: 1, coverage: 0.93, tightness: 0.86, freedom: 0.0685, pieces: 56, maxCells: 240 },
-  { name: "Tough", span: 14, pool: ["fishArt", "crownArt", "guitarArt", "treeArt"],
-    maxLen: 9, hearts: 3, hints: 2, undos: 1, coverage: 0.94, tightness: 0.88, freedom: 0.0612, pieces: 62, maxCells: 272 },
-  { name: "Hard", span: 17, pool: ["elephantArt", "butterflyArt", "catArt", "trophyArt"],
-    maxLen: 10, hearts: 3, hints: 1, undos: 1, coverage: 0.94, tightness: 0.9, freedom: 0.0547, pieces: 68, maxCells: 305 },
-  { name: "Very Hard", span: 20, pool: ["butterflyArt", "elephantArt", "dogArt", "fishArt"],
-    maxLen: 11, hearts: 3, hints: 1, undos: 1, coverage: 0.95, tightness: 0.92, freedom: 0.0489, pieces: 74, maxCells: 340 },
-  { name: "Super Hard", span: 24, pool: ["elephantArt", "butterflyArt", "treeArt", "catArt"],
-    maxLen: 12, hearts: 3, hints: 1, undos: 1, coverage: 0.96, tightness: 0.94, freedom: 0.0437, pieces: 80, maxCells: 375 },
-  { name: "Expert", span: 30, pool: ["butterflyArt", "elephantArt", "fishArt", "crownArt"],
-    maxLen: 13, hearts: 3, hints: 1, undos: 1, coverage: 0.96, tightness: 0.96, freedom: 0.0391, pieces: 86, maxCells: 410 },
-  { name: "Elite", span: 36, pool: ["elephantArt", "butterflyArt", "dogArt", "trophyArt"],
-    maxLen: 14, hearts: 3, hints: 1, undos: 1, coverage: 0.97, tightness: 0.97, freedom: 0.035, pieces: 92, maxCells: 445 },
-  { name: "Master", span: 45, pool: ["butterflyArt", "elephantArt", "catArt", "treeArt"],
-    maxLen: 15, hearts: 3, hints: 1, undos: 1, coverage: 0.98, tightness: 0.99, freedom: 0.0312, pieces: 98, maxCells: 480 },
-  { name: "Pro", span: Infinity, pool: ["elephantArt", "butterflyArt", "fishArt", "dogArt"],
-    maxLen: 16, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 1.0, freedom: 0.0279, pieces: 105, maxCells: 520 },
+  { name: "Warm Up", span: 2,     maxLen: 9, hearts: 3, hints: 3, undos: 3, coverage: 0.88, tightness: 0.62, freedom: 0.15, pieces: 7, maxCells: 70 },
+  { name: "Little Easy", span: 3,     maxLen: 10, hearts: 3, hints: 3, undos: 3, coverage: 0.89, tightness: 0.66, freedom: 0.1341, pieces: 8, maxCells: 88 },
+  { name: "Easy", span: 4,     maxLen: 11, hearts: 3, hints: 3, undos: 2, coverage: 0.9, tightness: 0.7, freedom: 0.1199, pieces: 10, maxCells: 108 },
+  { name: "Easy Plus", span: 5,     maxLen: 12, hearts: 3, hints: 2, undos: 2, coverage: 0.9, tightness: 0.74, freedom: 0.1072, pieces: 11, maxCells: 130 },
+  { name: "Little Medium", span: 6,     maxLen: 13, hearts: 3, hints: 2, undos: 2, coverage: 0.91, tightness: 0.77, freedom: 0.0958, pieces: 13, maxCells: 155 },
+  { name: "Medium", span: 8,     maxLen: 14, hearts: 3, hints: 2, undos: 2, coverage: 0.92, tightness: 0.8, freedom: 0.0857, pieces: 15, maxCells: 182 },
+  { name: "Medium Plus", span: 10,     maxLen: 15, hearts: 3, hints: 2, undos: 2, coverage: 0.92, tightness: 0.83, freedom: 0.0766, pieces: 17, maxCells: 210 },
+  { name: "Tricky", span: 12,     maxLen: 16, hearts: 3, hints: 2, undos: 1, coverage: 0.93, tightness: 0.86, freedom: 0.0685, pieces: 19, maxCells: 240 },
+  { name: "Tough", span: 14,     maxLen: 17, hearts: 3, hints: 2, undos: 1, coverage: 0.94, tightness: 0.88, freedom: 0.0612, pieces: 21, maxCells: 272 },
+  { name: "Hard", span: 17,     maxLen: 18, hearts: 3, hints: 1, undos: 1, coverage: 0.94, tightness: 0.9, freedom: 0.0547, pieces: 24, maxCells: 305 },
+  { name: "Very Hard", span: 20,     maxLen: 19, hearts: 3, hints: 1, undos: 1, coverage: 0.95, tightness: 0.92, freedom: 0.0489, pieces: 26, maxCells: 340 },
+  { name: "Super Hard", span: 24,     maxLen: 20, hearts: 3, hints: 1, undos: 1, coverage: 0.96, tightness: 0.94, freedom: 0.0437, pieces: 29, maxCells: 375 },
+  { name: "Expert", span: 30,     maxLen: 21, hearts: 3, hints: 1, undos: 1, coverage: 0.96, tightness: 0.96, freedom: 0.0391, pieces: 32, maxCells: 410 },
+  { name: "Elite", span: 36,     maxLen: 22, hearts: 3, hints: 1, undos: 1, coverage: 0.97, tightness: 0.97, freedom: 0.035, pieces: 35, maxCells: 445 },
+  { name: "Master", span: 45,     maxLen: 23, hearts: 3, hints: 1, undos: 1, coverage: 0.98, tightness: 0.99, freedom: 0.0312, pieces: 38, maxCells: 480 },
+  { name: "Pro", span: Infinity,     maxLen: 24, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 1.0, freedom: 0.0279, pieces: 42, maxCells: 520 },
 ];
 const MEDAL = { 1: "#CD7F32", 2: "#AEB6C4", 3: "#FFC24B" };
 const TIER_HUE = ["#5FCB8A", "#4CC79B", "#3FBFD6", "#3EA8EE", "#3E9BF0", "#5580F2", "#6C7BF0", "#8470F2", "#9A6BF0", "#C07AD8", "#F0A93E", "#F2891B", "#F2761B", "#FF6A4A", "#FF3D9A", "#B14BFF"];
@@ -1362,12 +1394,13 @@ const todayKey = () => new Date().toISOString().slice(0, 10);
 
 /* ═══════════  game  ═══════════ */
 
-export default function ArrowEscapeV2() {
+export default function ArrowEscapeV3() {
   const [mode, setMode] = useState("journey");
   const [level, setLevel] = useState(1);
   const [best, setBest] = useState(1);
   const [setup, setSetup] = useState(() => makeLevel(1));
   const [alive, setAlive] = useState(() => new Set(setup.pieces.map((p) => p.id)));
+  const aliveRef = useRef(alive); // synchronous mirror — fast taps must not miss the last arrow
   const [history, setHistory] = useState([]);
   const [hearts, setHearts] = useState(setup.hearts);
   const [shield, setShield] = useState(false);
@@ -1441,9 +1474,44 @@ export default function ArrowEscapeV2() {
   }, [musicOn]);
 
   useEffect(() => {
-    const vis = () => (document.hidden ? Snd.suspend() : Snd.resume());
+    /* Silence audio when the app leaves the foreground.
+
+       visibilitychange alone is not enough: in an Android WebView it often
+       does not fire when the user presses Home or takes a call, so the pads
+       keep playing over whatever they switched to. Capacitor's appStateChange
+       does fire, so use it when present — imported dynamically so the same
+       file still runs in a plain browser with no Capacitor installed. */
+    const sleep = () => Snd.suspend();
+    const wake = () => Snd.resume();
+    const vis = () => (document.hidden ? sleep() : wake());
+
     document.addEventListener("visibilitychange", vis);
-    return () => document.removeEventListener("visibilitychange", vis);
+    window.addEventListener("pagehide", sleep);
+    window.addEventListener("blur", sleep);
+    window.addEventListener("focus", wake);
+
+    let capListener = null;
+    let dropped = false;
+    (async () => {
+      try {
+        const { App } = await import("@capacitor/app");
+        const h = await App.addListener("appStateChange", ({ isActive }) => (isActive ? wake() : sleep()));
+        if (dropped) h.remove();
+        else capListener = h;
+      } catch {
+        /* not running under Capacitor — the web listeners above cover it */
+      }
+    })();
+
+    return () => {
+      dropped = true;
+      document.removeEventListener("visibilitychange", vis);
+      window.removeEventListener("pagehide", sleep);
+      window.removeEventListener("blur", sleep);
+      window.removeEventListener("focus", wake);
+      capListener?.remove();
+      Snd.suspend();
+    };
   }, []);
 
   const occupancy = useMemo(() => {
@@ -1502,7 +1570,9 @@ export default function ArrowEscapeV2() {
           const st = makeLevel(p.level);
           setLevel(p.level);
           setSetup(st);
-          setAlive(new Set(st.pieces.map((x) => x.id)));
+          const fresh = new Set(st.pieces.map((x) => x.id));
+          aliveRef.current = fresh;
+          setAlive(fresh);
           setHearts(st.hearts);
           setHintsLeft(st.hints);
           setUndosLeft(st.undos);
@@ -1569,7 +1639,9 @@ export default function ArrowEscapeV2() {
   /* ── level control ── */
   const applySetup = useCallback((st, keepScore) => {
     setSetup(st);
-    setAlive(new Set(st.pieces.map((p) => p.id)));
+    const fresh = new Set(st.pieces.map((p) => p.id));
+    aliveRef.current = fresh;
+    setAlive(fresh);
     setHistory([]);
     scoreLog.current.clear();
     setHearts(st.hearts);
@@ -1669,7 +1741,8 @@ export default function ArrowEscapeV2() {
     const b = Math.max(best, n);
     setLevel(n);
     setBest(b);
-    persist({ level: n, best: b });
+    if (n >= b) persist({ level: n, best: b });
+    else persist({ best: b });
     startJourney(n, true);
   }, [mode, level, best, persist, startJourney]);
 
@@ -1689,7 +1762,7 @@ export default function ArrowEscapeV2() {
 
   const fire = useCallback(
     (piece) => {
-      if (phase !== "playing" || !alive.has(piece.id)) return;
+      if (phase !== "playing" || !aliveRef.current.has(piece.id)) return;
       setTaps((t) => t + 1);
       const blocker = blockerOf(piece);
 
@@ -1762,12 +1835,11 @@ export default function ArrowEscapeV2() {
       setTimeout(() => setFlying((f) => { const m = new Map(f); if (m.get(piece.id) === key) m.delete(piece.id); return m; }), 280);
       setHistory((h) => [...h, piece.id]);
 
-      const willClear = alive.size === 1 && alive.has(piece.id);
-      setAlive((prev) => {
-        const next = new Set(prev);
-        next.delete(piece.id);
-        return next;
-      });
+      const nextAlive = new Set(aliveRef.current);
+      nextAlive.delete(piece.id);
+      aliveRef.current = nextAlive;
+      const willClear = nextAlive.size === 0;
+      setAlive(nextAlive);
 
       if (willClear) {
         setTimeout(() => {
@@ -1850,10 +1922,12 @@ export default function ArrowEscapeV2() {
               return ns;
             });
             setDailyDone(true);
-          } else {
-            const bl = Math.max(best, level + 1);
+          } else if (level >= best) {
+            // only a level at the frontier moves progress forward; replaying
+            // an old one must not drag the save back with it
+            const bl = level + 1;
             setBest(bl);
-            persist({ level: level + 1, best: bl });
+            persist({ level: bl, best: bl });
           }
         }, 340);
       }
@@ -2092,7 +2166,10 @@ export default function ArrowEscapeV2() {
     scoreLog.current.delete(last);
     setHistory((h) => h.slice(0, -1));
     setFlying((f) => { const m = new Map(f); m.delete(last); return m; });
-    setAlive((prev) => new Set([...prev, last]));
+    const back = new Set(aliveRef.current);
+    back.add(last);
+    aliveRef.current = back;
+    setAlive(back);
     setUndosLeft((u) => u - 1);
     setCombo(0);
     Snd.undo();
@@ -2147,7 +2224,7 @@ export default function ArrowEscapeV2() {
           </button>
 
           <div style={S.hudMid}>
-            <div style={{ ...S.diffLabel, color: mode === "journey" ? TIER_HUE[tierIndex] : C.accent }}>
+            <div style={{ ...S.diffLabel, color: mode === "journey" ? TIER_HUE[tierIndex] ?? C.accent : C.accent }}>
               {mode === "custom" ? "Your board" : mode === "daily" ? "Daily" : tier.name}
               <span style={S.leftCount}> · {alive.size} left</span>
             </div>
@@ -2265,7 +2342,7 @@ export default function ArrowEscapeV2() {
               })}
 
 
-              {holdId !== null && alive.has(holdId) && (() => {
+              {holdId !== null && alive.has(holdId) && pieces[holdId] && (() => {
                 const hp = pieces[holdId];
                 const h = hp.cells[0];
                 const D = DIRS[hp.dir];
@@ -2307,9 +2384,11 @@ export default function ArrowEscapeV2() {
                 );
               })}
 
-              {[...flying.entries()].map(([id, key]) => (
-                <DepartingPiece key={`f${key}`} piece={pieces[id]} cols={cols} rows={rows} tone={C.accent} />
-              ))}
+              {[...flying.entries()].map(([id, key]) =>
+                pieces[id] ? (
+                  <DepartingPiece key={`f${key}`} piece={pieces[id]} cols={cols} rows={rows} tone={C.accent} />
+                ) : null
+              )}
 
               {ring && (
                 <circle
@@ -2486,7 +2565,7 @@ export default function ArrowEscapeV2() {
             <div style={{ ...S.brandWrap, animationDelay: "170ms" }} className="card-in">
               <div style={S.brand}>Arrow Escape</div>
               <div style={S.homeLevel}>Level {best}</div>
-              <div style={{ ...S.homeDiff, color: TIER_HUE[tierFor(best).index] }}>{tierFor(best).tier.name}</div>
+              <div style={{ ...S.homeDiff, color: TIER_HUE[tierFor(best).index] ?? C.accent }}>{tierFor(best).tier.name}</div>
             </div>
 
             <button style={{ ...S.continueBtn, animationDelay: "230ms" }} className="card-in" onClick={() => { startJourney(best); setScreen("play"); }}>
