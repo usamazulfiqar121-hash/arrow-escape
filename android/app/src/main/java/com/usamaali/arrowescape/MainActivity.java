@@ -1,4 +1,4 @@
-package com.yourname.arrowescape;
+package com.usamaali.arrowescape;
 
 import com.getcapacitor.BridgeActivity;
 
