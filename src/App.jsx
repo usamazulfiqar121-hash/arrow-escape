@@ -2,7 +2,7 @@ import React, { useState, useCallback, useMemo, useRef, useEffect } from "react"
 
 /* ═══════════  tokens  ═══════════ */
 
-const C = {
+const LIGHT = {
   bg: "#EDF1F8",
   card: "#FFFFFF",
   ink: "#1B2440",
@@ -15,7 +15,32 @@ const C = {
   muted: "#8A93AC",
   dot: "#D5DBE8",
   line: "#E6EBF4",
+  gridLine: "#B9C6E0",
+  overlay: "rgba(255,255,255,0.96)",
+  coachBg: "#E9F1FF",
 };
+
+/* High contrast — vivid arrows on near-black, easier in low light and for
+   anyone who finds the pale board hard to read. */
+const DARK = {
+  bg: "#080C1A",
+  card: "#121A31",
+  ink: "#EAF0FF",
+  accent: "#4C8DFF",
+  go: "#22C58A",
+  stop: "#FF9B3D",
+  danger: "#FF5C7A",
+  gold: "#FFC24B",
+  flow: "#A78BFA",
+  muted: "#8592BC",
+  dot: "#27334F",
+  line: "#222E4C",
+  gridLine: "#3C4E76",
+  overlay: "rgba(8,12,26,0.96)",
+  coachBg: "#16223F",
+};
+
+const C = { ...LIGHT, __dark: false };
 
 const DIRS = {
   right: { dx: 1, dy: 0, angle: 0 },
@@ -131,11 +156,6 @@ const Snd = (() => {
     whoosh(300, 140, 0.16, 0.1);
   }
 
-  function peek() {
-    if (!sfxOn) return;
-    tone(1180, { type: "sine", dur: 0.07, peak: 0.09 });
-  }
-
   function undo() {
     if (!sfxOn) return;
     tone(660, { type: "sine", dur: 0.16, peak: 0.16, glide: 0.7 });
@@ -242,7 +262,6 @@ const Snd = (() => {
     },
     depart,
     blocked,
-    peek,
     undo,
     shieldUp,
     shieldUsed,
@@ -252,15 +271,6 @@ const Snd = (() => {
 })();
 
 let RND = Math.random;
-function mulberry32(a) {
-  return function () {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 const hashStr = (s) => {
   let h = 2166136261;
   for (let i = 0; i < s.length; i++) {
@@ -270,125 +280,262 @@ const hashStr = (s) => {
   return h >>> 0;
 };
 
-/* ═══════════  shapes  ═══════════ */
-
-const SHAPES = {
-  square4: { name: "Grid", rows: ["####", "####", "####", "####"] },
-  square5: { name: "Grid", rows: ["#####", "#####", "#####", "#####", "#####"] },
-  square6: { name: "Grid", rows: Array.from({ length: 6 }, () => "######") },
-  square8: { name: "Grid", rows: Array.from({ length: 8 }, () => "########") },
-  square10: { name: "Grid", rows: Array.from({ length: 10 }, () => "##########") },
-  diamond7: { name: "Diamond", rows: ["...#...", "..###..", ".#####.", "#######", ".#####.", "..###..", "...#..."] },
-  diamond11: {
-    name: "Diamond",
-    rows: [".....#.....", "....###....", "...#####...", "..#######..", ".#########.", "###########", ".#########.", "..#######..", "...#####...", "....###....", ".....#....."],
-  },
-  heart9: { name: "Heart", rows: [".##...##.", "#########", "#########", "#########", ".#######.", "..#####..", "...###...", "....#...."] },
-  heart13: {
-    name: "Heart",
-    rows: ["..###...###..", ".#####.#####.", "#############", "#############", "#############", ".###########.", ".###########.", "..#########..", "...#######...", "....#####....", ".....###.....", "......#......"],
-  },
-  cross7: { name: "Cross", rows: ["..###..", "..###..", "#######", "#######", "#######", "..###..", "..###.."] },
-  cross11: {
-    name: "Cross",
-    rows: ["....###....", "....###....", "....###....", "###########", "###########", "###########", "....###....", "....###....", "....###....", "....###....", "....###...."],
-  },
-  butterfly: { name: "Butterfly", rows: ["##.......##", "####...####", "#####.#####", "###########", "#####.#####", "####...####", "##.......##"] },
-  star: {
-    name: "Star",
-    rows: ["......#......", ".....###.....", ".....###.....", "#############", ".###########.", "..#########..", "..#########..", "..#########..", "...#######...", "..###...###..", "..###...###..", ".##.......##.", ".##.......##."],
-  },
-  ring11: {
-    name: "Ring",
-    rows: ["...#####...", ".#########.", "####...####", "###.....###", "##.......##", "##.......##", "##.......##", "###.....###", "####...####", ".#########.", "...#####..."],
-  },
-  triangle11: {
-    name: "Triangle",
-    rows: [".....#.....", "....###....", "....###....", "...#####...", "...#####...", "..#######..", "..#######..", ".#########.", ".#########.", "###########", "###########"],
-  },
-  bigarrow11: {
-    name: "Arrow",
-    rows: [".....#.....", "....###....", "...#####...", "..#######..", ".#########.", "###########", "....###....", "....###....", "....###....", "....###....", "....###...."],
-  },
-  hexagon11: {
-    name: "Hexagon",
-    rows: ["...#####...", "..#######..", ".#########.", "###########", "###########", "###########", ".#########.", "..#######..", "...#####..."],
-  },
-  crown11: {
-    name: "Crown",
-    rows: ["#....#....#", "#....#....#", "##...#...##", "##.#####.##", "###########", "###########", "###########", ".#########."],
-  },
-  rocket9: {
-    name: "Rocket",
-    rows: ["....#....", "...###...", "...###...", "..#####..", "..#####..", "..#####..", "..#####..", ".#######.", "##.###.##", "##.###.##", "...###...", "..#.#.#.."],
-  },
-  bolt9: {
-    name: "Bolt",
-    rows: ["......###", ".....###.", "....###..", "...###...", "..######.", ".#######.", "....###..", "...###...", "..###....", ".###.....", "###......"],
-  },
-  house11: {
-    name: "House",
-    rows: [".....#.....", "....###....", "...#####...", "..#######..", ".#########.", "###########", "###########", "###########", "####...####", "####...####", "####...####"],
-  },
-  bell11: {
-    name: "Bell",
-    rows: [".....#.....", "....###....", "...#####...", "...#####...", "..#######..", "..#######..", ".#########.", ".#########.", "###########", ".....#.....", "....###...."],
-  },
-  cup11: {
-    name: "Trophy",
-    rows: ["###########", "###########", "#.#######.#", "#.#######.#", "..#######..", "..#######..", "...#####...", "....###....", "....###....", "..#######..", ".#########."],
-  },
-  cat11: {
-    name: "Cat",
-    rows: ["##.......##", "###.....###", "####...####", "###########", "###########", "###########", "###########", ".#########.", "..#######..", "...#####...", "....###...."],
-  },
-};
-
-const COLLECTABLE = ["Grid", "Diamond", "Heart", "Cross", "Butterfly", "Star", "Hexagon", "Triangle", "Ring", "Arrow", "Crown", "Rocket", "Bolt", "House", "Bell", "Trophy", "Cat"];
-const THUMB = { Grid: "square6", Diamond: "diamond7", Heart: "heart9", Cross: "cross7", Butterfly: "butterfly", Star: "star", Hexagon: "hexagon11", Triangle: "triangle11", Ring: "ring11", Arrow: "bigarrow11", Crown: "crown11", Rocket: "rocket9", Bolt: "bolt9", House: "house11", Bell: "bell11", Trophy: "cup11", Cat: "cat11" };
-
-/* ═══════════  tiers  ═══════════ */
-
-const TIERS = [
-  { name: "Little Easy", span: 5, pool: ["square4", "square5", "diamond7"], maxLen: 2, hearts: 5, hints: 3, undos: 3, coverage: 0.78, tightness: 0.1, freedom: 0.42 },
-  { name: "Easy", span: 7, pool: ["square5", "square6", "diamond7", "heart9", "hexagon11", "rocket9", "bolt9"], maxLen: 3, hearts: 4, hints: 3, undos: 3, coverage: 0.84, tightness: 0.3, freedom: 0.3 },
-  { name: "Little Medium", span: 10, pool: ["square6", "heart9", "cross7", "butterfly", "hexagon11", "triangle11", "crown11", "rocket9", "house11", "bell11", "cat11"], maxLen: 3, hearts: 3, hints: 2, undos: 2, coverage: 0.88, tightness: 0.5, freedom: 0.22 },
-  { name: "Medium", span: 13, pool: ["diamond11", "heart13", "butterfly", "cross11", "square8", "ring11", "bigarrow11", "crown11", "house11", "cup11", "cat11", "bell11"], maxLen: 4, hearts: 3, hints: 2, undos: 2, coverage: 0.92, tightness: 0.7, freedom: 0.16 },
-  { name: "Hard", span: 20, pool: ["heart13", "star", "cross11", "square10", "butterfly", "ring11", "bigarrow11", "cup11", "cat11", "house11"], maxLen: 5, hearts: 3, hints: 1, undos: 2, coverage: 0.93, tightness: 0.88, freedom: 0.11 },
-  { name: "Pro", span: Infinity, pool: ["heart13", "star", "square10", "cross11", "ring11", "bigarrow11", "crown11", "cup11", "cat11"], maxLen: 5, hearts: 2, hints: 1, undos: 1, coverage: 0.98, tightness: 1, freedom: 0.07 },
-];
-const TIER_HUE = ["#7CD6A8", "#63C5F0", "#FFC24B", "#FF9A5B", "#FF6B7D", "#A87BFF"];
-
-/* arrow palettes — competitors are all monochrome navy, this is free differentiation */
-const PALETTES = {
-  ink: { name: "Ink", base: "#1B2440" },
-  candy: { name: "Candy", right: "#2F7BF6", left: "#FF4D6A", up: "#8B5CF6", down: "#F59E0B" },
-  forest: { name: "Forest", right: "#0E9F6E", left: "#0EA5E9", up: "#65A30D", down: "#EAB308" },
-  sunset: { name: "Sunset", right: "#F2761B", left: "#E11D74", up: "#7C3AED", down: "#FBBF24" },
-};
-const PALETTE_KEYS = Object.keys(PALETTES);
-const toneFor = (dir, theme) => {
-  const p = PALETTES[theme] || PALETTES.ink;
-  return p.base || p[dir] || "#1B2440";
-};
-
-
-function tierFor(level) {
-  let start = 1;
-  for (let i = 0; i < TIERS.length; i++) {
-    if (level < start + TIERS[i].span) return { tier: TIERS[i], index: i, start, step: level - start + 1 };
-    start += TIERS[i].span;
-  }
-  return { tier: TIERS[5], index: 5, start, step: level - start + 1 };
+function cropMask(set, W, H) {
+  let x0 = W, x1 = -1, y0 = H, y1 = -1;
+  set.forEach((i) => {
+    const x = i % W, y = (i / W) | 0;
+    if (x < x0) x0 = x;
+    if (x > x1) x1 = x;
+    if (y < y0) y0 = y;
+    if (y > y1) y1 = y;
+  });
+  const w = x1 - x0 + 1, h = y1 - y0 + 1;
+  const out = new Set();
+  set.forEach((i) => {
+    const x = i % W - x0, y = ((i / W) | 0) - y0;
+    out.add(y * w + x);
+  });
+  return { cols: w, rows: h, cells: out };
 }
 
-function parseMask(key) {
-  const s = SHAPES[key];
-  const rows = s.rows.length;
-  const cols = s.rows[0].length;
+function mulberry32(a) {
+  return function () {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/* ═══════════  parametric artwork  ═══════════
+   A seed picks a family and its proportions, so every generated board is a
+   recognisable subject rather than a blob — and the supply never runs out. */
+
+function ArtCanvas(size, ss) {
+  const S = size * ss;
+  return { n: size, ss, S, buf: new Uint8Array(S * S) };
+}
+function aToS(c, v) { return (v / 100) * c.S; }
+
+function aEll(c, x0, y0, x1, y1, val) {
+  const cx = aToS(c, (x0 + x1) / 2), cy = aToS(c, (y0 + y1) / 2);
+  const rx = Math.max(aToS(c, (x1 - x0) / 2), 0.5), ry = Math.max(aToS(c, (y1 - y0) / 2), 0.5);
+  const a = Math.max(0, Math.floor(cx - rx)), b = Math.min(c.S - 1, Math.ceil(cx + rx));
+  const p = Math.max(0, Math.floor(cy - ry)), q = Math.min(c.S - 1, Math.ceil(cy + ry));
+  for (let y = p; y <= q; y++) for (let x = a; x <= b; x++) {
+    const dx = (x + 0.5 - cx) / rx, dy = (y + 0.5 - cy) / ry;
+    if (dx * dx + dy * dy <= 1) c.buf[y * c.S + x] = val;
+  }
+}
+
+function aRect(c, x0, y0, x1, y1, val) {
+  const a = Math.max(0, Math.floor(aToS(c, x0))), b = Math.min(c.S - 1, Math.ceil(aToS(c, x1)));
+  const p = Math.max(0, Math.floor(aToS(c, y0))), q = Math.min(c.S - 1, Math.ceil(aToS(c, y1)));
+  for (let y = p; y <= q; y++) for (let x = a; x <= b; x++) c.buf[y * c.S + x] = val;
+}
+
+function aPoly(c, pts, val) {
+  const P = pts.map(([x, y]) => [aToS(c, x), aToS(c, y)]);
+  let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9;
+  for (const [x, y] of P) { minx = Math.min(minx, x); maxx = Math.max(maxx, x); miny = Math.min(miny, y); maxy = Math.max(maxy, y); }
+  const a = Math.max(0, Math.floor(minx)), b = Math.min(c.S - 1, Math.ceil(maxx));
+  const p = Math.max(0, Math.floor(miny)), q = Math.min(c.S - 1, Math.ceil(maxy));
+  for (let y = p; y <= q; y++) for (let x = a; x <= b; x++) {
+    let inside = false;
+    for (let i = 0, j = P.length - 1; i < P.length; j = i++) {
+      const [xi, yi] = P[i], [xj, yj] = P[j];
+      if ((yi > y + 0.5) !== (yj > y + 0.5) &&
+          x + 0.5 < ((xj - xi) * (y + 0.5 - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+    if (inside) c.buf[y * c.S + x] = val;
+  }
+}
+
+function aHarvest(c, thresh) {
+  const { n: size, ss, S, buf } = c;
+  const rows = [];
+  for (let gy = 0; gy < size; gy++) {
+    let line = "";
+    for (let gx = 0; gx < size; gx++) {
+      let hit = 0;
+      for (let y = 0; y < ss; y++) for (let x = 0; x < ss; x++) {
+        if (buf[(gy * ss + y) * S + gx * ss + x]) hit++;
+      }
+      line += hit / (ss * ss) >= thresh ? "#" : ".";
+    }
+    rows.push(line);
+  }
+  return rows;
+}
+
+function aTidy(rows) {
+  while (rows.length && !rows[0].includes("#")) rows.shift();
+  while (rows.length && !rows[rows.length - 1].includes("#")) rows.pop();
+  if (!rows.length) return null;
+  const w = rows[0].length;
+  let lo = w, hi = -1;
+  for (const r of rows) for (let i = 0; i < w; i++) if (r[i] === "#") { lo = Math.min(lo, i); hi = Math.max(hi, i); }
+  const cropped = rows.map((r) => r.slice(lo, hi + 1));
+  const cols = cropped[0].length, rw = cropped.length;
   const cells = new Set();
-  s.rows.forEach((row, r) => [...row].forEach((ch, c) => ch === "#" && cells.add(r * cols + c)));
-  return { name: s.name, rows, cols, cells };
+  cropped.forEach((r, y) => [...r].forEach((ch, x) => ch === "#" && cells.add(y * cols + x)));
+  // keep the largest island so stray specks never appear
+  const seen = new Set(); let best = [];
+  for (const st of cells) {
+    if (seen.has(st)) continue;
+    const stack = [st], comp = []; seen.add(st);
+    while (stack.length) {
+      const i = stack.pop(); comp.push(i);
+      const x = i % cols, y = (i / cols) | 0;
+      for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+        const nx = x + dx, ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= cols || ny >= rw) continue;
+        const j = ny * cols + nx;
+        if (cells.has(j) && !seen.has(j)) { seen.add(j); stack.push(j); }
+      }
+    }
+    if (comp.length > best.length) best = comp;
+  }
+  return { cols, rows: rw, cells: new Set(best) };
+}
+
+/* ── families: each returns a drawing function given a seeded rng ── */
+
+const ART_FAMILIES = [
+  ["Cat", (c, r) => {
+    const ear = 18 + r() * 12, hw = 20 + r() * 8, tail = r() < 0.75;
+    aPoly(c, [[50 - hw, 30], [50 - hw + 3, 30 - ear], [50 - 2, 24]], 1);
+    aPoly(c, [[50 + hw, 30], [50 + hw - 3, 30 - ear], [50 + 2, 24]], 1);
+    aEll(c, 50 - hw, 16, 50 + hw, 56, 1);
+    const bw = 12 + r() * 10;
+    aPoly(c, [[50 - bw, 50], [50 + bw, 50], [50 + bw + 12, 94], [50 - bw - 12, 94]], 1);
+    if (tail) { aRect(c, 62 + r() * 6, 60, 74 + r() * 6, 94, 1); aEll(c, 60, 84, 84, 97, 1); }
+  }],
+  ["Dog", (c, r) => {
+    const droop = 40 + r() * 22;
+    aEll(c, 30, 12, 70, 50, 1);
+    aEll(c, 16 + r() * 6, 20, 34, droop, 1);
+    aEll(c, 66, 20, 84 - r() * 6, droop, 1);
+    aEll(c, 41, 34, 59, 56, 1);
+    const bw = 12 + r() * 8;
+    aPoly(c, [[50 - bw, 50], [50 + bw, 50], [50 + bw + 10, 94], [50 - bw - 10, 94]], 1);
+    if (r() < 0.6) aRect(c, 68, 66, 80, 94, 1);
+  }],
+  ["Bird", (c, r) => {
+    aEll(c, 26, 32, 84, 78, 1);
+    const hs = 14 + r() * 8;
+    aEll(c, 20, 14, 20 + hs * 2, 14 + hs * 2, 1);
+    aPoly(c, [[14, 24 + hs * 0.4], [1, 30 + hs * 0.4], [14, 36 + hs * 0.4]], 1);
+    aPoly(c, [[42, 40], [86 + r() * 10, 26], [66, 64]], 1);
+    aPoly(c, [[70, 62], [98, 76 + r() * 12], [66, 78]], 1);
+  }],
+  ["Fish", (c, r) => {
+    const bh = 22 + r() * 14;
+    aEll(c, 4, 50 - bh, 70, 50 + bh, 1);
+    aPoly(c, [[60, 50], [98, 50 - bh - 8], [90, 50], [98, 50 + bh + 8]], 1);
+    aPoly(c, [[26, 50 - bh + 4], [46, 50 - bh - 22], [54, 50 - bh + 4]], 1);
+    if (r() < 0.6) aPoly(c, [[28, 50 + bh - 4], [46, 50 + bh + 20], [54, 50 + bh - 4]], 1);
+  }],
+  ["Tree", (c, r) => {
+    const lobes = 2 + ((r() * 3) | 0);
+    for (let i = 0; i < lobes; i++) {
+      const cx = 24 + (52 / Math.max(lobes - 1, 1)) * i, w = 20 + r() * 16;
+      aEll(c, cx - w, 8 + r() * 16, cx + w, 54 + r() * 14, 1);
+    }
+    const tw = 4 + r() * 6;
+    aRect(c, 50 - tw, 54, 50 + tw, 96, 1);
+  }],
+  ["Flower", (c, r) => {
+    const petals = 5 + ((r() * 4) | 0), pr = 16 + r() * 8;
+    for (let i = 0; i < petals; i++) {
+      const a = (i / petals) * Math.PI * 2 - Math.PI / 2;
+      const cx = 50 + Math.cos(a) * 22, cy = 40 + Math.sin(a) * 22;
+      aEll(c, cx - pr, cy - pr, cx + pr, cy + pr, 1);
+    }
+    aEll(c, 38, 28, 62, 52, 1);
+    aRect(c, 46, 46, 54, 96, 1);
+    if (r() < 0.7) aEll(c, 22, 62, 50, 78, 1);
+  }],
+  ["Vessel", (c, r) => {
+    const bowl = 22 + r() * 12, deep = 30 + r() * 18;
+    aPoly(c, [[50 - bowl, 12], [50 + bowl, 12], [50 + bowl * 0.6, 12 + deep], [50 - bowl * 0.6, 12 + deep]], 1);
+    if (r() < 0.7) {
+      aRect(c, 50 - bowl - 16, 16, 50 - bowl + 2, 24, 1);
+      aRect(c, 50 - bowl - 16, 16, 50 - bowl - 8, 40, 1);
+      aRect(c, 50 + bowl - 2, 16, 50 + bowl + 16, 24, 1);
+      aRect(c, 50 + bowl + 8, 16, 50 + bowl + 16, 40, 1);
+    }
+    aRect(c, 44, 12 + deep, 56, 74, 1);
+    aRect(c, 30, 74, 70, 83, 1);
+    aRect(c, 20, 83, 80, 94, 1);
+  }],
+  ["Crown", (c, r) => {
+    const spikes = 3 + ((r() * 3) | 0), dip = 48 + r() * 14;
+    const pts = [[8, 82]];
+    for (let i = 0; i <= spikes; i++) {
+      const x = 8 + (84 / spikes) * i;
+      pts.push([x, 14 + r() * 12]);
+      if (i < spikes) pts.push([x + 84 / spikes / 2, dip]);
+    }
+    pts.push([92, 82]);
+    aPoly(c, pts, 1);
+    aRect(c, 8, 78, 92, 94, 1);
+  }],
+  ["Rocket", (c, r) => {
+    const w = 14 + r() * 8, nose = 2 + r() * 12;
+    aPoly(c, [[50, nose], [50 + w, 34], [50 + w, 74], [50 - w, 74], [50 - w, 34]], 1);
+    aPoly(c, [[50 - w, 46], [50 - w - 18, 82], [50 - w, 74]], 1);
+    aPoly(c, [[50 + w, 46], [50 + w + 18, 82], [50 + w, 74]], 1);
+    aPoly(c, [[50 - 12, 74], [50 + 12, 74], [50, 98]], 1);
+  }],
+  ["Mushroom", (c, r) => {
+    const cap = 36 + r() * 12, st = 10 + r() * 8;
+    aEll(c, 50 - cap, 8, 50 + cap, 8 + cap * 1.5, 1);
+    aRect(c, 50 - cap, 8 + cap * 0.75, 50 + cap, 8 + cap * 0.8, 0);
+    aRect(c, 50 - st, 40, 50 + st, 94, 1);
+    aEll(c, 50 - cap, 8, 50 + cap, 60, 1);
+    aRect(c, 0, 42, 100, 100, 0);
+    aRect(c, 50 - st, 40, 50 + st, 94, 1);
+    aEll(c, 50 - cap, 8, 50 + cap, 68, 1);
+    aRect(c, 0, 44, 100, 100, 0);
+    aRect(c, 50 - st, 42, 50 + st, 94, 1);
+  }],
+  ["Butterfly", (c, r) => {
+    const up = 34 + r() * 12, lo = 26 + r() * 12;
+    aEll(c, 50 - up * 1.3, 8, 50 - 4, 8 + up * 1.2, 1);
+    aEll(c, 50 + 4, 8, 50 + up * 1.3, 8 + up * 1.2, 1);
+    aEll(c, 50 - lo * 1.2, 46, 50 - 4, 46 + lo * 1.4, 1);
+    aEll(c, 50 + 4, 46, 50 + lo * 1.2, 46 + lo * 1.4, 1);
+    aRect(c, 46, 12, 54, 88, 1);
+    aEll(c, 44, 4, 56, 18, 1);
+  }],
+  ["Key", (c, r) => {
+    const bow = 20 + r() * 12;
+    aEll(c, 4, 46 - bow, 4 + bow * 2, 46 + bow, 1);
+    aEll(c, 4 + bow * 0.6, 46 - bow * 0.4, 4 + bow * 1.4, 46 + bow * 0.4, 0);
+    aRect(c, 4 + bow * 1.4, 40, 96, 52, 1);
+    aRect(c, 70, 50, 79, 50 + 14 + r() * 10, 1);
+    aRect(c, 85, 50, 93, 50 + 10 + r() * 10, 1);
+  }],
+];
+
+const ART_ADJ = ["Little", "Broad", "Tall", "Round", "Slim", "Wide", "Bold", "Fine", "Grand", "Neat"];
+
+function artMask(seed) {
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const r = mulberry32(seed * 2654435761 + attempt * 97);
+    const [name, draw] = ART_FAMILIES[(r() * ART_FAMILIES.length) | 0];
+    const size = 18 + ((r() * 9) | 0);
+    const c = ArtCanvas(size, 3);
+    draw(c, r);
+    const m = aTidy(aHarvest(c, 0.42));
+    if (!m) continue;
+    if (m.cells.size < 90 || m.cells.size > 430) continue;
+    if (m.cols < 9 || m.rows < 9) continue;
+    return { ...m, name: `${ART_ADJ[(seed * 7) % ART_ADJ.length]} ${name}`, procedural: true };
+  }
+  return null;
 }
 
 /* ═══════════  generation  ═══════════ */
@@ -413,12 +560,15 @@ function exitLine(head, d, cols, rows) {
   }
 }
 
-function buildBoard(mask, { maxLen, coverage, tightness }) {
+function buildBoard(mask, { maxLen, coverage, tightness, pieces: target }) {
   const { cols, rows, cells } = mask;
   const occupied = new Map();
   const pieces = [];
   const all = [...cells];
-  const target = Math.round(cells.size * coverage);
+  const fillTarget = Math.round(cells.size * coverage);
+  const BANDS = [[0.3, 0.6], [0.6, 1.0], [1.0, 1.5], [1.5, 2.3]];
+  // average snake length needed to cover the shape in `target` arrows
+  const avgLen = Math.min(maxLen, Math.max(1.6, (fillTarget / Math.max(target || 40, 6)) * 1.55));
   let filled = 0;
   let fails = 0;
 
@@ -428,7 +578,7 @@ function buildBoard(mask, { maxLen, coverage, tightness }) {
     return Math.min(x, cols - 1 - x, y, rows - 1 - y);
   };
 
-  while (filled < target && fails < 500) {
+  while (filled < fillTarget && fails < 700) {
     const free = all.filter((c) => !occupied.has(c));
     if (!free.length) break;
     // sample a few and take the most central — interior lanes must be claimed early
@@ -437,35 +587,56 @@ function buildBoard(mask, { maxLen, coverage, tightness }) {
       const cand = free[(RND() * free.length) | 0];
       if (edgeDist(cand) > edgeDist(head)) head = cand;
     }
-    const options = [];
+    let options = [];
     for (const d of DIR_NAMES) {
       const lane = exitLine(head, d, cols, rows);
       if (lane.some((c) => occupied.has(c))) continue;
-      options.push({ d, len: lane.length });
+      const D0 = DIRS[d];
+      const back = step(head, -D0.dx, -D0.dy, cols, rows);
+      options.push({ d, len: lane.length, grow: back !== null && cells.has(back) && !occupied.has(back) });
     }
     if (!options.length) {
       fails++;
       continue;
     }
+    // when space runs short, stop insisting the body can grow
+    if (fails < 60 && options.some((o) => o.grow)) options = options.filter((o) => o.grow);
     options.sort((a, b) => b.len - a.len);
     const chosen = RND() < tightness ? options[0] : options[(RND() * options.length) | 0];
     const D = DIRS[chosen.d];
+    const ownLane = new Set(exitLine(head, chosen.d, cols, rows));
 
     const body = [head];
     const used = new Set([head]);
-    const want = 1 + ((RND() * maxLen) | 0);
+    // size classes — a board of all-same-length snakes reads flat and easy
+    // early = long runs while there is space, later = shorter fillers.
+    // repeated failures mean the board is tight, so shrink further.
+    const prog = filled / fillTarget;
+    const squeeze = fails > 120 ? 0.25 : fails > 45 ? 0.5 : fails > 15 ? 0.75 : 1;
+    const band = BANDS[Math.max(0, Math.min(3, Math.floor((1 - prog) * 4 + (RND() * 1.4 - 0.7))))];
+    const want = Math.max(1, Math.min(maxLen,
+      Math.round(avgLen * squeeze * (band[0] + RND() * (band[1] - band[0])))));
     if (want > 1) {
       const back = step(head, -D.dx, -D.dy, cols, rows);
-      if (back !== null && cells.has(back) && !occupied.has(back)) {
+      if (back !== null && cells.has(back) && !occupied.has(back) && !ownLane.has(back)) {
         body.push(back);
         used.add(back);
         let cur = back;
+        let run = { dx: -D.dx, dy: -D.dy };   // direction the body is travelling
         while (body.length < want) {
-          const nbrs = shuffle(DIR_NAMES)
-            .map((n) => step(cur, DIRS[n].dx, DIRS[n].dy, cols, rows))
-            .filter((n) => n !== null && cells.has(n) && !occupied.has(n) && !used.has(n));
-          if (!nbrs.length) break;
-          cur = nbrs[0];
+          const open = [];
+          for (const nm of DIR_NAMES) {
+            const d = DIRS[nm];
+            const nx = step(cur, d.dx, d.dy, cols, rows);
+            if (nx === null || !cells.has(nx) || occupied.has(nx) || used.has(nx) || ownLane.has(nx)) continue;
+            open.push({ nx, d });
+          }
+          if (!open.length) break;
+          const straight = open.find((o) => o.d.dx === run.dx && o.d.dy === run.dy);
+          // keep going straight most of the time — bends become deliberate, not noise
+          const pick = straight && RND() < 0.68 ? straight : open[(RND() * open.length) | 0];
+          cur = pick.nx;
+          run = { dx: pick.d.dx, dy: pick.d.dy };
           body.push(cur);
           used.add(cur);
         }
@@ -480,8 +651,8 @@ function buildBoard(mask, { maxLen, coverage, tightness }) {
   return pieces;
 }
 
-function measureFreedom(pieces, cols, rows) {
-  if (!pieces.length) return 1;
+function measureBoard(pieces, cols, rows) {
+  if (!pieces.length) return { freedom: 1, forced: 0 };
   const lanes = pieces.map((p) => exitLine(p.cells[0], p.dir, cols, rows));
   const owner = new Map();
   pieces.forEach((p) => p.cells.forEach((c) => owner.set(c, p.id)));
@@ -493,28 +664,97 @@ function measureFreedom(pieces, cols, rows) {
     });
   let sum = 0;
   let n = 0;
+  let forced = 0;   // moments where the board allows almost no choice
   while (alive.size) {
     const free = [...alive].filter(isFree);
-    if (!free.length) return 1;
+    if (!free.length) return { freedom: 1, forced: 0 };
     sum += free.length / alive.size;
+    if (free.length <= 2) forced++;
     n++;
     alive.delete(free[(RND() * free.length) | 0]);
   }
-  return n ? sum / n : 1;
+  return n ? { freedom: sum / n, forced: forced / n } : { freedom: 1, forced: 0 };
+}
+
+
+/* Big artwork on an easy level would mean 150+ arrows. Resample the mask down
+   to the tier's budget instead — the same subject, drawn with less detail. */
+function fitMask(mask, maxCells) {
+  if (!maxCells || mask.cells.size <= maxCells) return mask;
+
+  const sample = (k) => {
+    const c2 = Math.max(5, Math.round(mask.cols * k));
+    const r2 = Math.max(5, Math.round(mask.rows * k));
+    const out = new Set();
+    for (let y = 0; y < r2; y++) {
+      for (let x = 0; x < c2; x++) {
+        const x0 = Math.floor((x * mask.cols) / c2), x1 = Math.max(x0 + 1, Math.floor(((x + 1) * mask.cols) / c2));
+        const y0 = Math.floor((y * mask.rows) / r2), y1 = Math.max(y0 + 1, Math.floor(((y + 1) * mask.rows) / r2));
+        let hit = 0, tot = 0;
+        for (let b = y0; b < y1; b++) for (let a = x0; a < x1; a++) { tot++; if (mask.cells.has(b * mask.cols + a)) hit++; }
+        if (tot && hit / tot >= 0.4) out.add(y * c2 + x);
+      }
+    }
+    return { c2, r2, out };
+  };
+
+  // downsampling thickens edges, so one pass usually lands over budget.
+  // correct against the measured result instead of trusting the estimate.
+  let k = Math.sqrt(maxCells / mask.cells.size);
+  let best = null;
+  for (let pass = 0; pass < 5; pass++) {
+    const r = sample(k);
+    if (r.out.size >= 18) best = r;
+    if (r.out.size <= maxCells || r.out.size < 18) break;
+    k *= Math.sqrt((maxCells / r.out.size) * 0.97);
+  }
+  if (!best || best.out.size < 18) return mask;
+  const t = cropMask(best.out, best.c2, best.r2);
+  return { ...t, name: mask.name, procedural: mask.procedural };
+}
+
+
+function makeLevelFromMask(rawMask, tierIdx = 7) {
+  const idx = Math.max(0, Math.min(TIERS.length - 1, tierIdx | 0));
+  const tier = TIERS[idx];
+  const mask = fitMask(rawMask, tier.maxCells);
+  let best = null;
+  for (let i = 0; i < (mask.cells.size > 240 ? 2 : 5); i++) {
+    const pieces = buildBoard(mask, tier);
+    if (pieces.length < 3) continue;
+    const mb = measureBoard(pieces, mask.cols, mask.rows);
+    const fill = pieces.reduce((a, p) => a + p.cells.length, 0) / mask.cells.size;
+    // prefer the target openness, reward boards with more forced moments, and
+    // heavily punish a board that leaves the shape half empty
+    const gap = Math.abs(mb.freedom - tier.freedom) - mb.forced * 0.35 + Math.max(0, tier.coverage - 0.06 - fill) * 4;
+    if (!best || gap < best.gap) best = { pieces, gap };
+  }
+  if (!best) best = { pieces: buildBoard(mask, tier), gap: 1 };
+  return {
+    mask, pieces: best.pieces, tier, tierIndex: idx, stepInTier: 1,
+    hearts: tier.hearts, hints: tier.hints, undos: tier.undos,
+  };
 }
 
 function makeLevel(level, seed) {
   if (seed !== undefined) RND = mulberry32(seed);
   const { tier, index, step: stepInTier } = tierFor(level);
-  const key = tier.pool[(seed !== undefined ? seed : level - 1) % tier.pool.length];
-  const mask = parseMask(key);
-  const tries = mask.cells.size > 90 ? 4 : 7;
+  const raw =
+    seed === undefined && level > CURATED_UNTIL
+      ? artMask(level) || proceduralMask(level)
+      : parseMask(tier.pool[(seed !== undefined ? seed : level - 1) % tier.pool.length]);
+  const mask = fitMask(raw, tier.maxCells);
+  const tries = mask.cells.size > 240 ? 2 : mask.cells.size > 90 ? 4 : 7;
 
   let best = null;
   for (let i = 0; i < tries; i++) {
     const pieces = buildBoard(mask, tier);
     if (pieces.length < 3) continue;
-    const gap = Math.abs(measureFreedom(pieces, mask.cols, mask.rows) - tier.freedom);
+    const mb = measureBoard(pieces, mask.cols, mask.rows);
+    const fill = pieces.reduce((a, p) => a + p.cells.length, 0) / mask.cells.size;
+    // prefer the target openness, reward boards with more forced moments, and
+    // heavily punish a board that leaves the shape half empty
+    const gap = Math.abs(mb.freedom - tier.freedom) - mb.forced * 0.35 + Math.max(0, tier.coverage - 0.06 - fill) * 4;
     if (!best || gap < best.gap) best = { pieces, gap };
   }
   if (!best) best = { pieces: buildBoard(mask, tier), gap: 1 };
@@ -548,6 +788,469 @@ function countFreed(pieces, aliveSet, removedId, cols, rows) {
   }
   return n;
 }
+
+
+/* ═══════════  chapters, stickers, badges  ═══════════
+   Levels group into chapters of 25. Finishing one earns a sticker whose art is
+   generated from the chapter number, so the road never runs out. Badges are
+   deliberately few — a wall of meaningless medals is the thing players in this
+   genre complain about most. */
+
+const CHAPTER_LEN = 25;
+const chapterOf = (lvl) => Math.floor((lvl - 1) / CHAPTER_LEN) + 1;
+
+function chapterInfo(ch) {
+  const m = artMask(ch * 977 + 13) || proceduralMask(ch * 977 + 13);
+  return {
+    ch,
+    from: (ch - 1) * CHAPTER_LEN + 1,
+    to: ch * CHAPTER_LEN,
+    name: m ? m.name : `Chapter ${ch}`,
+    mask: m,
+    hue: TIER_HUE[(ch - 1) % TIER_HUE.length],
+  };
+}
+
+const BADGES = [
+  { id: "first",   name: "First Clear",      need: "Clear your first board" },
+  { id: "flaw5",   name: "Five Flawless",    need: "Five flawless boards in a row" },
+  { id: "gold",    name: "Gold Standard",    need: "Earn a gold shape" },
+  { id: "streak7", name: "Seven Days",       need: "A seven-day daily streak" },
+  { id: "hard",    name: "Into the Deep",    need: "Clear a board at Hard or above" },
+  { id: "pro",     name: "Pro Board",        need: "Clear a board at Pro" },
+  { id: "k1",      name: "Thousand Arrows",  need: "Clear 1,000 arrows in total" },
+  { id: "chain12", name: "Long Chain",       need: "Reach a twelve-arrow chain" },
+  { id: "purist",  name: "Purist",           need: "Clear 20 boards without undo" },
+  { id: "maker",   name: "Designer",         need: "Play a board you drew yourself" },
+];
+
+
+/* ═══════════  save storage  ═══════════
+   window.storage only exists inside the Claude artifact viewer. In a real
+   build it is absent, so every read throws and the game silently forgets
+   everything on close. Fall back to localStorage, then to memory. */
+
+const SAVE_KEY = "arrowv2:save";
+
+const Store = (() => {
+  const mem = new Map();
+  const hasArtifact = typeof window !== "undefined" && window.storage && typeof window.storage.get === "function";
+  let hasLocal = false;
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem("__t", "1");
+      localStorage.removeItem("__t");
+      hasLocal = true;
+    }
+  } catch {
+    hasLocal = false;
+  }
+  return {
+    async get(key) {
+      if (hasArtifact) {
+        try {
+          const r = await window.storage.get(key);
+          if (r && r.value != null) return r.value;
+        } catch {}
+      }
+      if (hasLocal) {
+        try {
+          const v = localStorage.getItem(key);
+          if (v != null) return v;
+        } catch {}
+      }
+      return mem.get(key) ?? null;
+    },
+    async set(key, value) {
+      mem.set(key, value);
+      if (hasArtifact) {
+        try { await window.storage.set(key, value); } catch {}
+      }
+      if (hasLocal) {
+        try { localStorage.setItem(key, value); } catch {}
+      }
+    },
+  };
+})();
+
+
+/* ═══════════  ads & purchase adapter  ═══════════
+   Nothing here talks to a network. The game calls this object; a native layer
+   fills it in. To wire AdMob in the Capacitor build, define window.ArrowAds
+   before the app mounts:
+
+     window.ArrowAds = {
+       ready: true,                                  // a rewarded ad is loaded
+       showRewarded:      (kind) => Promise<boolean>, // true = watched fully
+       showInterstitial:  ()     => Promise<void>,
+       purchaseRemoveAds: ()     => Promise<boolean>,
+       restorePurchases:  ()     => Promise<boolean>,
+     };
+
+   Until then every call resolves false and the game plays exactly as it does
+   now — no dead buttons, no crashes. */
+
+const Ads = {
+  get provider() {
+    return typeof window !== "undefined" ? window.ArrowAds : undefined;
+  },
+  get ready() {
+    return !!(Ads.provider && Ads.provider.ready);
+  },
+  async rewarded(kind) {
+    try {
+      if (Ads.provider?.showRewarded) return !!(await Ads.provider.showRewarded(kind));
+    } catch {}
+    return false;
+  },
+  async interstitial() {
+    try {
+      if (Ads.provider?.showInterstitial) await Ads.provider.showInterstitial();
+    } catch {}
+  },
+  async buyRemoveAds() {
+    try {
+      if (Ads.provider?.purchaseRemoveAds) return !!(await Ads.provider.purchaseRemoveAds());
+    } catch {}
+    return false;
+  },
+  async restore() {
+    try {
+      if (Ads.provider?.restorePurchases) return !!(await Ads.provider.restorePurchases());
+    } catch {}
+    return false;
+  },
+};
+
+/* Deliberately quiet. The reviews of every rival in this genre are dominated by
+   ad complaints, so an interstitial needs BOTH gaps to pass, never appears
+   after a loss, and never during the tutorial. */
+const AD_EVERY_LEVELS = 4;
+const AD_MIN_GAP_MS = 90000;
+
+/* ═══════════  shapes  ═══════════ */
+
+const SHAPES = {
+  square4: { name: "Grid", rows: ["####", "####", "####", "####"] },
+  square5: { name: "Grid", rows: ["#####", "#####", "#####", "#####", "#####"] },
+  diamond7: { name: "Diamond", rows: ["...#...", "..###..", ".#####.", "#######", ".#####.", "..###..", "...#..."] },
+  diamond11: {
+    name: "Diamond",
+    rows: [".....#.....", "....###....", "...#####...", "..#######..", ".#########.", "###########", ".#########.", "..#######..", "...#####...", "....###....", ".....#....."],
+  },
+  heart9: { name: "Heart", rows: [".##...##.", "#########", "#########", "#########", ".#######.", "..#####..", "...###...", "....#...."] },
+  heart13: {
+    name: "Heart",
+    rows: ["..###...###..", ".#####.#####.", "#############", "#############", "#############", ".###########.", ".###########.", "..#########..", "...#######...", "....#####....", ".....###.....", "......#......"],
+  },
+  cross7: { name: "Cross", rows: ["..###..", "..###..", "#######", "#######", "#######", "..###..", "..###.."] },
+  cross11: {
+    name: "Cross",
+    rows: ["....###....", "....###....", "....###....", "###########", "###########", "###########", "....###....", "....###....", "....###....", "....###....", "....###...."],
+  },
+  star: {
+    name: "Star",
+    rows: ["......#......", ".....###.....", ".....###.....", "#############", ".###########.", "..#########..", "..#########..", "..#########..", "...#######...", "..###...###..", "..###...###..", ".##.......##.", ".##.......##."],
+  },
+  ring11: {
+    name: "Ring",
+    rows: ["...#####...", ".#########.", "####...####", "###.....###", "##.......##", "##.......##", "##.......##", "###.....###", "####...####", ".#########.", "...#####..."],
+  },
+  triangle11: {
+    name: "Triangle",
+    rows: [".....#.....", "....###....", "....###....", "...#####...", "...#####...", "..#######..", "..#######..", ".#########.", ".#########.", "###########", "###########"],
+  },
+  bigarrow11: {
+    name: "Arrow",
+    rows: [".....#.....", "....###....", "...#####...", "..#######..", ".#########.", "###########", "....###....", "....###....", "....###....", "....###....", "....###...."],
+  },
+  hexagon11: {
+    name: "Hexagon",
+    rows: ["...#####...", "..#######..", ".#########.", "###########", "###########", "###########", ".#########.", "..#######..", "...#####..."],
+  },
+  bolt9: {
+    name: "Bolt",
+    rows: ["......###", ".....###.", "....###..", "...###...", "..######.", ".#######.", "....###..", "...###...", "..###....", ".###.....", "###......"],
+  },
+  house11: {
+    name: "House",
+    rows: [".....#.....", "....###....", "...#####...", "..#######..", ".#########.", "###########", "###########", "###########", "####...####", "####...####", "####...####"],
+  },
+  bell11: {
+    name: "Bell",
+    rows: [".....#.....", "....###....", "...#####...", "...#####...", "..#######..", "..#######..", ".#########.", ".#########.", "###########", ".....#.....", "....###...."],
+  },
+  moon11: {
+    name: "Moon",
+    rows: ["....###....", "..#####....", ".######....", "#####......", "####.......", "####.......", "####.......", "#####......", ".######....", "..#####....", "....###...."],
+  },
+  flower11: {
+    name: "Flower",
+    rows: ["...##.##...", "..#######..", ".#########.", "###########", ".#########.", "..#######..", "....###....", "....###....", "..######...", "....###....", "....###...."],
+  },
+  ghost11: {
+    name: "Ghost",
+    rows: ["...#####...", "..#######..", ".#########.", "###########", "###########", "###########", "###########", "###########", "###########", "##.##.##.##", "#..##.##..#"],
+  },
+  apple11: {
+    name: "Apple",
+    rows: [".....#.....", "...####....", ".#########.", "###########", "###########", "###########", "###########", "###########", ".#########.", "..##...##..", "..##...##.."],
+  },
+  catArt: { name: "Cat", rows: [".#.......#....", ".#.......#....", ".##..#..##....", ".#########....", ".#########....", "###########...", "###########...", "###########...", "###########...", ".#########....", ".#########....", "...#####......", "...#####......", "...#####......", "..#######.....", "..#######.##..", "..###########.", "..###########.", ".############.", ".############.", ".############.", ".#############", ".############."] },
+  dogArt: { name: "Dog", rows: ["......#####......", ".....#######.....", "..#.#########.#..", ".###############.", ".###############.", ".################", "#################", "#################", ".###########.####", ".###..#####..###.", ".###.#######.###.", "..#..#######..#..", ".....#######.....", ".....########....", "....############.", "....############.", "....############.", "....############.", "...#############.", "...#############.", "...############.."] },
+  elephantArt: { name: "Elephant", rows: ["..........#####....", "....#...########...", "..####.##########..", ".################..", ".#################.", ".#################.", "#################..", "#################..", ".###############...", ".#################.", ".#################.", "..################.", "....##############.", ".....#############.", ".....#############.", "....###############", "....###############", "....###############", "....###############", "....###############", ".....###.....###..."] },
+  butterflyArt: { name: "Butterfly", rows: ["...........##...........", "..######..####..######..", ".########..##..########.", ".#########.##.##########", "##########.##.##########", "########################", "########################", "##########.##.##########", ".#########.##.#########.", "..#######..##..########.", "...#####...##...#####...", "....#####..##..#####....", "....######.##.#######...", "...##################...", "...##################...", "...##################...", "...##################...", "...##################...", "...##################...", "....######.##.######....", "....#####..##..#####...."] },
+  umbrellaArt: { name: "Umbrella", rows: ["..........###..........", "......###########......", "....###############....", "...#################...", "..###################..", ".#####################.", ".#####################.", "#######################", "#######################", "#######################", "..........###..........", "..........###..........", "..........###..........", "..........###..........", "..........###..........", "..........###..........", "..........###..........", "..........###..........", "..........###..........", ".......######..........", "........#####..........", "........#####.........."] },
+  anchorArt: { name: "Anchor", rows: [".........###.........", "........##.##........", "........##.##........", ".........###.........", ".........###.........", ".....###########.....", "....#############....", "....#############....", ".........###.........", ".........###.........", ".........###.........", ".........###.........", "###......###......###", "###......###......###", "###......###......###", "####.....###.....####", ".###.....###.....###.", ".####....###....####.", ".######..###..######.", "...###############...", ".....###########.....", ".......########......", "........#####........"] },
+  trophyArt: { name: "Trophy", rows: [".....#############.....", ".....#############.....", ".#####################.", "#######################", "###...###########...###", "###...###########...###", "###...###########...###", "#####.###########.#####", "#######################", ".####..#########..####.", ".......#########.......", ".......#########.......", "..........###..........", "..........###..........", "..........###..........", "..........###..........", "......###########......", ".....#############.....", ".....#############.....", "...#################...", "...#################...", "....###############...."] },
+  crownArt: { name: "Crown", rows: [".........##.........", ".........###........", "###......##......###", "###......##......###", ".#......####......#.", ".##.....####.....##.", ".##....######....##.", ".###...######...###.", ".###...######...###.", ".####.########.####.", ".##################.", "####################", "####################", "####################", "####################", "####################", "####################", "####################", "####################", "####################", "####################"] },
+  treeArt: { name: "Tree", rows: ["..........###..........", ".......#########.......", "......###########......", ".....#############.....", "....###############....", "....###############....", "...#################...", "..###################..", ".#####################.", ".#####################.", "#######################", "#######################", ".#####################.", ".#####################.", "..###################..", "....#####.###.#####....", "..........###..........", "..........###..........", "..........###..........", "..........###..........", "..........###..........", "..........###..........", "..........###.........."] },
+  fishArt: { name: "Fish", rows: ["...........#............", "..........##............", ".........###............", "........#####...........", ".......######...........", "......#######..........#", "....##########........##", "..##############....####", ".################..#####", ".################.######", "#######################.", "#######################.", "#######################.", "#######################.", ".################.######", ".################..#####", "..##############....####", "....##########........##", "......#######..........#", "........#####...........", ".........####...........", ".........###............", "..........##............", "...........#............"] },
+  birdArt: { name: "Bird", rows: ["......####.............", ".....#######...........", "....########...........", "....#########..........", "##.##########.....###..", "##..################...", ".#..################...", ".....##############....", "......##############...", "......##############...", "......##############...", "......##############...", "......##############...", ".......############....", "........###########....", ".........############..", "............##..#######"] },
+  guitarArt: { name: "Guitar", rows: ["....######....", "....######....", "......##......", "......##......", "......##......", "....######....", "...########...", "..##########..", "..##########..", "..##########..", "..##########..", "..##########..", "..##########..", ".############.", "##############", "##############", "##############", "##############", "##############", "##############", ".############.", "..##########..", "...########...", "......##......"] },
+  hourglassArt: { name: "Hourglass", rows: ["#################", "#################", ".###############.", "..#############..", "...###########...", "....#########....", "....#########....", ".....#######.....", "......#####......", ".......###.......", ".......###.......", ".......###.......", "......#####......", ".....#######.....", "....#########....", "....#########....", "...###########...", "..#############..", ".###############.", "#################", "#################"] },
+  keyArt: { name: "Key", rows: ["...#####...............", "..########.............", ".##########............", "#####..####............", "####....###############", "###.....###############", "###.....###############", "####...################", ".##########......###.##", ".#########.......###.##", "..#######........###.##", ".....##..........###.#.", "..................#...."] },
+  mushroomArt: { name: "Mushroom", rows: ["......#########......", "....#############....", "..#################..", ".###################.", ".###################.", "#####################", "#####################", "#####################", ".......#######.......", ".......#######.......", ".......#######.......", ".......#######.......", ".......#######.......", ".......#######.......", ".......#######.......", ".......#######.......", ".......#######.......", ".......#######.......", ".......#######.......", "........#####........"] },
+  rocketArt: { name: "Rocket", rows: [".......##.......", ".......##.......", "......####......", "......#####.....", ".....######.....", "....########....", "....########....", "....########....", "....########....", "....########....", "...##########...", "...##########...", "..############..", "..############..", ".##############.", ".##############.", "################", "##...######...##", "......####......", "......####......", ".......##.......", ".......##......."] },
+};
+
+const COLLECTABLE = ["Cat", "Dog", "Elephant", "Butterfly", "Umbrella", "Anchor", "Trophy", "Crown", "Tree", "Fish", "Bird", "Guitar", "Hourglass", "Key", "Mushroom", "Rocket", "Grid", "Diamond", "Heart", "Cross"];
+const THUMB = { Cat: "catArt", Dog: "dogArt", Elephant: "elephantArt", Butterfly: "butterflyArt", Umbrella: "umbrellaArt", Anchor: "anchorArt", Trophy: "trophyArt", Crown: "crownArt", Tree: "treeArt", Fish: "fishArt", Bird: "birdArt", Guitar: "guitarArt", Hourglass: "hourglassArt", Key: "keyArt", Mushroom: "mushroomArt", Rocket: "rocketArt", Grid: "square5", Diamond: "diamond7", Heart: "heart9", Cross: "cross7" };
+
+/* ═══════════  tiers  ═══════════ */
+
+const TIERS = [
+  { name: "Warm Up", span: 2, pool: ["rocketArt", "keyArt", "hourglassArt"],
+    maxLen: 4, hearts: 3, hints: 3, undos: 3, coverage: 0.88, tightness: 0.62, freedom: 0.15, pieces: 22, maxCells: 70 },
+  { name: "Little Easy", span: 3, pool: ["birdArt", "hourglassArt", "rocketArt", "mushroomArt"],
+    maxLen: 4, hearts: 3, hints: 3, undos: 3, coverage: 0.89, tightness: 0.66, freedom: 0.1341, pieces: 26, maxCells: 88 },
+  { name: "Easy", span: 4, pool: ["keyArt", "umbrellaArt", "birdArt", "guitarArt"],
+    maxLen: 5, hearts: 3, hints: 3, undos: 2, coverage: 0.9, tightness: 0.7, freedom: 0.1199, pieces: 30, maxCells: 108 },
+  { name: "Easy Plus", span: 5, pool: ["rocketArt", "birdArt", "hourglassArt", "heart9"],
+    maxLen: 5, hearts: 3, hints: 2, undos: 2, coverage: 0.9, tightness: 0.74, freedom: 0.1072, pieces: 35, maxCells: 130 },
+  { name: "Little Medium", span: 6, pool: ["mushroomArt", "birdArt", "keyArt", "umbrellaArt"],
+    maxLen: 6, hearts: 3, hints: 2, undos: 2, coverage: 0.91, tightness: 0.77, freedom: 0.0958, pieces: 40, maxCells: 155 },
+  { name: "Medium", span: 8, pool: ["catArt", "guitarArt", "anchorArt", "mushroomArt"],
+    maxLen: 6, hearts: 3, hints: 2, undos: 2, coverage: 0.92, tightness: 0.8, freedom: 0.0857, pieces: 45, maxCells: 182 },
+  { name: "Medium Plus", span: 10, pool: ["dogArt", "umbrellaArt", "crownArt", "catArt"],
+    maxLen: 7, hearts: 3, hints: 2, undos: 2, coverage: 0.92, tightness: 0.83, freedom: 0.0766, pieces: 50, maxCells: 210 },
+  { name: "Tricky", span: 12, pool: ["treeArt", "trophyArt", "fishArt", "dogArt"],
+    maxLen: 8, hearts: 3, hints: 2, undos: 1, coverage: 0.93, tightness: 0.86, freedom: 0.0685, pieces: 56, maxCells: 240 },
+  { name: "Tough", span: 14, pool: ["fishArt", "crownArt", "guitarArt", "treeArt"],
+    maxLen: 9, hearts: 3, hints: 2, undos: 1, coverage: 0.94, tightness: 0.88, freedom: 0.0612, pieces: 62, maxCells: 272 },
+  { name: "Hard", span: 17, pool: ["elephantArt", "butterflyArt", "catArt", "trophyArt"],
+    maxLen: 10, hearts: 3, hints: 1, undos: 1, coverage: 0.94, tightness: 0.9, freedom: 0.0547, pieces: 68, maxCells: 305 },
+  { name: "Very Hard", span: 20, pool: ["butterflyArt", "elephantArt", "dogArt", "fishArt"],
+    maxLen: 11, hearts: 3, hints: 1, undos: 1, coverage: 0.95, tightness: 0.92, freedom: 0.0489, pieces: 74, maxCells: 340 },
+  { name: "Super Hard", span: 24, pool: ["elephantArt", "butterflyArt", "treeArt", "catArt"],
+    maxLen: 12, hearts: 3, hints: 1, undos: 1, coverage: 0.96, tightness: 0.94, freedom: 0.0437, pieces: 80, maxCells: 375 },
+  { name: "Expert", span: 30, pool: ["butterflyArt", "elephantArt", "fishArt", "crownArt"],
+    maxLen: 13, hearts: 3, hints: 1, undos: 1, coverage: 0.96, tightness: 0.96, freedom: 0.0391, pieces: 86, maxCells: 410 },
+  { name: "Elite", span: 36, pool: ["elephantArt", "butterflyArt", "dogArt", "trophyArt"],
+    maxLen: 14, hearts: 3, hints: 1, undos: 1, coverage: 0.97, tightness: 0.97, freedom: 0.035, pieces: 92, maxCells: 445 },
+  { name: "Master", span: 45, pool: ["butterflyArt", "elephantArt", "catArt", "treeArt"],
+    maxLen: 15, hearts: 3, hints: 1, undos: 1, coverage: 0.98, tightness: 0.99, freedom: 0.0312, pieces: 98, maxCells: 480 },
+  { name: "Pro", span: Infinity, pool: ["elephantArt", "butterflyArt", "fishArt", "dogArt"],
+    maxLen: 16, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 1.0, freedom: 0.0279, pieces: 105, maxCells: 520 },
+];
+const MEDAL = { 1: "#CD7F32", 2: "#AEB6C4", 3: "#FFC24B" };
+const TIER_HUE = ["#5FCB8A", "#4CC79B", "#3FBFD6", "#3EA8EE", "#3E9BF0", "#5580F2", "#6C7BF0", "#8470F2", "#9A6BF0", "#C07AD8", "#F0A93E", "#F2891B", "#F2761B", "#FF6A4A", "#FF3D9A", "#B14BFF"];
+
+/* arrow palettes — competitors are all monochrome navy, this is free differentiation */
+const PALETTES = {
+  ink: { name: "Ink", base: "#1B2440" },
+  candy: { name: "Candy", right: "#2F7BF6", left: "#FF4D6A", up: "#8B5CF6", down: "#F59E0B" },
+  forest: { name: "Forest", right: "#0E9F6E", left: "#0EA5E9", up: "#65A30D", down: "#EAB308" },
+  sunset: { name: "Sunset", right: "#F2761B", left: "#E11D74", up: "#7C3AED", down: "#FBBF24" },
+};
+const PALETTE_KEYS = Object.keys(PALETTES);
+const toneFor = (dir, theme) => {
+  const p = PALETTES[theme] || PALETTES.ink;
+  return p.base ? C.ink : p[dir] || C.ink;
+};
+
+
+function tierFor(level) {
+  let start = 1;
+  for (let i = 0; i < TIERS.length; i++) {
+    if (level < start + TIERS[i].span) return { tier: TIERS[i], index: i, start, step: level - start + 1 };
+    start += TIERS[i].span;
+  }
+  const last = TIERS.length - 1;
+  return { tier: TIERS[last], index: last, start, step: level - start + 1 };
+}
+
+function parseMask(key) {
+  const s = SHAPES[key];
+  const rows = s.rows.length;
+  const cols = s.rows[0].length;
+  const cells = new Set();
+  s.rows.forEach((row, r) => [...row].forEach((ch, c) => ch === "#" && cells.add(r * cols + c)));
+  return { name: s.name, rows, cols, cells };
+}
+
+
+/* ═══════════  endless shapes  ═══════════
+   The 17 hand-drawn masks stay as the collectable set. Past level 60 the game
+   builds new silhouettes from a seed — mirrored so they read as designed
+   rather than random, then cleaned so there are no spurs or holes. Level 200
+   is the same shape for every player, everywhere. */
+
+const CURATED_UNTIL = 44; // hand-drawn art up to here, generated art beyond
+const FORM_A = ["Twin", "Wide", "Tall", "Round", "Sharp", "Split", "Deep", "Open", "Half", "Broad"];
+const FORM_B = ["Bloom", "Arch", "Crest", "Drift", "Prism", "Wave", "Knot", "Spire", "Vault", "Ridge"];
+
+function refineMask(cells, W, H) {
+  let set = new Set(cells);
+  const nb = (i) => {
+    const x = i % W, y = (i / W) | 0, out = [];
+    if (x > 0) out.push(i - 1);
+    if (x < W - 1) out.push(i + 1);
+    if (y > 0) out.push(i - W);
+    if (y < H - 1) out.push(i + W);
+    return out;
+  };
+  for (let pass = 0; pass < 2; pass++) {       // close small holes
+    const add = [];
+    for (let i = 0; i < W * H; i++)
+      if (!set.has(i) && nb(i).filter((n) => set.has(n)).length >= 3) add.push(i);
+    add.forEach((i) => set.add(i));
+  }
+  for (let pass = 0; pass < 2; pass++) {       // shave lonely spurs
+    const del = [];
+    set.forEach((i) => {
+      if (nb(i).filter((n) => set.has(n)).length < 2) del.push(i);
+    });
+    del.forEach((i) => set.delete(i));
+  }
+  const seen = new Set();                      // keep the largest island only
+  let best = [];
+  set.forEach((start) => {
+    if (seen.has(start)) return;
+    const stack = [start], comp = [];
+    seen.add(start);
+    while (stack.length) {
+      const c = stack.pop();
+      comp.push(c);
+      nb(c).forEach((n) => {
+        if (set.has(n) && !seen.has(n)) { seen.add(n); stack.push(n); }
+      });
+    }
+    if (comp.length > best.length) best = comp;
+  });
+  return new Set(best);
+}
+
+
+function proceduralMask(seed) {
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const rnd = mulberry32(seed * 7919 + attempt);
+    const W = 9 + ((rnd() * 5) | 0);
+    const H = 9 + ((rnd() * 4) | 0);
+    const fourFold = rnd() < 0.3;
+    const half = Math.ceil(W / 2);
+    const vHalf = fourFold ? Math.ceil(H / 2) : H;
+    const raw = new Set();
+
+    const blobs = 4 + ((rnd() * 3) | 0);
+    for (let b = 0; b < blobs; b++) {
+      const bx = rnd() * half;
+      const by = rnd() * vHalf;
+      const rx = 0.9 + rnd() * 1.7;
+      const ry = 0.9 + rnd() * 2.1;
+      for (let y = 0; y < vHalf; y++)
+        for (let x = 0; x < half; x++) {
+          const dx = (x - bx) / rx, dy = (y - by) / ry;
+          if (dx * dx + dy * dy <= 1) raw.add(y * W + x);
+        }
+    }
+
+    // carve a notch or hollow, otherwise silhouettes come out as slabs
+    if (rnd() < 0.55) {
+      const cx0 = rnd() * half * 0.9;
+      const cy0 = rnd() * vHalf;
+      const cr = 0.8 + rnd() * 1.5;
+      for (let y = 0; y < vHalf; y++)
+        for (let x = 0; x < half; x++) {
+          const dx = (x - cx0) / cr, dy = (y - cy0) / cr;
+          if (dx * dx + dy * dy <= 1) raw.delete(y * W + x);
+        }
+    }
+
+    const mirrored = new Set(raw);
+    raw.forEach((i) => {
+      const y = (i / W) | 0, x = i % W;
+      mirrored.add(y * W + (W - 1 - x));
+    });
+    if (fourFold) {
+      [...mirrored].forEach((i) => {
+        const y = (i / W) | 0, x = i % W;
+        mirrored.add((H - 1 - y) * W + x);
+      });
+    }
+
+    const cleaned = refineMask(mirrored, W, H);
+    if (cleaned.size < 36 || cleaned.size > 108) continue;
+    const m = cropMask(cleaned, W, H);
+    if (m.cols < 7 || m.rows < 7) continue;
+    if (m.cells.size / (m.cols * m.rows) > 0.86) continue;  // near-rectangles read as unfinished
+    const name = `${FORM_A[(seed * 3) % FORM_A.length]} ${FORM_B[(seed * 5) % FORM_B.length]}`;
+    return { ...m, name, procedural: true };
+  }
+  return { ...parseMask("diamond7"), procedural: true };
+}
+
+
+/* ═══════════  shape codes  ═══════════
+   A mask packs into a short code, so a shape someone draws can be sent to a
+   friend and played on their phone, exactly as drawn. */
+
+function encodeMask(cols, rows, cells) {
+  const n = cols * rows;
+  const bytes = new Uint8Array(Math.ceil(n / 8));
+  for (let i = 0; i < n; i++) if (cells.has(i)) bytes[i >> 3] |= 128 >> (i & 7);
+  let bin = "";
+  bytes.forEach((b) => (bin += String.fromCharCode(b)));
+  return `${cols}x${rows}-${btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
+}
+
+function decodeMask(code) {
+  const m = /^(\d+)x(\d+)-([A-Za-z0-9\-_]+)$/.exec((code || "").trim());
+  if (!m) return null;
+  const cols = +m[1], rows = +m[2];
+  if (cols < 4 || rows < 4 || cols > 40 || rows > 40) return null;  // artwork masks reach 26+
+  let b64 = m[3].replace(/-/g, "+").replace(/_/g, "/");
+  while (b64.length % 4) b64 += "=";
+  try {
+    const bin = atob(b64);
+    const cells = new Set();
+    for (let i = 0; i < cols * rows; i++) {
+      const b = bin.charCodeAt(i >> 3) || 0;
+      if (b & (128 >> (i & 7))) cells.add(i);
+    }
+    if (cells.size < 20) return null;
+    return { cols, rows, cells, name: "Shared shape", custom: true };
+  } catch {
+    return null;
+  }
+}
+
+function tidyDrawing(cols, rows, cells) {
+  let x0 = cols, x1 = -1, y0 = rows, y1 = -1;
+  cells.forEach((i) => {
+    const x = i % cols, y = (i / cols) | 0;
+    if (x < x0) x0 = x;
+    if (x > x1) x1 = x;
+    if (y < y0) y0 = y;
+    if (y > y1) y1 = y;
+  });
+  if (x1 < 0) return null;
+  const w = x1 - x0 + 1, h = y1 - y0 + 1;
+  const out = new Set();
+  cells.forEach((i) => out.add((((i / cols) | 0) - y0) * w + (i % cols - x0)));
+  return { cols: w, rows: h, cells: out };
+}
+
 
 /* ═══════════  geometry  ═══════════ */
 
@@ -676,25 +1379,38 @@ export default function ArrowEscapeV2() {
   const [undosLeft, setUndosLeft] = useState(setup.undos);
   const [taps, setTaps] = useState(0);
   const [mistakes, setMistakes] = useState(0);
-  const [peeks, setPeeks] = useState(0);
   const [flying, setFlying] = useState(new Map());
   const lastMiss = useRef({ id: -1, t: 0 });
+  const scoreLog = useRef(new Map()); // what each arrow paid, so undo can refund
   const [bad, setBad] = useState(null);
   const [hintId, setHintId] = useState(null);
-  const [preview, setPreview] = useState(null);
+  const [holdId, setHoldId] = useState(null);
+  const [tut, setTut] = useState(0); // 0 tap · 1 blocked · 2 hold · 9 done
+  const tutClears = useRef(0);
   const [pops, setPops] = useState([]);
   const [ring, setRing] = useState(null);
   const [phase, setPhase] = useState("playing");
   const [heartPop, setHeartPop] = useState(false);
-  const [panel, setPanel] = useState(null); // settings | collection
+  const [screen, setScreen] = useState("home"); // home | play | studio | collection | settings
+  const [grid, setGrid] = useState(false);
   const [zen, setZen] = useState(false);
   const [bigTouch, setBigTouch] = useState(true);
   const [haptics, setHaptics] = useState(true);
   const [sfxOn, setSfxOn] = useState(true);
   const [musicOn, setMusicOn] = useState(true);
   const [theme, setTheme] = useState("ink");
+  const [dark, setDark] = useState(false);
   const [coachSeen, setCoachSeen] = useState(true);
-  const [collected, setCollected] = useState([]);
+  const [ranks, setRanks] = useState({}); // shape name -> 1 bronze | 2 silver | 3 gold
+  const [customs, setCustoms] = useState([]);
+  const [found, setFound] = useState([]);
+  const [stickers, setStickers] = useState([]);
+  const [levelStars, setLevelStars] = useState({}); // level -> 1..3
+  const [adsRemoved, setAdsRemoved] = useState(false);
+  const [adNote, setAdNote] = useState("");
+  const adGate = useRef({ at: 0, since: 0 });
+  const [badges, setBadges] = useState([]);
+  const [stats, setStats] = useState({ arrows: 0, flawRun: 0, noUndo: 0, bestChain: 0 });
   const [view, setView] = useState({ scale: 1, tx: 0, ty: 0 });
   const [snap, setSnap] = useState(false);
   const [levelKey, setLevelKey] = useState(0);
@@ -705,6 +1421,8 @@ export default function ArrowEscapeV2() {
   const viewport = useRef(null);
   const ptrs = useRef(new Map());
   const gest = useRef(null);
+
+  if (C.__dark !== dark) applyTheme(dark); // keep S and CSS in step with the theme
 
   const { mask, pieces, tier, tierIndex, stepInTier } = setup;
   const { cols, rows } = mask;
@@ -751,12 +1469,12 @@ export default function ArrowEscapeV2() {
   useEffect(() => {
     (async () => {
       try {
-        const s = await window.storage.get("arrowv2:save");
-        if (!s?.value) {
+        const raw = await Store.get(SAVE_KEY);
+        if (!raw) {
           setCoachSeen(false);
           return;
         }
-        const p = JSON.parse(s.value);
+        const p = JSON.parse(raw);
         setBest(p.best ?? 1);
         setBestScore(p.bestScore ?? 0);
         setZen(!!p.zen);
@@ -765,9 +1483,20 @@ export default function ArrowEscapeV2() {
         setSfxOn(p.sfx !== false);
         setMusicOn(p.music !== false);
         setTheme(p.theme || "ink");
+        setDark(!!p.dark);
         setCoachSeen(!!p.coachSeen);
-        setCollected(p.collected ?? []);
+        setTut(p.tut ?? 0);
+        // migrate the old flat list into bronze ranks
+        setRanks(p.ranks ?? Object.fromEntries((p.collected ?? []).map((n) => [n, 1])));
+        setCustoms(p.customs ?? []);
+        setFound(p.found ?? []);
+        setStickers(p.stickers ?? []);
+        setLevelStars(p.levelStars ?? {});
+        setAdsRemoved(!!p.adsRemoved);
+        setBadges(p.badges ?? []);
+        setStats(p.stats ?? { arrows: 0, flawRun: 0, noUndo: 0, bestChain: 0 });
         setStreak(p.streak ?? 0);
+        setGrid(!!p.grid);
         setDailyDone(p.lastDaily === todayKey());
         if (p.level > 1) {
           const st = makeLevel(p.level);
@@ -777,29 +1506,72 @@ export default function ArrowEscapeV2() {
           setHearts(st.hearts);
           setHintsLeft(st.hints);
           setUndosLeft(st.undos);
-        }
+              }
       } catch {
         setCoachSeen(false);
       }
     })();
   }, []);
 
+  const setTutStep = useCallback(
+    (n) => {
+      setTut(n);
+      persistRef.current({ tut: n });
+    },
+    []
+  );
+
   const persist = useCallback(async (patch) => {
     try {
       let cur = {};
       try {
-        const s = await window.storage.get("arrowv2:save");
-        if (s?.value) cur = JSON.parse(s.value);
+        const raw = await Store.get(SAVE_KEY);
+        if (raw) cur = JSON.parse(raw);
       } catch {}
-      await window.storage.set("arrowv2:save", JSON.stringify({ ...cur, ...patch }));
+      await Store.set(SAVE_KEY, JSON.stringify({ ...cur, ...patch }));
     } catch {}
   }, []);
+
+  const persistRef = useRef(() => {});
+  persistRef.current = persist;
+
+  const flashNote = useCallback((t) => {
+    setAdNote(t);
+    setTimeout(() => setAdNote(""), 2600);
+  }, []);
+
+  /* A life back, on the same board — the one reward players actually want. */
+  const watchForLife = useCallback(async () => {
+    const ok = await Ads.rewarded("life");
+    if (!ok) return flashNote("No ad available right now.");
+    setHearts(1);
+    setPhase("playing");
+    Snd.shieldUp();
+  }, [flashNote]);
+
+  const watchForHint = useCallback(async () => {
+    const ok = await Ads.rewarded("hint");
+    if (!ok) return flashNote("No ad available right now.");
+    setHintsLeft((n) => n + 1);
+  }, [flashNote]);
+
+  const maybeInterstitial = useCallback(() => {
+    if (adsRemoved) return;
+    const g = adGate.current;
+    g.since++;
+    const now = Date.now();
+    if (g.since < AD_EVERY_LEVELS || now - g.at < AD_MIN_GAP_MS) return;
+    g.since = 0;
+    g.at = now;
+    Ads.interstitial();
+  }, [adsRemoved]);
 
   /* ── level control ── */
   const applySetup = useCallback((st, keepScore) => {
     setSetup(st);
     setAlive(new Set(st.pieces.map((p) => p.id)));
     setHistory([]);
+    scoreLog.current.clear();
     setHearts(st.hearts);
     setHintsLeft(st.hints);
     setUndosLeft(st.undos);
@@ -809,12 +1581,11 @@ export default function ArrowEscapeV2() {
     if (!keepScore) setScore(0);
     setTaps(0);
     setMistakes(0);
-    setPeeks(0);
     setFlying(new Map());
     lastMiss.current = { id: -1, t: 0 };
     setBad(null);
     setHintId(null);
-    setPreview(null);
+    setHoldId(null);
     setPops([]);
     setRing(null);
     setPhase("playing");
@@ -836,10 +1607,38 @@ export default function ArrowEscapeV2() {
     [applySetup]
   );
 
+  const startCustom = useCallback(
+    (mask) => {
+      setMode("custom");
+      applySetup(makeLevelFromMask(mask, tierFor(level).index), false);
+    },
+    [applySetup, level]
+  );
+
+  const saveCustom = useCallback(
+    (code) => {
+      const next = [code, ...customs.filter((c) => c !== code)].slice(0, 12);
+      setCustoms(next);
+      persist({ customs: next });
+    },
+    [persist, customs]
+  );
+
+  const deleteCustom = useCallback(
+    (code) => {
+      const next = customs.filter((c) => c !== code);
+      setCustoms(next);
+      persist({ customs: next });
+    },
+    [persist, customs]
+  );
+
   const startDaily = useCallback(() => {
     setMode("daily");
-    applySetup(makeLevel(24, hashStr(todayKey())));
-  }, [applySetup]);
+    // the daily should keep pace with the player, not sit at one fixed tier
+    const lvl = Math.max(12, Math.min(level, 400));
+    applySetup(makeLevel(lvl, hashStr(todayKey())));
+  }, [applySetup, level]);
 
   // prebuild the next board during the celebration — no hitch on Next Level
   useEffect(() => {
@@ -852,10 +1651,16 @@ export default function ArrowEscapeV2() {
 
   const restart = useCallback(() => {
     if (mode === "daily") startDaily();
+    else if (mode === "custom") applySetup(makeLevelFromMask(setup.mask, setup.tierIndex), false);
     else startJourney(level);
-  }, [mode, level, startDaily, startJourney]);
+  }, [mode, level, startDaily, startJourney, applySetup, setup.mask]);
 
   const nextLevel = useCallback(() => {
+    maybeInterstitial();
+    if (mode === "custom") {
+      startJourney(level);
+      return;
+    }
     if (mode === "daily") {
       startJourney(level);
       return;
@@ -879,6 +1684,9 @@ export default function ArrowEscapeV2() {
      No global input lock. A tapped arrow leaves `alive` immediately so the
      next tap is judged against the new board, while the old one is still
      flying out. Taps never queue behind an animation. */
+  const clean = mistakes === 0 && undosLeft === setup.undos;
+  const stars = clean ? 3 : mistakes === 0 ? 2 : 1;
+
   const fire = useCallback(
     (piece) => {
       if (phase !== "playing" || !alive.has(piece.id)) return;
@@ -912,11 +1720,9 @@ export default function ArrowEscapeV2() {
         if (!zen) {
           setHeartPop(true);
           setTimeout(() => setHeartPop(false), 430);
-          setHearts((h) => {
-            const n = Math.max(h - 1, 0);
-            if (n === 0) setTimeout(() => { setPhase("gameover"); Snd.lose(); }, 520);
-            return n;
-          });
+          const left = Math.max(hearts - 1, 0);
+          setHearts(left);
+          if (left === 0) setTimeout(() => { setPhase("gameover"); Snd.lose(); }, 520);
         }
         return;
       }
@@ -930,86 +1736,167 @@ export default function ArrowEscapeV2() {
       setCombo(nextCombo);
       Snd.depart(nextCombo);
       setScore((s) => s + gain);
+      scoreLog.current.set(piece.id, gain);
+      if (tut < 9) {
+        tutClears.current++;
+        if (tut === 0) setTutStep(1);
+        else if (tut === 1 && tutClears.current >= 4) setTutStep(2);
+        else if (tut === 2 && tutClears.current >= 8) setTutStep(9);
+      }
       addPop(piece.cells[0], freed > 0 ? `+${gain}  frees ${freed}` : `+${gain}`, freed > 0 ? C.flow : C.accent);
       setRing({ cell: piece.cells[0], key: Date.now() });
       setTimeout(() => setRing((r) => (r && r.cell === piece.cells[0] ? null : r)), 470);
 
-      setFlow((f) => {
-        const nf = f + 14 + freed * 6;
-        if (nf >= 100 && !shield) {
-          setShield(true);
-          Snd.shieldUp();
-          buzz(20);
-          return 0;
-        }
-        return Math.min(nf, 100);
-      });
+      const nextFlow = flow + 14 + freed * 6;
+      const earnsShield = nextFlow >= 100 && !shield;
+      setFlow(earnsShield ? 0 : Math.min(nextFlow, 100));
+      if (earnsShield) {
+        setShield(true);
+        Snd.shieldUp();
+        buzz(20);
+      }
 
       // logical removal is instant; the visual keeps flying for a moment
       const key = Date.now() + piece.id;
       setFlying((f) => new Map(f).set(piece.id, key));
-      setTimeout(() => setFlying((f) => { const m = new Map(f); if (m.get(piece.id) === key) m.delete(piece.id); return m; }), 560);
+      setTimeout(() => setFlying((f) => { const m = new Map(f); if (m.get(piece.id) === key) m.delete(piece.id); return m; }), 280);
       setHistory((h) => [...h, piece.id]);
 
+      const willClear = alive.size === 1 && alive.has(piece.id);
       setAlive((prev) => {
         const next = new Set(prev);
         next.delete(piece.id);
-        if (next.size === 0) {
-          setTimeout(() => {
-            setPhase("cleared");
-            Snd.win();
-            setCollected((cur) => {
-              if (cur.includes(mask.name)) return cur;
-              const nc = [...cur, mask.name];
-              persist({ collected: nc });
-              return nc;
-            });
-            setScore((sc) => {
-              const bonus = 120 + (mistakes === 0 ? 200 : 0);
-              const fin = sc + bonus;
-              setBestScore((bs) => {
-                const nb = Math.max(bs, fin);
-                persist({ bestScore: nb });
-                return nb;
-              });
-              return fin;
-            });
-            if (mode === "daily") {
-              setStreak((st) => {
-                const ns = dailyDone ? st : st + 1;
-                persist({ streak: ns, lastDaily: todayKey() });
-                return ns;
-              });
-              setDailyDone(true);
-            } else {
-              const bl = Math.max(best, level + 1);
-              setBest(bl);
-              persist({ level: level + 1, best: bl });
-            }
-          }, 620);
-        }
         return next;
       });
+
+      if (willClear) {
+        setTimeout(() => {
+          setPhase("cleared");
+          Snd.win();
+          /* Bronze = cleared. Silver = no mistakes. Gold = flawless (no
+             mistakes and no undo) on Hard or above. Gold is meant to
+             be genuinely hard to earn. */
+          /* running totals, then the badges and sticker they unlock */
+          const nextStats = {
+            arrows: stats.arrows + pieces.length,
+            flawRun: mistakes === 0 ? stats.flawRun + 1 : 0,
+            noUndo: undosLeft === setup.undos ? stats.noUndo + 1 : stats.noUndo,
+            bestChain: Math.max(stats.bestChain, nextCombo),
+          };
+
+          const won = new Set(badges);
+          won.add("first");
+          if (nextStats.flawRun >= 5) won.add("flaw5");
+          if (mode === "daily" && streak + 1 >= 7) won.add("streak7");
+          if (mode === "journey" && tierIndex >= 9) won.add("hard");
+          if (mode === "journey" && tierIndex >= 15) won.add("pro");
+          if (nextStats.arrows >= 1000) won.add("k1");
+          if (nextStats.bestChain >= 12) won.add("chain12");
+          if (nextStats.noUndo >= 20) won.add("purist");
+          if (mode === "custom") won.add("maker");
+
+          let nextStickers = stickers;
+          if (mode === "journey" && level % CHAPTER_LEN === 0 && !stickers.includes(chapterOf(level))) {
+            nextStickers = [...stickers, chapterOf(level)];
+          }
+
+          setStats(nextStats);
+          setStickers(nextStickers);
+
+          const earned =
+            mistakes === 0 && undosLeft === setup.undos && tierIndex >= 9
+              ? 3
+              : mistakes === 0
+              ? 2
+              : 1;
+          if (mask.procedural) {
+            const at = found.findIndex((f) => f.n === mask.name);
+            let nf = found;
+            if (at >= 0) {
+              if ((found[at].r ?? 1) < earned) nf = found.map((f, k) => (k === at ? { ...f, r: earned } : f));
+            } else {
+              nf = [{ n: mask.name, c: encodeMask(mask.cols, mask.rows, mask.cells), r: earned }, ...found].slice(0, 160);
+            }
+            if (nf !== found) {
+              setFound(nf);
+              persist({ found: nf });
+            }
+            if (earned === 3) won.add("gold");
+          } else if (COLLECTABLE.includes(mask.name)) {
+            if (earned === 3) won.add("gold");
+            if ((ranks[mask.name] ?? 0) < earned) {
+              const nr = { ...ranks, [mask.name]: earned };
+              setRanks(nr);
+              persist({ ranks: nr });
+            }
+          }
+
+          setBadges([...won]);
+          persist({ badges: [...won], stats: nextStats, stickers: nextStickers });
+
+          const bonus = 120 + (mistakes === 0 ? 200 : 0);
+          const finalScore = score + gain + bonus;
+          setScore(finalScore);
+          if (finalScore > bestScore) {
+            setBestScore(finalScore);
+            persist({ bestScore: finalScore });
+          }
+          if (mode === "custom") {
+            /* a drawn board is a one-off — leave journey progress alone */
+          } else if (mode === "daily") {
+            setStreak((st) => {
+              const ns = dailyDone ? st : st + 1;
+              persist({ streak: ns, lastDaily: todayKey() });
+              return ns;
+            });
+            setDailyDone(true);
+          } else {
+            const bl = Math.max(best, level + 1);
+            setBest(bl);
+            persist({ level: level + 1, best: bl });
+          }
+        }, 340);
+      }
     },
-    [phase, alive, blockerOf, pieces, cols, rows, combo, shield, zen, mode, dailyDone, best, level, mistakes, mask.name, persist, addPop]
+    [phase, alive, blockerOf, pieces, cols, rows, combo, shield, flow, hearts, zen, mode, dailyDone, best, bestScore, score, level,
+     mistakes, mask.name, mask.procedural, mask.cols, mask.rows, mask.cells, persist, addPop,
+     stats, badges, stickers, levelStars, streak, tierIndex, undosLeft, setup.undos, found, ranks, tut, setTutStep, stars]
   );
 
-  /* ── hold to peek ── */
+  /* Tap fires. Hold traces the arrow's route so you can see where it is aimed —
+     it does not tell you whether the way is clear; that is the puzzle. */
   const onPieceDown = useCallback(
     (piece) => (e) => {
       if (phase !== "playing") return;
       e.preventDefault();
       const timer = setTimeout(() => {
         if (!press.current) return;
-        press.current.peeking = true;
-        setPreview({ id: piece.id, blocker: blockerOf(piece), lane: exitLine(piece.cells[0], piece.dir, cols, rows) });
-        Snd.peek();
+        press.current.held = true;
+        setHoldId(piece.id);
         buzz(6);
-      }, 200);
-      press.current = { piece, timer, peeking: false };
+        if (tut === 2) setTutStep(9);
+      }, 180);
+      press.current = { piece, timer, held: false };
     },
-    [phase, blockerOf, cols, rows]
+    [phase, tut, setTutStep]
   );
+
+  // lock the document while a board is on screen — otherwise the page itself
+  // scrolls and the browser swallows the pinch
+  useEffect(() => {
+    if (screen !== "play") return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const el = viewport.current;
+    const block = (e) => { if (e.touches && e.touches.length >= 2) e.preventDefault(); };
+    el?.addEventListener("touchmove", block, { passive: false });
+    el?.addEventListener("touchstart", block, { passive: false });
+    return () => {
+      document.body.style.overflow = prev;
+      el?.removeEventListener("touchmove", block);
+      el?.removeEventListener("touchstart", block);
+    };
+  }, [screen]);
 
   useEffect(() => {
     const up = () => {
@@ -1017,12 +1904,8 @@ export default function ArrowEscapeV2() {
       if (!p) return;
       clearTimeout(p.timer);
       press.current = null;
-      if (p.peeking) {
-        setPeeks((n) => n + 1);
-        setPreview(null);
-      } else {
-        fire(p.piece);
-      }
+      if (p.held) setHoldId(null);   // looked, didn't commit
+      else fire(p.piece);
     };
     window.addEventListener("pointerup", up);
     window.addEventListener("pointercancel", up);
@@ -1063,7 +1946,6 @@ export default function ArrowEscapeV2() {
       clearTimeout(press.current.timer);
       press.current = null;
     }
-    setPreview(null);
   };
 
   const local = (e) => {
@@ -1129,8 +2011,8 @@ export default function ArrowEscapeV2() {
     const dy = p.y - g.from.y;
 
     if (g.mode === "maybe") {
-      if (g.start.scale <= 1.01) return; // nothing to pan at fit size
-      if (Math.hypot(dx, dy) < 14) return; // let genuine taps through
+      if (g.start.scale <= 1.005) return; // nothing to pan at fit size
+      if (Math.hypot(dx, dy) < 10) return; // let genuine taps through
       g.mode = "pan";
       cancelPress();
     }
@@ -1174,6 +2056,8 @@ export default function ArrowEscapeV2() {
     [applyView]
   );
 
+  /* Pinch can be swallowed by the browser on some phones, so the button walks
+     through the same zoom levels and panning unlocks the moment it passes 1x. */
   const cycleZoom = useCallback(() => {
     const cur = viewRef.current.scale;
     const target = cur < 1.5 ? 2 : cur < 2.5 ? 3 : 1;
@@ -1204,6 +2088,8 @@ export default function ArrowEscapeV2() {
   const undo = useCallback(() => {
     if (undosLeft <= 0 || phase !== "playing" || !history.length) return;
     const last = history[history.length - 1];
+    setScore((v) => Math.max(0, v - (scoreLog.current.get(last) ?? 0)));
+    scoreLog.current.delete(last);
     setHistory((h) => h.slice(0, -1));
     setFlying((f) => { const m = new Map(f); m.delete(last); return m; });
     setAlive((prev) => new Set([...prev, last]));
@@ -1228,9 +2114,10 @@ export default function ArrowEscapeV2() {
     setTimeout(() => setHintId(null), 1900);
   }, [hintsLeft, phase, pieces, alive, blockerOf, cols, rows]);
 
-  const clean = mistakes === 0 && peeks === 0 && undosLeft === setup.undos;
-  const stars = clean ? 3 : mistakes === 0 ? 2 : 1;
-  const previewPiece = preview ? pieces.find((p) => p.id === preview.id) : null;
+  const allRanks = useMemo(() => [...Object.values(ranks), ...found.map((f) => f.r ?? 1)], [ranks, found]);
+  const goldCount = allRanks.filter((r) => r === 3).length;
+  const silverCount = allRanks.filter((r) => r === 2).length;
+  const bronzeCount = allRanks.filter((r) => r === 1).length;
 
   const confetti = useMemo(
     () =>
@@ -1245,186 +2132,166 @@ export default function ArrowEscapeV2() {
     [phase === "cleared"]
   );
 
-  return (
-    <div style={S.page}>
-      <style>{CSS}</style>
+  /* ═══════════  PLAY SCREEN — full bleed, like a real puzzle app  ═══════════ */
+  if (screen === "play") {
+    return (
+      <div style={S.playRoot}>
+        <style>{CSS}</style>
 
-      <div style={S.modeBar}>
-        <button style={{ ...S.modeBtn, ...(mode === "journey" ? S.modeOn : {}) }} onClick={() => startJourney(level)}>
-          Journey
-        </button>
-        <button style={{ ...S.modeBtn, ...(mode === "daily" ? S.modeOn : {}) }} onClick={startDaily}>
-          Daily {streak > 0 && <span style={S.streak}>🔥{streak}</span>}
-        </button>
-        <button
-          style={S.gear}
-          onClick={() => {
-            Snd.unlock();
-            const v = !(sfxOn || musicOn);
-            setSfxOn(v);
-            setMusicOn(v);
-            persist({ sfx: v, music: v });
-          }}
-          aria-label={sfxOn || musicOn ? "Mute" : "Unmute"}
-        >
-          <Speaker on={sfxOn || musicOn} />
-        </button>
-        <button style={S.gear} onClick={() => setPanel(panel === "collection" ? null : "collection")} aria-label="Collection">
-          <Trophy />
-        </button>
-        <button style={S.gear} onClick={() => setPanel(panel === "settings" ? null : "settings")} aria-label="Settings">
-          <Gear />
-        </button>
-      </div>
+        <div style={S.hud} className="hud-in">
+          <button style={S.hudBtn} onClick={() => setScreen("home")} aria-label="Back">
+            <ChevLeft />
+          </button>
+          <button style={S.hudBtn} onClick={restart} aria-label="Restart">
+            <Refresh />
+          </button>
 
-      {panel === "settings" && (
-        <div style={S.settings} className="ovin">
-          <Toggle label="Zen mode" hint="No lives, no losing — just solve" on={zen} onChange={(v) => { setZen(v); persist({ zen: v }); }} />
-          <Toggle label="Large touch targets" hint="Easier to hit the arrow you mean" on={bigTouch} onChange={(v) => { setBigTouch(v); persist({ bigTouch: v }); }} />
-          <Toggle label="Vibration" hint="Buzz on taps and mistakes" on={haptics} onChange={(v) => { setHaptics(v); persist({ haptics: v }); }} />
-          <Toggle label="Sound effects" hint="Chain pitch rises as you build a streak" on={sfxOn} onChange={(v) => { Snd.unlock(); setSfxOn(v); persist({ sfx: v }); }} />
-          <Toggle label="Music" hint="Slow ambient pads, quiet by design" on={musicOn} onChange={(v) => { Snd.unlock(); setMusicOn(v); persist({ music: v }); }} />
-          <div style={S.themeRow}>
-            <span style={S.tglLabel}>Arrow colours</span>
-            <div style={{ display: "flex", gap: 7 }}>
-              {PALETTE_KEYS.map((k) => (
-                <button
-                  key={k}
-                  onClick={() => { setTheme(k); persist({ theme: k }); }}
-                  aria-label={PALETTES[k].name}
-                  style={{ ...S.swatch, borderColor: theme === k ? C.accent : "transparent" }}
-                >
-                  {["right", "left", "up", "down"].map((d) => (
-                    <span key={d} style={{ ...S.swatchDot, background: toneFor(d, k) }} />
-                  ))}
-                </button>
-              ))}
+          <div style={S.hudMid}>
+            <div style={{ ...S.diffLabel, color: mode === "journey" ? TIER_HUE[tierIndex] : C.accent }}>
+              {mode === "custom" ? "Your board" : mode === "daily" ? "Daily" : tier.name}
+              <span style={S.leftCount}> · {alive.size} left</span>
+            </div>
+            <div style={S.hudHearts}>
+              {shield && <span style={S.shieldTag}>🛡</span>}
+              {zen ? (
+                <>
+                  <span style={S.zenInf}>∞</span>
+                  <span style={S.zenTag}>ZEN</span>
+                </>
+              ) : (
+                Array.from({ length: maxHearts }).map((_, i) => (
+                  <span key={i} className={heartPop && i === hearts ? "hbreak" : ""} style={S.inl}>
+                    <Heart on={i < hearts} />
+                  </span>
+                ))
+              )}
             </div>
           </div>
-          <div style={S.tip}>
-            <b>Hold</b> an arrow to check its path — ✓ clear, ✕ blocked. <b>Pinch</b> to zoom.
-            <br />
-            Clearing an arrow that <b>frees others</b> scores far more. Find the order that unlocks the most.
-          </div>
-        </div>
-      )}
 
-      {panel === "collection" && (
-        <div style={S.settings} className="ovin">
-          <div style={S.colTitle}>
-            Shapes collected · {collected.length}/{COLLECTABLE.length}
-          </div>
-          <div style={S.colGrid}>
-            {COLLECTABLE.map((n) => {
-              const on = collected.includes(n);
-              return (
-                <div key={n} style={{ ...S.colItem, opacity: on ? 1 : 0.45 }}>
-                  <ShapeThumb shapeKey={THUMB[n]} on={on} />
-                  <span style={S.colName}>{on ? n : "???"}</span>
-                </div>
-              );
-            })}
-          </div>
-          <div style={S.tip}>Clear a level of each shape to add it to your collection.</div>
-        </div>
-      )}
-
-      {/* one compact status row instead of four stacked ones */}
-      <div style={S.bar}>
-        <div style={S.barLeft}>
-          <div style={S.lvl}>
-            {mode === "daily" ? "Daily" : `Level ${level}`}
-          </div>
-          <div style={S.sub}>
-            <span style={{ color: C.accent }}>{mask.name}</span>
-            <span style={S.dotSep}>·</span>
-            <span>{mode === "daily" ? "worldwide" : tier.name}</span>
-            <span style={S.dotSep}>·</span>
-            <span>{alive.size} left</span>
-          </div>
+          <button
+            style={{ ...S.hintPill, opacity: hintsLeft > 0 || !adsRemoved ? 1 : 0.4 }}
+            onClick={hintsLeft > 0 ? useHint : watchForHint}
+            disabled={hintsLeft <= 0 && adsRemoved}
+          >
+            <Bulb />
+            <span style={S.hintTxt}>{hintsLeft > 0 ? hintsLeft : "▶"}</span>
+          </button>
         </div>
 
-        <div style={S.barMid}>
-          {shield && <span style={S.shieldTag}>🛡</span>}
-          {zen ? (
-            <span style={S.zenTag}>ZEN</span>
-          ) : (
-            Array.from({ length: maxHearts }).map((_, i) => (
-              <span key={i} className={heartPop && i === hearts ? "hbreak" : ""} style={S.inl}>
-                <Heart on={i < hearts} />
-              </span>
-            ))
-          )}
-        </div>
-
-        <div style={S.barRight}>
-          <div style={S.scoreNum}>{score.toLocaleString()}</div>
-          <div style={S.flowTrack}>
-            <div style={{ ...S.flowFill, width: `${flow}%` }} />
+        {tut < 9 && mode === "journey" && (
+          <div style={S.tutBar} className="ovin">
+            <span style={S.tutStep}>{tut + 1}/3</span>
+            <span style={S.tutText}>
+              {tut === 0
+                ? "Tap an arrow to send it off the board."
+                : tut === 1
+                ? "An arrow only leaves if its path is clear all the way out — tapping a blocked one costs a life."
+                : "Hold an arrow to trace where it is aimed. Tap # to trace them all."}
+            </span>
+            <button style={S.tutSkip} onClick={() => setTutStep(9)}>Skip</button>
           </div>
+        )}
+
+        {tut >= 9 && !coachSeen && (
+          <button
+            style={S.coach}
+            className="ovin"
+            onClick={() => { setCoachSeen(true); persist({ coachSeen: true }); }}
+          >
+            <span style={S.coachText}>
+              Tap <b>#</b> to trace where every arrow is headed
+            </span>
+            <span style={S.coachX}>✕</span>
+          </button>
+        )}
+
+        <div style={S.topTrack}>
+          <div style={{ ...S.topFill, width: `${progress}%` }} />
         </div>
-      </div>
 
-      <div style={S.tierRow}>
-        {TIERS.map((t, i) => (
-          <span
-            key={t.name}
-            style={{
-              ...S.tierTick,
-              background: mode === "daily" ? C.line : i < tierIndex ? C.accent : i === tierIndex ? TIER_HUE[i] : C.line,
-              flex: i === tierIndex ? 1.6 : 1,
-            }}
-          />
-        ))}
-      </div>
-
-      {!coachSeen && (
-        <button
-          style={S.coach}
-          className="ovin"
-          onClick={() => { setCoachSeen(true); persist({ coachSeen: true }); }}
+        <div
+          ref={viewport}
+          style={S.playViewport}
+          onPointerDown={onViewDown}
+          onPointerMove={onViewMove}
+          onPointerUp={onViewUp}
+          onPointerCancel={onViewUp}
         >
-          <span style={S.coachText}>
-            <b>Hold</b> an arrow to check its path first
-          </span>
-          <span style={S.coachX}>✕</span>
-        </button>
-      )}
+          <div
+            style={{ transform: `translate(${view.tx}px, ${view.ty}px) scale(${view.scale})`, transformOrigin: "0 0", transition: snap ? "transform 240ms cubic-bezier(.4,0,.2,1)" : "none", width: "100%", height: "100%", touchAction: "none" }}
+          >
+            <svg
+              key={levelKey}
+              className="board-in"
+              viewBox={`${-VIEW_PAD * U} ${-VIEW_PAD * U} ${(cols + VIEW_PAD * 2) * U} ${(rows + VIEW_PAD * 2) * U}`}
+              style={S.svgFill}
+              aria-label={`${mask.name} arrow puzzle`}
+            >
+              {grid &&
+                pieces.map((p) => {
+                  if (!alive.has(p.id)) return null;
+                  const h = p.cells[0];
+                  const D = DIRS[p.dir];
+                  const far = (cols + rows + DOT_PAD * 2) * U;
+                  return (
+                    <line
+                      key={`ln${p.id}`}
+                      x1={cx(h, cols)}
+                      y1={cy(h, cols)}
+                      x2={cx(h, cols) + D.dx * far}
+                      y2={cy(h, cols) + D.dy * far}
+                      stroke={toneFor(p.dir, theme)}
+                      strokeWidth={4.5}
+                      opacity={0.3}
+                    />
+                  );
+                })}
 
-      <div style={S.board}>
-        <div style={S.track}>
-          <div style={{ ...S.fill, width: `${progress}%` }} />
-        </div>
+              {/* dot field across the whole surface, not just the shape */}
+              {Array.from({ length: (cols + DOT_PAD * 2) * (rows + DOT_PAD * 2) }).map((_, k) => {
+                const gx = (k % (cols + DOT_PAD * 2)) - DOT_PAD;
+                const gy = Math.floor(k / (cols + DOT_PAD * 2)) - DOT_PAD;
+                const inMask = gx >= 0 && gy >= 0 && gx < cols && gy < rows && mask.cells.has(gy * cols + gx);
+                return (
+                  <circle
+                    key={`d${k}`}
+                    cx={gx * U + U / 2}
+                    cy={gy * U + U / 2}
+                    r={inMask ? 3.8 : 3}
+                    fill={C.dot}
+                    opacity={inMask ? 1 : 0.55}
+                  />
+                );
+              })}
 
-        <div ref={viewport} style={S.viewport} onPointerDown={onViewDown} onPointerMove={onViewMove} onPointerUp={onViewUp} onPointerCancel={onViewUp}>
-          <div style={{ transform: `translate(${view.tx}px, ${view.ty}px) scale(${view.scale})`, transformOrigin: "0 0", transition: snap ? "transform 240ms cubic-bezier(.4,0,.2,1)" : "none" }}>
-            <svg viewBox={`0 0 ${cols * U} ${rows * U}`} style={{ ...S.svg, aspectRatio: `${cols} / ${rows}` }} aria-label={`${mask.name} arrow puzzle`}>
-              {[...mask.cells].map((i) => (
-                <circle key={`d${i}`} cx={cx(i, cols)} cy={cy(i, cols)} r={3.6} fill={C.dot} />
-              ))}
 
-              {preview && previewPiece && (
-                <line
-                  x1={cx(previewPiece.cells[0], cols)}
-                  y1={cy(previewPiece.cells[0], cols)}
-                  x2={cx(previewPiece.cells[0], cols) + DIRS[previewPiece.dir].dx * (rows + cols) * U}
-                  y2={cy(previewPiece.cells[0], cols) + DIRS[previewPiece.dir].dy * (rows + cols) * U}
-                  stroke={preview.blocker === null ? C.go : C.stop}
-                  strokeWidth={19}
-                  strokeLinecap="round"
-                  opacity={0.2}
-                />
-              )}
+              {holdId !== null && alive.has(holdId) && (() => {
+                const hp = pieces[holdId];
+                const h = hp.cells[0];
+                const D = DIRS[hp.dir];
+                const far = (cols + rows + DOT_PAD * 2) * U;
+                return (
+                  <line
+                    x1={cx(h, cols)}
+                    y1={cy(h, cols)}
+                    x2={cx(h, cols) + D.dx * far}
+                    y2={cy(h, cols) + D.dy * far}
+                    stroke={toneFor(hp.dir, theme)}
+                    strokeWidth={16}
+                    strokeLinecap="round"
+                    opacity={0.28}
+                  />
+                );
+              })()}
 
-              {pieces.map((p, i) => {
+              {pieces.map((p, idx) => {
                 if (!alive.has(p.id)) return null;
                 const isBad = bad?.id === p.id;
                 const isBlk = bad?.blocker === p.id;
                 const isHint = hintId === p.id;
-                const isPeek = preview?.id === p.id;
-                const isPeekBlk = preview?.blocker === p.id;
-                const tone = isBad || isBlk ? C.danger : isPeekBlk ? C.stop : isPeek ? (preview.blocker === null ? C.go : C.stop) : isHint ? C.accent : toneFor(p.dir, theme);
-                const cls = isBad ? "shake" : isBlk || isPeekBlk ? "flash" : isHint ? "hint" : "settle";
+                const isHeld = holdId === p.id;
+                const tone = isBad || isBlk ? C.danger : isHint || isHeld ? C.accent : toneFor(p.dir, theme);
+                const cls = isBad ? "shake" : isBlk ? "flash" : isHint ? "hint" : "settle";
                 return (
                   <Piece
                     key={`${levelKey}-${p.id}`}
@@ -1434,22 +2301,11 @@ export default function ArrowEscapeV2() {
                     width={W_BOARD}
                     hit={bigTouch ? 78 : 52}
                     className={cls}
-                    style={{ "--d": `${(i % 14) * 22}ms` }}
+                    style={{ "--d": `${Math.min(idx, 11) * 14}ms` }}
                     onDown={onPieceDown(p)}
                   />
                 );
               })}
-
-              {preview && previewPiece && (
-                <g transform={`translate(${cx(previewPiece.cells[0], cols)} ${cy(previewPiece.cells[0], cols)}) scale(${cols / 8})`} className="badge-in">
-                  <circle r={23} fill={preview.blocker === null ? C.go : C.stop} />
-                  {preview.blocker === null ? (
-                    <path d="M -10 1 L -3 8.5 L 10.5 -7" stroke="#fff" strokeWidth={5} fill="none" strokeLinecap="round" strokeLinejoin="round" />
-                  ) : (
-                    <path d="M -7.5 -7.5 L 7.5 7.5 M 7.5 -7.5 L -7.5 7.5" stroke="#fff" strokeWidth={5} strokeLinecap="round" />
-                  )}
-                </g>
-              )}
 
               {[...flying.entries()].map(([id, key]) => (
                 <DepartingPiece key={`f${key}`} piece={pieces[id]} cols={cols} rows={rows} tone={C.accent} />
@@ -1468,32 +2324,54 @@ export default function ArrowEscapeV2() {
                 />
               )}
 
-              {pops.map((p) => (
+
+              {pops.map((q) => (
                 <text
-                  key={p.id}
+                  key={q.id}
                   className="pop"
-                  x={p.x}
-                  y={p.y}
-                  fill={p.hue}
+                  x={q.x}
+                  y={q.y}
+                  fill={q.hue}
                   fontSize={cols * 3.6}
                   fontWeight={800}
                   textAnchor="middle"
                   style={{ fontFamily: "Nunito, sans-serif", "--rise": `${cols * 7}px` }}
                 >
-                  {p.text}
+                  {q.text}
                 </text>
               ))}
+
             </svg>
           </div>
         </div>
 
+        <button style={S.gridToggle} onClick={() => { setGrid((g) => !g); persist({ grid: !grid }); }} aria-label="Toggle grid">
+          <Hash on={grid} />
+        </button>
 
+        <div style={S.playFoot}>
+          <button style={{ ...S.footBtn, opacity: undosLeft > 0 && history.length ? 1 : 0.35 }} onClick={undo} disabled={undosLeft <= 0 || !history.length}>
+            <Undo />
+            <span style={S.footNum}>{undosLeft}</span>
+          </button>
+          <div style={S.scorePill}>{score.toLocaleString()}</div>
+          <button style={S.footBtn} onClick={cycleZoom}>
+            <Magnifier zoomed={view.scale > 1.01} />
+            {view.scale > 1.01 && <span style={S.footNum}>{Math.round(view.scale)}×</span>}
+          </button>
+        </div>
 
         {phase === "gameover" && (
           <div style={S.overlay} className="ovin">
             <div style={S.ovCard}>
               <div style={{ ...S.ovTitle, color: C.danger }}>Out of lives</div>
-              <div style={S.ovSub}>Tip: hold an arrow to check its path before firing.</div>
+              <div style={S.ovSub}>Tip: hold an arrow to see where it is aimed, or tap # for all of them.</div>
+              {!adsRemoved && (
+                <button style={S.adBtn} onClick={watchForLife}>
+                  <span style={S.adPlay}>▶</span> Watch an ad · get a life back
+                </button>
+              )}
+              {adNote && <div style={S.adNote}>{adNote}</div>}
               <button style={S.primary} onClick={restart}>
                 Try again
               </button>
@@ -1503,29 +2381,8 @@ export default function ArrowEscapeV2() {
             </div>
           </div>
         )}
-      </div>
 
-      <div style={S.controls}>
-        <button style={{ ...S.orb, opacity: hintsLeft > 0 ? 1 : 0.35 }} onClick={useHint} disabled={hintsLeft <= 0} aria-label="Hint">
-          <Bulb />
-          {hintsLeft > 0 && <span style={S.badge}>{hintsLeft}</span>}
-        </button>
-        <button style={{ ...S.orb, opacity: undosLeft > 0 && history.length ? 1 : 0.35 }} onClick={undo} disabled={undosLeft <= 0 || !history.length} aria-label="Undo">
-          <Undo />
-          {undosLeft > 0 && <span style={S.badge}>{undosLeft}</span>}
-        </button>
-        <button style={S.orb} onClick={restart} aria-label="Restart">
-          <Refresh />
-        </button>
-        <button style={S.orb} onClick={cycleZoom} aria-label={`Zoom, currently ${view.scale.toFixed(1)} times`}>
-          <Magnifier zoomed={view.scale > 1.01} />
-          {view.scale > 1.01 && <span style={S.badge}>{Math.round(view.scale)}×</span>}
-        </button>
-      </div>
-
-      <div style={S.foot}>Best score {bestScore.toLocaleString()} · best level {best}</div>
-
-      {phase === "cleared" && (
+        {phase === "cleared" && (
         <div style={S.winWrap} className="ovin" onClick={nextLevel}>
           {confetti.map((c, i) => (
             <span key={i} className="confetti" style={{ left: `${c.left}%`, background: c.hue, animationDelay: `${c.delay}ms`, animationDuration: `${c.dur}ms`, transform: `rotate(${c.rot}deg)` }} />
@@ -1551,23 +2408,540 @@ export default function ArrowEscapeV2() {
             </div>
             <div style={S.winMeta}>
               {taps} taps · {mistakes === 0 ? "no mistakes" : `${mistakes} mistake${mistakes > 1 ? "s" : ""}`}
-              {peeks > 0 && ` · ${peeks} peek${peeks > 1 ? "s" : ""}`}
             </div>
 
             <button style={S.winBtn} onClick={(e) => { e.stopPropagation(); nextLevel(); }}>
-              {mode === "daily" ? "Back to Journey" : "Next Level"}
+              {mode === "journey" ? "Next Level" : "Back to Journey"}
             </button>
             <button style={S.winGhost} onClick={(e) => { e.stopPropagation(); restart(); }}>
               Replay for a better score
             </button>
           </div>
         </div>
-      )}
+        )}
+      </div>
+    );
+  }
+
+  /* ═══════════  SHELL SCREENS  ═══════════ */
+  return (
+    <div style={S.page}>
+      <style>{CSS}</style>
+
+      <div style={S.shellBody}>
+        {screen === "home" && (
+          <div style={S.home} className="screen-in">
+            <div style={S.streakChip}>🔥 {streak}</div>
+
+            <div style={S.homeCards}>
+              <button style={{ ...S.homeCard, animationDelay: "40ms" }} className="card-in" onClick={() => { startDaily(); setScreen("play"); }}>
+                <div style={S.homeCardTitle}>Daily</div>
+                <div style={S.homeCardSub}>{todayKey().slice(5).replace("-", " / ")}</div>
+                <div style={S.homeCardArt}>
+                  <MiniShape shapeKey="catArt" />
+                </div>
+                <div style={S.homeCardBtn}>{dailyDone ? "Replay" : "Play"}</div>
+              </button>
+
+              <button style={{ ...S.homeCard, animationDelay: "110ms" }} className="card-in" onClick={() => setScreen("studio")}>
+                <div style={S.homeCardTitle}>Studio</div>
+                <div style={S.homeCardSub}>Draw & share</div>
+                <div style={S.homeCardArt}>
+                  <MiniShape shapeKey="rocketArt" />
+                </div>
+                <div style={S.homeCardBtn}>Open</div>
+              </button>
+            </div>
+
+            <div style={{ ...S.chapterCard, animationDelay: "150ms" }} className="card-in">
+              {(() => {
+                const ci = chapterInfo(chapterOf(best));
+                const done = best - ci.from;
+                const pct = Math.min(100, (done / CHAPTER_LEN) * 100);
+                return (
+                  <>
+                    <div style={S.chapRow}>
+                      <div style={{ ...S.chapBadge, background: ci.hue }}>{ci.ch}</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={S.chapName}>{ci.name}</div>
+                        <div style={S.chapSub}>
+                          Levels {ci.from}–{ci.to} · {done} of {CHAPTER_LEN}
+                        </div>
+                      </div>
+                      <div style={{ ...S.chapSticker, opacity: stickers.includes(ci.ch) ? 1 : 0.28 }}>
+                        {ci.mask && <MaskIcon mask={ci.mask} colour={ci.hue} size={38} />}
+                      </div>
+                    </div>
+                    <div style={S.chapTrack}>
+                      <div style={{ ...S.chapFill, width: `${pct}%`, background: ci.hue }} />
+                    </div>
+                    <div style={S.chapHint}>
+                      {stickers.includes(ci.ch) ? "Sticker earned" : "Finish the chapter to earn this sticker"}
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+
+            <div style={{ ...S.brandWrap, animationDelay: "170ms" }} className="card-in">
+              <div style={S.brand}>Arrow Escape</div>
+              <div style={S.homeLevel}>Level {best}</div>
+              <div style={{ ...S.homeDiff, color: TIER_HUE[tierFor(best).index] }}>{tierFor(best).tier.name}</div>
+            </div>
+
+            <button style={{ ...S.continueBtn, animationDelay: "230ms" }} className="card-in" onClick={() => { startJourney(best); setScreen("play"); }}>
+              Continue
+            </button>
+            <div style={S.homeFoot}>Best {bestScore.toLocaleString()} · level {best}</div>
+          </div>
+        )}
+
+        {screen === "levels" && (
+          <div style={S.settings} className="screen-in">
+            <div style={S.colTitle}>Levels</div>
+            <div style={S.lvNote}>
+              Every level stays open. Go back for the stars you missed — three needs a
+              flawless run.
+            </div>
+            {(() => {
+              const chapters = [];
+              for (let ch = 1; ch <= chapterOf(best); ch++) chapters.push(ch);
+              return chapters.reverse().map((ch) => {
+                const ci = chapterInfo(ch);
+                const from = ci.from;
+                const to = Math.min(ci.to, best);
+                const nums = [];
+                for (let n = from; n <= to; n++) nums.push(n);
+                const got = nums.reduce((a, n) => a + (levelStars[n] ?? 0), 0);
+                return (
+                  <div key={ch} style={S.lvChapter}>
+                    <div style={S.lvHead}>
+                      <span style={{ ...S.chapBadge, background: ci.hue }}>{ch}</span>
+                      <span style={S.lvChapName}>{ci.name}</span>
+                      <span style={S.lvChapStars}>{got}/{nums.length * 3} ★</span>
+                    </div>
+                    <div style={S.lvGrid}>
+                      {nums.map((n) => {
+                        const st = levelStars[n] ?? 0;
+                        return (
+                          <button
+                            key={n}
+                            style={{ ...S.lvCell, borderColor: st ? ci.hue : "transparent" }}
+                            onClick={() => { startJourney(n); setScreen("play"); }}
+                          >
+                            <span style={S.lvNum}>{n}</span>
+                            <span style={S.lvStars}>{st ? "★".repeat(st) : "·"}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              });
+            })()}
+          </div>
+        )}
+
+        {screen === "collection" && <div style={S.settings} className="screen-in">
+          <div style={S.colTitle}>Collection</div>
+          <div style={S.rankBar}>
+            {[
+              [3, "Gold", goldCount],
+              [2, "Silver", silverCount],
+              [1, "Bronze", bronzeCount],
+            ].map(([r, label, n]) => (
+              <div key={label} style={S.rankChip}>
+                <span style={{ ...S.rankDot, background: MEDAL[r] }} />
+                <span style={S.rankNum}>{n}</span>
+                <span style={S.rankLbl}>{label}</span>
+              </div>
+            ))}
+          </div>
+          <div style={S.colGrid}>
+            {COLLECTABLE.map((n) => {
+              const r = ranks[n] ?? 0;
+              return (
+                <div key={n} style={{ ...S.colItem, opacity: r ? 1 : 0.45, border: `2px solid ${r ? MEDAL[r] : "transparent"}` }}>
+                  <ShapeThumb shapeKey={THUMB[n]} on={!!r} />
+                  <span style={S.colName}>{r ? n : "???"}</span>
+                  <span style={{ ...S.rankTag, color: r ? MEDAL[r] : C.muted }}>
+                    {r === 3 ? "GOLD" : r === 2 ? "SILVER" : r === 1 ? "BRONZE" : "LOCKED"}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          {found.length > 0 && (
+            <>
+              <div style={{ ...S.colTitle, marginTop: 16 }}>Discovered shapes</div>
+              <div style={S.foundGrid}>
+                {found.map((f) => {
+                  const m = decodeMask(f.c);
+                  if (!m) return null;
+                  return (
+                    <div key={f.n} style={{ ...S.foundItem, border: `2px solid ${MEDAL[f.r ?? 1]}` }}>
+                      <svg viewBox={`0 0 ${m.cols} ${m.rows}`} style={{ width: 38, height: 38 }}>
+                        {[...m.cells].map((i) => (
+                          <rect key={i} x={(i % m.cols) + 0.14} y={((i / m.cols) | 0) + 0.14}
+                                width={0.72} height={0.72} rx={0.2} fill={C.accent} />
+                        ))}
+                      </svg>
+                      <span style={S.foundName}>{f.n}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+          <div style={{ ...S.colTitle, marginTop: 18 }}>
+            Stickers · {stickers.length}
+          </div>
+          {stickers.length === 0 ? (
+            <div style={S.emptyNote}>Finish a chapter of 25 levels to earn your first sticker.</div>
+          ) : (
+            <div style={S.stickerGrid}>
+              {stickers.slice().reverse().map((ch) => {
+                const ci = chapterInfo(ch);
+                return (
+                  <div key={ch} style={{ ...S.stickerItem, borderColor: ci.hue }}>
+                    {ci.mask && <MaskIcon mask={ci.mask} colour={ci.hue} size={40} />}
+                    <span style={S.stickerName}>{ci.name}</span>
+                    <span style={S.stickerCh}>Ch {ch}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div style={{ ...S.colTitle, marginTop: 18 }}>
+            Badges · {badges.length}/{BADGES.length}
+          </div>
+          <div style={S.badgeList}>
+            {BADGES.map((b) => {
+              const on = badges.includes(b.id);
+              return (
+                <div key={b.id} style={{ ...S.badgeRow, opacity: on ? 1 : 0.42 }}>
+                  <span style={{ ...S.badgeDot, background: on ? C.gold : C.line }} />
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span style={S.badgeName}>{b.name}</span>
+                    <span style={S.badgeNeed}>{b.need}</span>
+                  </span>
+                  {on && <span style={S.badgeTick}>✓</span>}
+                </div>
+              );
+            })}
+          </div>
+
+          <div style={S.tip}>
+            <b>Bronze</b> — clear the shape. <b>Silver</b> — clear it without a single mistake.
+            <b> Gold</b> — flawless at Hard or beyond: no mistakes and no undo.
+            <br />
+            Past level {CURATED_UNTIL} the game keeps inventing new shapes, and every one you
+            clear is kept here. There is no end to them.
+          </div>
+        </div>}
+
+        {screen === "studio" && (
+          <ShapeStudio
+            onPlay={(m) => { startCustom(m); setScreen("play"); }}
+            saved={customs}
+            onSave={saveCustom}
+            onDelete={deleteCustom}
+          />
+        )}
+
+        {screen === "settings" && <div style={S.settings} className="screen-in">
+          <Toggle label="Zen mode" hint="No lives, no losing — just solve" on={zen} onChange={(v) => { setZen(v); persist({ zen: v }); }} />
+          <Toggle label="Large touch targets" hint="Easier to hit the arrow you mean" on={bigTouch} onChange={(v) => { setBigTouch(v); persist({ bigTouch: v }); }} />
+          <Toggle label="Vibration" hint="Buzz on taps and mistakes" on={haptics} onChange={(v) => { setHaptics(v); persist({ haptics: v }); }} />
+          <Toggle label="Sound effects" hint="Chain pitch rises as you build a streak" on={sfxOn} onChange={(v) => { Snd.unlock(); setSfxOn(v); persist({ sfx: v }); }} />
+          <Toggle label="Music" hint="Slow ambient pads, quiet by design" on={musicOn} onChange={(v) => { Snd.unlock(); setMusicOn(v); persist({ music: v }); }} />
+          <div style={S.themeRow}>
+            <span style={S.tglLabel}>Arrow colours</span>
+            <div style={{ display: "flex", gap: 7 }}>
+              {PALETTE_KEYS.map((k) => (
+                <button
+                  key={k}
+                  onClick={() => { setTheme(k); persist({ theme: k }); }}
+                  aria-label={PALETTES[k].name}
+                  style={{ ...S.swatch, borderColor: theme === k ? C.accent : "transparent" }}
+                >
+                  {["right", "left", "up", "down"].map((d) => (
+                    <span key={d} style={{ ...S.swatchDot, background: toneFor(d, k) }} />
+                  ))}
+                </button>
+              ))}
+            </div>
+          </div>
+          {!adsRemoved && (
+            <div style={S.buyRow}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <span style={S.buyName}>Remove ads</span>
+                <span style={S.buyHint}>No ads between levels. Reward videos stay available.</span>
+              </div>
+              <button
+                style={S.buyBtn}
+                onClick={async () => {
+                  const ok = await Ads.buyRemoveAds();
+                  if (ok) { setAdsRemoved(true); persist({ adsRemoved: true }); }
+                  else flashNote("Purchases aren't set up yet.");
+                }}
+              >
+                Buy
+              </button>
+            </div>
+          )}
+          {adsRemoved && <div style={S.buyDone}>Ads removed — thank you.</div>}
+          <button
+            style={S.restoreBtn}
+            onClick={async () => {
+              const ok = await Ads.restore();
+              if (ok) { setAdsRemoved(true); persist({ adsRemoved: true }); flashNote("Purchase restored."); }
+              else flashNote("Nothing to restore.");
+            }}
+          >
+            Restore purchases
+          </button>
+          {adNote && <div style={S.adNote}>{adNote}</div>}
+
+          <div style={S.themeRow}>
+            <span style={S.tglLabel}>Board theme</span>
+            <div style={{ display: "flex", gap: 10 }}>
+              {[false, true].map((d) => (
+                <button
+                  key={String(d)}
+                  onClick={() => { setDark(d); persist({ dark: d }); }}
+                  style={{ ...S.themeTile, borderColor: dark === d ? C.accent : "transparent" }}
+                >
+                  <ThemePreview dark={d} />
+                  <span style={S.themeName}>{d ? "High contrast" : "Default"}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div style={S.tip}>
+            <b>Hold</b> an arrow to trace its route — it will not tell you whether the way is clear. Tap <b>#</b> to trace them all. <b>Pinch</b> to zoom.
+            <br />
+            Clearing an arrow that <b>frees others</b> scores far more. Find the order that unlocks the most.
+          </div>
+        </div>}
+      </div>
+
+      <div style={S.nav}>
+        {[
+          ["home", "Home", <HomeIcon />],
+          ["levels", "Levels", <Grid />],
+          ["studio", "Studio", <Pencil />],
+          ["collection", "Collection", <Trophy />],
+          ["settings", "Settings", <Gear />],
+        ].map(([key, label, icon]) => (
+          <button
+            key={key}
+            style={{ ...S.navBtn, ...(screen === key ? S.navOn : {}) }}
+            onClick={() => setScreen(key)}
+          >
+            <span key={screen === key ? "on" : "off"} className={screen === key ? "nav-on" : ""} style={{ opacity: screen === key ? 1 : 0.55, display: "inline-flex" }}>{icon}</span>
+            <span style={S.navLabel}>{label}</span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
 
+
 /* ═══════════  small components  ═══════════ */
+
+function ShapeStudio({ onPlay, saved, onSave, onDelete }) {
+  const N = 11;
+  const [cells, setCells] = useState(new Set());
+  const [codeIn, setCodeIn] = useState("");
+  const [msg, setMsg] = useState("");
+  const paint = useRef(null);
+
+  const toggle = (i, mode) => {
+    setCells((prev) => {
+      const next = new Set(prev);
+      if (mode === "add") next.add(i);
+      else next.delete(i);
+      return next;
+    });
+  };
+
+  const down = (i) => (e) => {
+    e.preventDefault();
+    // release the implicit capture or the drag never reaches the next cell
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
+    const mode = cells.has(i) ? "del" : "add";
+    paint.current = mode;
+    toggle(i, mode);
+  };
+  const over = (i) => () => paint.current && toggle(i, paint.current);
+
+  useEffect(() => {
+    const up = () => (paint.current = null);
+    window.addEventListener("pointerup", up);
+    return () => window.removeEventListener("pointerup", up);
+  }, []);
+
+  const mirror = () =>
+    setCells((prev) => {
+      const next = new Set(prev);
+      prev.forEach((i) => {
+        const y = (i / N) | 0, x = i % N;
+        if (x < Math.ceil(N / 2)) next.add(y * N + (N - 1 - x));
+      });
+      return next;
+    });
+
+  const build = () => {
+    const t = tidyDrawing(N, N, cells);
+    if (!t || t.cells.size < 24) {
+      setMsg("Draw at least 24 squares");
+      setTimeout(() => setMsg(""), 2200);
+      return null;
+    }
+    return { ...t, name: "Your shape", custom: true };
+  };
+
+  const play = () => {
+    const m = build();
+    if (m) onPlay(m);
+  };
+
+  const save = () => {
+    const m = build();
+    if (!m) return;
+    onSave(encodeMask(m.cols, m.rows, m.cells));
+    setMsg("Saved");
+    setTimeout(() => setMsg(""), 1600);
+  };
+
+  const copy = () => {
+    const m = build();
+    if (!m) return;
+    const code = encodeMask(m.cols, m.rows, m.cells);
+    try {
+      navigator.clipboard.writeText(code);
+      setMsg("Code copied");
+    } catch {
+      setMsg(code);
+    }
+    setTimeout(() => setMsg(""), 2600);
+  };
+
+  const openCode = () => {
+    const m = decodeMask(codeIn);
+    if (!m) {
+      setMsg("That code doesn't look right");
+      setTimeout(() => setMsg(""), 2200);
+      return;
+    }
+    onPlay(m);
+  };
+
+  return (
+    <div style={S.settings} className="screen-in">
+      <div style={S.colTitle}>Draw a shape</div>
+      <div style={S.studioGrid}>
+        {Array.from({ length: N * N }).map((_, i) => (
+          <button
+            key={i}
+            onPointerDown={down(i)}
+            onPointerEnter={over(i)}
+            style={{ ...S.studioCell, background: cells.has(i) ? C.accent : C.bg }}
+            aria-label={`cell ${i}`}
+          />
+        ))}
+      </div>
+
+      <div style={S.studioRow}>
+        <button style={S.chip} onClick={mirror}>Mirror</button>
+        <button style={S.chip} onClick={() => setCells(new Set())}>Clear</button>
+        <button style={S.chip} onClick={save}>Save</button>
+        <button style={S.chip} onClick={copy}>Copy code</button>
+      </div>
+
+      <button style={{ ...S.primary, marginTop: 10 }} onClick={play}>Play this shape</button>
+
+      {saved.length > 0 && (
+        <>
+          <div style={{ ...S.colTitle, marginTop: 16 }}>Your shapes</div>
+          <div style={S.savedRow}>
+            {saved.map((code) => {
+              const m = decodeMask(code);
+              if (!m) return null;
+              return (
+                <div key={code} style={S.savedItem}>
+                  <button style={S.savedBtn} onClick={() => onPlay(m)} aria-label="Play saved shape">
+                    <svg viewBox={`0 0 ${m.cols} ${m.rows}`} style={{ width: 44, height: 44 }}>
+                      {[...m.cells].map((i) => (
+                        <rect key={i} x={(i % m.cols) + 0.12} y={((i / m.cols) | 0) + 0.12}
+                              width={0.76} height={0.76} rx={0.22} fill={C.accent} />
+                      ))}
+                    </svg>
+                  </button>
+                  <button style={S.savedX} onClick={() => onDelete(code)} aria-label="Delete">✕</button>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      <div style={{ ...S.colTitle, marginTop: 16 }}>Play a shared code</div>
+      <div style={S.studioRow}>
+        <input
+          value={codeIn}
+          onChange={(e) => setCodeIn(e.target.value)}
+          placeholder="paste a code"
+          style={S.codeInput}
+        />
+        <button style={S.chip} onClick={openCode}>Open</button>
+      </div>
+
+      {msg && <div style={S.studioMsg}>{msg}</div>}
+      <div style={S.tip}>
+        Anything you draw becomes a real puzzle — the board is generated inside your
+        shape and is always solvable. Send the code to a friend and they play the
+        exact same board.
+      </div>
+    </div>
+  );
+}
+
+function MaskIcon({ mask, colour, size = 40 }) {
+  return (
+    <svg viewBox={`0 0 ${mask.cols} ${mask.rows}`} style={{ width: size, height: size, display: "block" }}>
+      {[...mask.cells].map((i) => (
+        <rect key={i} x={(i % mask.cols) + 0.12} y={((i / mask.cols) | 0) + 0.12}
+              width={0.76} height={0.76} rx={0.24} fill={colour} />
+      ))}
+    </svg>
+  );
+}
+
+function ThemePreview({ dark }) {
+  const cols = dark
+    ? ["#4C8DFF", "#FF5C7A", "#A78BFA", "#FFC24B"]
+    : ["#2F7BF6", "#FF4D6A", "#8B5CF6", "#F59E0B"];
+  return (
+    <svg viewBox="0 0 104 78" style={{ width: 66, height: 50, borderRadius: 9, background: dark ? "#080C1A" : "#FFFFFF", display: "block" }}>
+      {Array.from({ length: 12 }).map((_, i) => {
+        const x = 16 + (i % 4) * 24;
+        const y = 18 + Math.floor(i / 4) * 21;
+        const c = cols[i % 4];
+        const rot = [0, 90, 180, 270][(i * 3) % 4];
+        return (
+          <g key={i} transform={`rotate(${rot} ${x} ${y})`}>
+            <path d={`M ${x - 8} ${y} H ${x + 2}`} stroke={c} strokeWidth="3.2" strokeLinecap="round" />
+            <path d={`M ${x - 1} ${y - 4} L ${x + 5} ${y} L ${x - 1} ${y + 4}`} stroke={c} strokeWidth="3.2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
 
 function Toggle({ label, hint, on, onChange }) {
   return (
@@ -1631,6 +3005,45 @@ const Speaker = ({ on }) => (
     )}
   </svg>
 );
+const ChevLeft = () => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+    <path d="M15 5l-7 7 7 7" stroke={C.accent} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+const Hash = ({ on }) => (
+  <svg width="21" height="21" viewBox="0 0 24 24" fill="none">
+    <path d="M9 3v18M15 3v18M3 9h18M3 15h18" stroke={on ? C.accent : C.muted} strokeWidth="2.1" strokeLinecap="round" />
+  </svg>
+);
+const HomeIcon = () => (
+  <svg width="21" height="21" viewBox="0 0 24 24" fill="none">
+    <path d="M3.5 10.5L12 3.5l8.5 7M5.5 9.5V20h13V9.5" stroke={C.accent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+function MiniShape({ shapeKey }) {
+  const m = parseMask(shapeKey);
+  return (
+    <svg viewBox={`0 0 ${m.cols} ${m.rows}`} style={{ width: "100%", height: "100%" }}>
+      {[...m.cells].map((i) => (
+        <rect key={i} x={(i % m.cols) + 0.14} y={((i / m.cols) | 0) + 0.14} width={0.72} height={0.72} rx={0.24} fill={C.accent} opacity={0.85} />
+      ))}
+    </svg>
+  );
+}
+const Grid = () => (
+  <svg width="21" height="21" viewBox="0 0 24 24" fill="none">
+    <rect x="3.5" y="3.5" width="7" height="7" rx="2" stroke={C.accent} strokeWidth="1.9" />
+    <rect x="13.5" y="3.5" width="7" height="7" rx="2" stroke={C.accent} strokeWidth="1.9" />
+    <rect x="3.5" y="13.5" width="7" height="7" rx="2" stroke={C.accent} strokeWidth="1.9" />
+    <rect x="13.5" y="13.5" width="7" height="7" rx="2" stroke={C.accent} strokeWidth="1.9" />
+  </svg>
+);
+const Pencil = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+    <path d="M4 20h4L19.5 8.5a2.5 2.5 0 00-3.5-3.5L4.5 16.5 4 20z" stroke={C.muted} strokeWidth="1.9" strokeLinejoin="round" />
+    <path d="M14.5 6.5l3.5 3.5" stroke={C.muted} strokeWidth="1.9" strokeLinecap="round" />
+  </svg>
+);
 const Trophy = () => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
     <path d="M7 4h10v5a5 5 0 01-10 0V4zM7 6H4v1a3 3 0 003 3M17 6h3v1a3 3 0 01-3 3M9 20h6M12 14v6" stroke={C.muted} strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
@@ -1644,18 +3057,19 @@ const TinyArrow = () => (
 
 /* ═══════════  css  ═══════════ */
 
-const CSS = `
+const makeCSS = (C) => `
 @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@600;800;900&family=DM+Mono:wght@500&display=swap');
+svg { shape-rendering: geometricPrecision; }
 @keyframes settleIn{0%{opacity:0;transform:translateY(6px)}100%{opacity:1;transform:translateY(0)}}
-.settle{animation:settleIn 300ms ease backwards;animation-delay:var(--d,0ms)}
+.settle{animation:settleIn 165ms cubic-bezier(.2,.9,.3,1) backwards;animation-delay:var(--d,0ms)}
 @keyframes snakeOut{to{stroke-dashoffset:var(--off)}}
-.snake{animation:snakeOut 540ms cubic-bezier(.36,0,.32,1) forwards}
+.snake{animation:snakeOut 240ms cubic-bezier(.45,0,.7,.1) forwards;will-change:stroke-dashoffset}
 @keyframes chevOut{to{transform:translate(var(--tx),var(--ty))}}
-.chev-out{animation:chevOut 540ms cubic-bezier(.36,0,.32,1) forwards}
+.chev-out{animation:chevOut 240ms cubic-bezier(.45,0,.7,.1) forwards;will-change:transform}
 @keyframes depFade{0%,72%{opacity:1}100%{opacity:0}}
-.dep-fade{animation:depFade 540ms linear forwards}
+.dep-fade{animation:depFade 240ms linear forwards}
 @keyframes ringOut{0%{opacity:.5;transform:scale(.35)}100%{opacity:0;transform:scale(1.7)}}
-.ring{animation:ringOut 460ms cubic-bezier(.25,.8,.4,1) forwards;transform-box:fill-box;transform-origin:center}
+.ring{animation:ringOut 320ms cubic-bezier(.16,.9,.3,1) forwards;transform-box:fill-box;transform-origin:center;will-change:transform,opacity}
 @keyframes nudge{0%,100%{transform:translateX(0)}22%{transform:translateX(-9px)}55%{transform:translateX(9px)}80%{transform:translateX(-4px)}}
 .shake{animation:nudge 340ms ease}
 @keyframes flashDim{0%,100%{opacity:1}50%{opacity:.3}}
@@ -1669,35 +3083,84 @@ const CSS = `
 @keyframes badgeIn{0%{transform:scale(.4);opacity:0}100%{transform:scale(1);opacity:1}}
 .badge-in{animation:badgeIn 160ms cubic-bezier(.34,1.56,.64,1)}
 @keyframes popUp{0%{transform:translateY(0);opacity:0}20%{transform:translateY(calc(var(--rise,60px) * -0.3));opacity:1}100%{transform:translateY(calc(var(--rise,60px) * -1));opacity:0}}
-.pop{animation:popUp 950ms cubic-bezier(.2,.9,.3,1) forwards;pointer-events:none}
+.pop{animation:popUp 820ms cubic-bezier(.15,.95,.3,1) forwards;pointer-events:none;will-change:transform,opacity}
 @keyframes ovin{from{opacity:0;transform:scale(.97)}to{opacity:1;transform:scale(1)}}
 .ovin{animation:ovin 240ms ease-out}
 .confetti{position:absolute;top:-20px;width:9px;height:15px;border-radius:2px;animation-name:fall;animation-timing-function:linear;animation-iteration-count:infinite}
 @keyframes fall{0%{transform:translateY(0) rotate(0)}100%{transform:translateY(105vh) rotate(540deg)}}
+
+/* every button gives instant physical feedback */
+button { transition: transform 110ms cubic-bezier(.34,1.4,.64,1), background 180ms ease, opacity 180ms ease; }
+button:active:not(:disabled) { transform: scale(.93); }
+
+@keyframes screenIn { from { opacity: 0; transform: translateY(14px) scale(.985); } to { opacity: 1; transform: none; } }
+.screen-in { animation: screenIn 260ms cubic-bezier(.18,.9,.26,1) both; will-change: transform, opacity; }
+
+@keyframes boardIn { from { opacity: 0; transform: scale(.9); } to { opacity: 1; transform: scale(1); } }
+.board-in { animation: boardIn 300ms cubic-bezier(.16,.92,.26,1) backwards; transform-origin: center; }
+
+@keyframes hudIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: none; } }
+.hud-in { animation: hudIn 260ms cubic-bezier(.2,.85,.3,1) both; }
+
+@keyframes cardIn { from { opacity: 0; transform: translateY(16px) scale(.96); } to { opacity: 1; transform: none; } }
+.card-in { animation: cardIn 300ms cubic-bezier(.2,1.06,.3,1) both; will-change: transform, opacity; }
+
+@keyframes navPop { 0% { transform: scale(1); } 45% { transform: scale(1.18); } 100% { transform: scale(1); } }
+.nav-on { animation: navPop 280ms cubic-bezier(.34,1.5,.64,1); }
+
 button:focus-visible{outline:3px solid ${C.accent};outline-offset:3px}
 @media (prefers-reduced-motion: reduce){.settle,.snake,.chev-out,.dep-fade,.ring,.shake,.flash,.hint,.hbreak,.starpop,.ovin,.confetti,.badge-in,.pop{animation-duration:1ms!important}}
 `;
 
+let CSS = makeCSS(C);
+
 /* ═══════════  styles  ═══════════ */
 
 const BOARD_W = "min(93vw, 412px)";
+const CELL_CAP = 62;
+const VIEW_PAD = 0.6;  // just enough margin for the stroke, no wasted screen
+const DOT_PAD = 9;   // dots are drawn well past it and clipped by the viewport
 
-const S = {
-  bar: { width: BOARD_W, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8 },
-  barLeft: { minWidth: 0 },
-  lvl: { fontWeight: 900, fontSize: 17, letterSpacing: "-0.02em", lineHeight: 1.15 },
-  sub: { display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, fontWeight: 700, color: C.muted, marginTop: 2, whiteSpace: "nowrap" },
-  dotSep: { opacity: 0.5 },
-  barMid: { display: "flex", gap: 4, alignItems: "center" },
-  barRight: { textAlign: "right", minWidth: 74 },
-  scoreNum: { fontWeight: 900, fontSize: 18, lineHeight: 1.1, letterSpacing: "-0.02em" },
-  flowTrack: { height: 4, width: 66, marginLeft: "auto", marginTop: 4, borderRadius: 999, background: C.line, overflow: "hidden" },
-  page: { minHeight: "100vh", background: C.bg, color: C.ink, fontFamily: "'Nunito', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", padding: "12px 14px 26px", WebkitTapHighlightColor: "transparent", userSelect: "none", touchAction: "manipulation" },
-  modeBar: { width: BOARD_W, display: "flex", gap: 8, alignItems: "center", marginBottom: 8 },
-  modeBtn: { flex: 1, background: "transparent", border: "none", borderRadius: 999, padding: "9px 8px", fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 13, color: C.muted, cursor: "pointer" },
-  modeOn: { background: C.card, color: C.ink, boxShadow: "0 2px 8px rgba(27,36,64,0.08)" },
-  streak: { color: C.stop, fontSize: 13 },
-  gear: { width: 34, height: 34, borderRadius: "50%", background: C.card, border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 2px 8px rgba(27,36,64,0.08)", flexShrink: 0 },
+const makeStyles = (C) => ({
+  playRoot: { position: "fixed", inset: 0, height: "100dvh", touchAction: "none", overscrollBehavior: "none", background: C.bg, color: C.ink, fontFamily: "'Nunito', system-ui, sans-serif", display: "flex", flexDirection: "column", WebkitTapHighlightColor: "transparent", userSelect: "none", overflow: "hidden" },
+  hud: { display: "flex", alignItems: "center", gap: 8, padding: "12px 14px 8px" },
+  hudBtn: { width: 42, height: 42, borderRadius: "50%", background: C.card, border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 2px 8px rgba(27,36,64,0.08)", flexShrink: 0 },
+  hudMid: { flex: 1, textAlign: "center" },
+  leftCount: { fontWeight: 800, fontSize: 12, color: C.muted },
+  diffLabel: { fontWeight: 900, fontSize: 15, letterSpacing: "0.01em" },
+  hudHearts: { display: "flex", gap: 4, justifyContent: "center", alignItems: "center", marginTop: 3 },
+  hintPill: { display: "flex", alignItems: "center", gap: 5, background: C.card, border: "none", borderRadius: 999, padding: "10px 14px", cursor: "pointer", boxShadow: "0 2px 8px rgba(27,36,64,0.08)", flexShrink: 0 },
+  hintTxt: { fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 13, color: C.accent },
+  topTrack: { height: 5, margin: "0 16px 4px", borderRadius: 999, background: C.line, overflow: "hidden" },
+  topFill: { height: "100%", borderRadius: 999, background: C.accent, transition: "width 320ms cubic-bezier(.4,0,.2,1)" },
+  playViewport: { flex: 1, minHeight: 0, width: "100%", overflow: "hidden", touchAction: "none", overscrollBehavior: "contain" },
+  gridToggle: { position: "absolute", right: 18, bottom: 92, width: 50, height: 50, borderRadius: 16, background: C.card, border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 4px 14px rgba(27,36,64,0.12)" },
+  playFoot: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 18px 20px" },
+  footBtn: { position: "relative", display: "flex", alignItems: "center", gap: 5, background: C.card, border: "none", borderRadius: 999, padding: "11px 16px", cursor: "pointer", boxShadow: "0 2px 8px rgba(27,36,64,0.08)" },
+  footNum: { fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 12, color: C.accent },
+  scorePill: { fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 19, color: C.ink },
+
+  shellBody: { flex: 1, minHeight: 0, width: BOARD_W, overflowY: "auto", paddingBottom: 8 },
+  home: { display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 6 },
+  streakChip: { background: C.card, borderRadius: 999, padding: "7px 16px", fontWeight: 900, fontSize: 14, boxShadow: "0 2px 8px rgba(27,36,64,0.07)", marginBottom: 16 },
+  homeCards: { display: "flex", gap: 12, width: "100%" },
+  homeCard: { flex: 1, background: C.card, border: "none", borderRadius: 20, padding: "14px 12px 12px", cursor: "pointer", boxShadow: "0 4px 16px rgba(27,36,64,0.08)", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontFamily: "'Nunito',sans-serif" },
+  homeCardTitle: { fontWeight: 900, fontSize: 17, color: C.ink },
+  homeCardSub: { fontSize: 11, fontWeight: 700, color: C.muted },
+  homeCardArt: { width: 74, height: 62, margin: "8px 0" },
+  homeCardBtn: { width: "100%", background: C.accent, color: "#fff", borderRadius: 999, padding: "9px 0", fontWeight: 900, fontSize: 13 },
+  brandWrap: { textAlign: "center", margin: "auto 0", padding: "34px 0" },
+  brand: { fontWeight: 900, fontSize: 33, letterSpacing: "-0.03em", color: C.ink },
+  homeLevel: { fontWeight: 900, fontSize: 21, color: C.accent, marginTop: 8 },
+  homeDiff: { fontWeight: 900, fontSize: 15, marginTop: 2 },
+  continueBtn: { width: "100%", background: C.accent, color: "#fff", border: "none", borderRadius: 999, padding: "17px 0", fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 17, cursor: "pointer", boxShadow: "0 8px 22px rgba(47,123,246,0.3)" },
+  homeFoot: { fontSize: 12, fontWeight: 700, color: C.muted, marginTop: 12 },
+
+  nav: { width: BOARD_W, display: "flex", gap: 4, background: C.card, borderRadius: 22, padding: 6, marginTop: 8, boxShadow: "0 4px 16px rgba(27,36,64,0.09)" },
+  navBtn: { flex: 1, background: "transparent", border: "none", borderRadius: 16, padding: "9px 1px", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, cursor: "pointer", fontFamily: "'Nunito',sans-serif" },
+  navOn: { background: C.bg },
+  navLabel: { fontSize: 8.5, fontWeight: 800, color: C.muted },
+  page: { minHeight: "100dvh", background: C.bg, color: C.ink, fontFamily: "'Nunito', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", padding: "12px 14px 26px", WebkitTapHighlightColor: "transparent", userSelect: "none", touchAction: "manipulation" },
   settings: { width: BOARD_W, background: C.card, borderRadius: 18, padding: 14, marginBottom: 12, boxShadow: "0 8px 26px rgba(27,36,64,0.12)" },
   tglRow: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: "transparent", border: "none", padding: "9px 2px", cursor: "pointer", textAlign: "left" },
   tglLabel: { display: "block", fontWeight: 800, fontSize: 13.5, color: C.ink },
@@ -1705,44 +3168,107 @@ const S = {
   tglTrack: { width: 40, height: 22, borderRadius: 999, padding: 2, flexShrink: 0, transition: "background 200ms ease" },
   tglKnob: { display: "block", width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "transform 200ms cubic-bezier(.34,1.4,.64,1)", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" },
   tip: { marginTop: 8, padding: "10px 12px", background: C.bg, borderRadius: 12, fontSize: 12, fontWeight: 600, color: C.muted, lineHeight: 1.5 },
+  studioGrid: { display: "grid", gridTemplateColumns: "repeat(11, 1fr)", gap: 3, touchAction: "none", marginBottom: 12 },
+  studioCell: { aspectRatio: "1 / 1", border: "none", borderRadius: 4, padding: 0, cursor: "pointer" },
+  studioRow: { display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" },
+  chip: { flex: 1, minWidth: 74, background: C.bg, border: "none", borderRadius: 999, padding: "9px 10px", fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 12, color: C.ink, cursor: "pointer" },
+  codeInput: { flex: 2, minWidth: 120, background: C.bg, border: "none", borderRadius: 999, padding: "10px 14px", fontFamily: "'DM Mono', monospace", fontSize: 12, color: C.ink, outline: "none" },
+  savedRow: { display: "flex", gap: 8, flexWrap: "wrap" },
+  savedItem: { position: "relative" },
+  savedBtn: { background: C.bg, border: "none", borderRadius: 12, padding: 6, cursor: "pointer", display: "block" },
+  savedX: { position: "absolute", top: -5, right: -5, width: 19, height: 19, borderRadius: "50%", background: C.danger, color: "#fff", border: "none", fontSize: 10, fontWeight: 800, cursor: "pointer", lineHeight: 1 },
+  studioMsg: { marginTop: 10, fontSize: 12, fontWeight: 800, color: C.accent, textAlign: "center" },
+  themeTile: { display: "flex", flexDirection: "column", alignItems: "center", gap: 5, background: C.bg, border: "2px solid transparent", borderRadius: 12, padding: 7, cursor: "pointer" },
+  themeName: { fontSize: 9.5, fontWeight: 800, color: C.muted, letterSpacing: "0.02em" },
+  zenInf: { fontSize: 17, fontWeight: 900, color: C.go, marginRight: 6 },
   themeRow: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 2px" },
   swatch: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 2, padding: 4, borderRadius: 10, border: "2px solid transparent", background: C.bg, cursor: "pointer" },
   swatchDot: { width: 8, height: 8, borderRadius: 2 },
   colTitle: { fontWeight: 900, fontSize: 14, marginBottom: 10, padding: "0 2px" },
+  chapterCard: { width: "100%", background: C.card, borderRadius: 18, padding: 14, boxShadow: "0 4px 16px rgba(27,36,64,0.08)", marginTop: 14 },
+  chapRow: { display: "flex", alignItems: "center", gap: 11 },
+  chapBadge: { width: 34, height: 34, borderRadius: 12, color: "#fff", fontWeight: 900, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  chapName: { fontWeight: 900, fontSize: 15, color: C.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  chapSub: { fontSize: 11, fontWeight: 700, color: C.muted, marginTop: 1 },
+  chapSticker: { flexShrink: 0 },
+  chapTrack: { height: 6, borderRadius: 999, background: C.bg, overflow: "hidden", marginTop: 11 },
+  chapFill: { height: "100%", borderRadius: 999, transition: "width 400ms cubic-bezier(.4,0,.2,1)" },
+  chapHint: { fontSize: 10.5, fontWeight: 700, color: C.muted, marginTop: 7, textAlign: "center" },
+  emptyNote: { fontSize: 12, fontWeight: 600, color: C.muted, background: C.bg, borderRadius: 12, padding: "12px 14px", lineHeight: 1.5 },
+  stickerGrid: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 },
+  stickerItem: { display: "flex", flexDirection: "column", alignItems: "center", gap: 3, background: C.bg, border: "2px solid", borderRadius: 14, padding: "10px 4px" },
+  stickerName: { fontSize: 8.5, fontWeight: 800, color: C.muted, textAlign: "center", lineHeight: 1.2 },
+  stickerCh: { fontSize: 8, fontWeight: 800, color: C.muted, opacity: 0.7 },
+  badgeList: { display: "flex", flexDirection: "column", gap: 6 },
+  badgeRow: { display: "flex", alignItems: "center", gap: 10, background: C.bg, borderRadius: 12, padding: "9px 12px" },
+  badgeDot: { width: 11, height: 11, borderRadius: "50%", flexShrink: 0 },
+  badgeName: { display: "block", fontWeight: 800, fontSize: 13, color: C.ink },
+  badgeNeed: { display: "block", fontSize: 10.5, fontWeight: 600, color: C.muted, marginTop: 1 },
+  badgeTick: { fontWeight: 900, color: C.gold, fontSize: 14 },
+  rankBar: { display: "flex", gap: 8, marginBottom: 12 },
+  rankChip: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, background: C.bg, borderRadius: 12, padding: "8px 4px" },
+  rankDot: { width: 10, height: 10, borderRadius: "50%" },
+  rankNum: { fontWeight: 900, fontSize: 15, color: C.ink },
+  rankLbl: { fontSize: 9.5, fontWeight: 800, color: C.muted },
+  rankTag: { fontSize: 8, fontWeight: 900, letterSpacing: "0.08em" },
+  foundGrid: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 },
+  foundItem: { display: "flex", flexDirection: "column", alignItems: "center", gap: 3, background: C.bg, borderRadius: 12, padding: "9px 4px" },
+  foundName: { fontSize: 8.5, fontWeight: 800, color: C.muted, textAlign: "center", lineHeight: 1.2 },
   colGrid: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 },
   colItem: { display: "flex", flexDirection: "column", alignItems: "center", gap: 4, background: C.bg, borderRadius: 14, padding: "12px 6px" },
   colName: { fontSize: 11, fontWeight: 800, color: C.muted },
-  coach: { width: BOARD_W, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, background: "#E9F1FF", border: "none", borderRadius: 12, padding: "8px 12px", marginBottom: 8, cursor: "pointer", textAlign: "left" },
+  adBtn: { width: "100%", background: C.go, color: "#fff", border: "none", borderRadius: 999, padding: "14px 0", fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 14, cursor: "pointer", marginBottom: 9, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 },
+  adPlay: { fontSize: 11 },
+  adNote: { fontSize: 11.5, fontWeight: 700, color: C.muted, textAlign: "center", marginTop: 8 },
+  buyRow: { display: "flex", alignItems: "center", gap: 12, background: C.bg, borderRadius: 14, padding: "12px 14px", marginBottom: 8 },
+  buyName: { display: "block", fontWeight: 900, fontSize: 14, color: C.ink },
+  buyHint: { display: "block", fontSize: 11, fontWeight: 600, color: C.muted, marginTop: 2, lineHeight: 1.4 },
+  buyBtn: { background: C.accent, color: "#fff", border: "none", borderRadius: 999, padding: "10px 20px", fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 13, cursor: "pointer", flexShrink: 0 },
+  buyDone: { fontSize: 12.5, fontWeight: 800, color: C.go, background: C.bg, borderRadius: 12, padding: "11px 14px", marginBottom: 8 },
+  restoreBtn: { width: "100%", background: "transparent", border: "none", padding: "9px 0", fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 12, color: C.muted, cursor: "pointer", marginBottom: 12 },
+  lvNote: { fontSize: 11.5, fontWeight: 600, color: C.muted, lineHeight: 1.5, marginBottom: 14 },
+  lvChapter: { marginBottom: 18 },
+  lvHead: { display: "flex", alignItems: "center", gap: 9, marginBottom: 9 },
+  lvChapName: { flex: 1, fontWeight: 900, fontSize: 14, color: C.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  lvChapStars: { fontSize: 11, fontWeight: 800, color: C.muted, flexShrink: 0 },
+  lvGrid: { display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 7 },
+  lvCell: { background: C.bg, border: "2px solid", borderRadius: 12, padding: "9px 2px 7px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, fontFamily: "'Nunito',sans-serif" },
+  lvNum: { fontWeight: 900, fontSize: 13, color: C.ink },
+  lvStars: { fontSize: 8.5, color: C.gold, letterSpacing: "-0.5px", minHeight: 11 },
+  tutBar: { display: "flex", alignItems: "center", gap: 10, width: "calc(100% - 28px)", alignSelf: "center", background: C.accent, borderRadius: 14, padding: "11px 13px", marginBottom: 8 },
+  tutStep: { fontWeight: 900, fontSize: 11, color: "#fff", background: "rgba(255,255,255,0.22)", borderRadius: 999, padding: "3px 8px", flexShrink: 0 },
+  tutText: { flex: 1, fontSize: 12.5, fontWeight: 700, color: "#fff", lineHeight: 1.35 },
+  tutSkip: { background: "rgba(255,255,255,0.2)", border: "none", borderRadius: 999, padding: "6px 11px", fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 11, color: "#fff", cursor: "pointer", flexShrink: 0 },
+  coach: { width: "calc(100% - 28px)", alignSelf: "center", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, background: C.coachBg, border: "none", borderRadius: 12, padding: "8px 12px", marginBottom: 8, cursor: "pointer", textAlign: "left" },
   coachText: { fontSize: 12, fontWeight: 600, color: C.ink, fontFamily: "'Nunito',sans-serif" },
   coachX: { fontSize: 12, color: C.muted, fontWeight: 800 },
-  tierRow: { width: BOARD_W, display: "flex", gap: 3, marginBottom: 10 },
-  tierTick: { height: 3, borderRadius: 999, transition: "background 300ms ease" },
-  flowFill: { height: "100%", borderRadius: 999, background: `linear-gradient(90deg, ${C.accent}, ${C.flow})`, transition: "width 300ms cubic-bezier(.4,0,.2,1)" },
   inl: { display: "inline-flex" },
   shieldTag: { fontSize: 15, marginRight: 2 },
   zenTag: { fontSize: 10, fontWeight: 900, letterSpacing: "0.15em", color: C.go, background: "#E4F6EE", borderRadius: 999, padding: "4px 10px" },
-  board: { position: "relative", width: BOARD_W, background: C.card, borderRadius: 22, padding: "12px 16px 18px", boxShadow: "0 16px 44px rgba(27,36,64,0.12), 0 2px 6px rgba(27,36,64,0.05)" },
-  track: { height: 4, borderRadius: 999, background: C.line, overflow: "hidden", marginBottom: 10 },
-  fill: { height: "100%", borderRadius: 999, background: C.accent, transition: "width 360ms cubic-bezier(.4,0,.2,1)" },
-  viewport: { width: "100%", borderRadius: 12, overflow: "hidden", touchAction: "none", overscrollBehavior: "contain" },
-  svg: { width: "100%", height: "auto", display: "block", overflow: "visible" },
-  overlay: { position: "absolute", inset: 0, borderRadius: 24, background: "rgba(255,255,255,0.96)", display: "flex", alignItems: "center", justifyContent: "center", backdropFilter: "blur(3px)" },
+  svgFill: { width: "100%", height: "100%", display: "block", overflow: "visible", touchAction: "none", pointerEvents: "auto" },
+  overlay: { position: "absolute", inset: 0, borderRadius: 24, background: C.overlay, display: "flex", alignItems: "center", justifyContent: "center", backdropFilter: "blur(3px)" },
   ovCard: { textAlign: "center", padding: 24, width: "100%", maxWidth: 280 },
   ovTitle: { fontWeight: 900, fontSize: 21, marginBottom: 6 },
   ovSub: { fontSize: 13, color: C.muted, marginBottom: 20, fontWeight: 600, lineHeight: 1.45 },
   primary: { display: "block", width: "100%", background: C.accent, color: "#fff", border: "none", borderRadius: 999, padding: "14px 30px", fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 15, cursor: "pointer", boxShadow: "0 6px 18px rgba(47,123,246,0.32)" },
   ghost: { display: "block", width: "100%", marginTop: 8, background: "transparent", color: C.muted, border: "none", padding: 10, fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 13, cursor: "pointer" },
-  controls: { display: "flex", gap: 12, alignItems: "center", marginTop: 14 },
-  orb: { position: "relative", width: 50, height: 50, borderRadius: "50%", background: C.card, border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 4px 14px rgba(27,36,64,0.10)" },
-  badge: { position: "absolute", top: -2, right: -2, minWidth: 20, height: 20, borderRadius: 999, background: C.accent, color: "#fff", fontSize: 11, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 5px" },
-  foot: { marginTop: 14, fontSize: 12, color: C.muted, fontWeight: 700 },
   winWrap: { position: "fixed", inset: 0, background: "linear-gradient(180deg,#1E8BFF 0%,#3AA0FF 55%,#5FB6FF 100%)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", zIndex: 40, padding: 20 },
   winInner: { position: "relative", textAlign: "center", width: "100%", maxWidth: 320 },
   winKicker: { color: "rgba(255,255,255,0.92)", fontWeight: 800, fontSize: 15 },
   winTitle: { color: "#fff", fontWeight: 900, fontSize: 27, letterSpacing: "-0.02em", margin: "6px 0 18px" },
-  winCard: { background: "#fff", borderRadius: 22, padding: 20, boxShadow: "0 14px 40px rgba(0,40,90,0.28)" },
+  winCard: { background: C.card, borderRadius: 22, padding: 20, boxShadow: "0 14px 40px rgba(0,40,90,0.28)" },
   winStars: { display: "flex", gap: 10, justifyContent: "center", margin: "18px 0 6px" },
   winMeta: { color: "rgba(255,255,255,0.92)", fontSize: 13, fontWeight: 700, marginBottom: 18 },
   winBtn: { display: "block", width: "100%", background: "#fff", color: C.accent, border: "none", borderRadius: 999, padding: "14px 30px", fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 15, cursor: "pointer", boxShadow: "0 6px 20px rgba(0,40,90,0.22)" },
   winGhost: { display: "block", width: "100%", marginTop: 10, background: "transparent", color: "#fff", border: "none", padding: 10, fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 14, cursor: "pointer" },
-};
+});
+
+let S = makeStyles(C);
+
+function applyTheme(dark) {
+  Object.assign(C, dark ? DARK : LIGHT);
+  C.__dark = dark;
+  S = makeStyles(C);
+  CSS = makeCSS(C);
+}
+
