@@ -563,6 +563,7 @@ function exitLine(head, d, cols, rows) {
 function buildBoard(mask, { maxLen, coverage, tightness, pieces: target }) {
   const { cols, rows, cells } = mask;
   const occupied = new Map();
+  const laneLoad = new Map(); // cell -> how many placed arrows must pass through it
   const pieces = [];
   const all = [...cells];
   const fillTarget = Math.round(cells.size * coverage);
@@ -582,10 +583,20 @@ function buildBoard(mask, { maxLen, coverage, tightness, pieces: target }) {
     const free = all.filter((c) => !occupied.has(c));
     if (!free.length) break;
     // sample a few and take the most central — interior lanes must be claimed early
+    // Boards used to be built by filling space, never by making arrows obstruct
+    // each other, so nearly half the board was tappable at any moment and there
+    // was nothing to work out. Prefer cells that sit inside an existing arrow's
+    // exit lane: every one placed there is a move the player cannot yet make.
     let head = free[(RND() * free.length) | 0];
-    for (let t = 0; t < 5; t++) {
+    let headScore = -1;
+    const samples = Math.min(free.length, 14);
+    for (let t = 0; t < samples; t++) {
       const cand = free[(RND() * free.length) | 0];
-      if (edgeDist(cand) > edgeDist(head)) head = cand;
+      const sc = (laneLoad.get(cand) || 0) * 6 + edgeDist(cand);
+      if (sc > headScore) {
+        headScore = sc;
+        head = cand;
+      }
     }
     let options = [];
     for (const d of DIR_NAMES) {
@@ -604,7 +615,8 @@ function buildBoard(mask, { maxLen, coverage, tightness, pieces: target }) {
     options.sort((a, b) => b.len - a.len);
     const chosen = RND() < tightness ? options[0] : options[(RND() * options.length) | 0];
     const D = DIRS[chosen.d];
-    const ownLane = new Set(exitLine(head, chosen.d, cols, rows));
+    const chosenLane = exitLine(head, chosen.d, cols, rows);
+    const ownLane = new Set(chosenLane);
 
     const body = [head];
     const used = new Set([head]);
@@ -652,6 +664,7 @@ function buildBoard(mask, { maxLen, coverage, tightness, pieces: target }) {
     }
     const id = pieces.length;
     body.forEach((c) => occupied.set(c, id));
+    for (const c of chosenLane) laneLoad.set(c, (laneLoad.get(c) || 0) + 1);
     pieces.push({ id, cells: body, dir: chosen.d });
     filled += body.length;
     fails = 0;
@@ -807,9 +820,15 @@ function countFreed(pieces, aliveSet, removedId, cols, rows) {
 const CHAPTER_LEN = 25;
 const chapterOf = (lvl) => Math.floor((lvl - 1) / CHAPTER_LEN) + 1;
 
+/* The Home card and the Levels list both call this on every render, and each
+   call rasterises a whole artwork. Cache it — the result never changes. */
+const chapterCache = new Map();
+
 function chapterInfo(ch) {
+  const hit = chapterCache.get(ch);
+  if (hit) return hit;
   const m = artMask(ch * 977 + 13) || proceduralMask(ch * 977 + 13);
-  return {
+  const info = {
     ch,
     from: (ch - 1) * CHAPTER_LEN + 1,
     to: ch * CHAPTER_LEN,
@@ -817,6 +836,8 @@ function chapterInfo(ch) {
     mask: m,
     hue: TIER_HUE[(ch - 1) % TIER_HUE.length],
   };
+  chapterCache.set(ch, info);
+  return info;
 }
 
 const BADGES = [
@@ -933,8 +954,8 @@ const Ads = {
 /* Deliberately quiet. The reviews of every rival in this genre are dominated by
    ad complaints, so an interstitial needs BOTH gaps to pass, never appears
    after a loss, and never during the tutorial. */
-const AD_EVERY_LEVELS = 4;
-const AD_MIN_GAP_MS = 90000;
+const AD_EVERY_LEVELS = 8;
+const AD_MIN_GAP_MS = 210000;
 
 /* ═══════════  shapes  ═══════════ */
 
@@ -1068,22 +1089,22 @@ function curatedKey(level) {
 }
 
 const TIERS = [
-  { name: "Warm Up", span: 2,     maxLen: 9, hearts: 3, hints: 3, undos: 3, coverage: 0.88, tightness: 0.62, freedom: 0.15, pieces: 7, maxCells: 70 },
-  { name: "Little Easy", span: 3,     maxLen: 10, hearts: 3, hints: 3, undos: 3, coverage: 0.89, tightness: 0.66, freedom: 0.1341, pieces: 8, maxCells: 88 },
-  { name: "Easy", span: 4,     maxLen: 11, hearts: 3, hints: 3, undos: 2, coverage: 0.9, tightness: 0.7, freedom: 0.1199, pieces: 10, maxCells: 108 },
-  { name: "Easy Plus", span: 5,     maxLen: 12, hearts: 3, hints: 2, undos: 2, coverage: 0.9, tightness: 0.74, freedom: 0.1072, pieces: 11, maxCells: 130 },
-  { name: "Little Medium", span: 6,     maxLen: 13, hearts: 3, hints: 2, undos: 2, coverage: 0.91, tightness: 0.77, freedom: 0.0958, pieces: 13, maxCells: 155 },
-  { name: "Medium", span: 8,     maxLen: 14, hearts: 3, hints: 2, undos: 2, coverage: 0.92, tightness: 0.8, freedom: 0.0857, pieces: 15, maxCells: 182 },
-  { name: "Medium Plus", span: 10,     maxLen: 15, hearts: 3, hints: 2, undos: 2, coverage: 0.92, tightness: 0.83, freedom: 0.0766, pieces: 17, maxCells: 210 },
-  { name: "Tricky", span: 12,     maxLen: 16, hearts: 3, hints: 2, undos: 1, coverage: 0.93, tightness: 0.86, freedom: 0.0685, pieces: 19, maxCells: 240 },
-  { name: "Tough", span: 14,     maxLen: 17, hearts: 3, hints: 2, undos: 1, coverage: 0.94, tightness: 0.88, freedom: 0.0612, pieces: 21, maxCells: 272 },
-  { name: "Hard", span: 17,     maxLen: 18, hearts: 3, hints: 1, undos: 1, coverage: 0.94, tightness: 0.9, freedom: 0.0547, pieces: 24, maxCells: 305 },
-  { name: "Very Hard", span: 20,     maxLen: 19, hearts: 3, hints: 1, undos: 1, coverage: 0.95, tightness: 0.92, freedom: 0.0489, pieces: 26, maxCells: 340 },
-  { name: "Super Hard", span: 24,     maxLen: 20, hearts: 3, hints: 1, undos: 1, coverage: 0.96, tightness: 0.94, freedom: 0.0437, pieces: 29, maxCells: 375 },
-  { name: "Expert", span: 30,     maxLen: 21, hearts: 3, hints: 1, undos: 1, coverage: 0.96, tightness: 0.96, freedom: 0.0391, pieces: 32, maxCells: 410 },
-  { name: "Elite", span: 36,     maxLen: 22, hearts: 3, hints: 1, undos: 1, coverage: 0.97, tightness: 0.97, freedom: 0.035, pieces: 35, maxCells: 445 },
-  { name: "Master", span: 45,     maxLen: 23, hearts: 3, hints: 1, undos: 1, coverage: 0.98, tightness: 0.99, freedom: 0.0312, pieces: 38, maxCells: 480 },
-  { name: "Pro", span: Infinity,     maxLen: 24, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 1.0, freedom: 0.0279, pieces: 42, maxCells: 520 },
+  { name: "Warm Up", span: 2,     maxLen: 10, hearts: 3, hints: 3, undos: 3, coverage: 0.88, tightness: 0.66, freedom: 0.15, pieces: 20, maxCells: 150 },
+  { name: "Little Easy", span: 3,     maxLen: 11, hearts: 3, hints: 3, undos: 3, coverage: 0.89, tightness: 0.7, freedom: 0.1341, pieces: 24, maxCells: 180 },
+  { name: "Easy", span: 4,     maxLen: 12, hearts: 3, hints: 3, undos: 2, coverage: 0.9, tightness: 0.74, freedom: 0.1199, pieces: 28, maxCells: 210 },
+  { name: "Easy Plus", span: 5,     maxLen: 13, hearts: 3, hints: 2, undos: 2, coverage: 0.9, tightness: 0.78, freedom: 0.1072, pieces: 32, maxCells: 240 },
+  { name: "Little Medium", span: 6,     maxLen: 14, hearts: 3, hints: 2, undos: 2, coverage: 0.91, tightness: 0.81, freedom: 0.0958, pieces: 36, maxCells: 275 },
+  { name: "Medium", span: 8,     maxLen: 15, hearts: 3, hints: 2, undos: 2, coverage: 0.92, tightness: 0.84, freedom: 0.0857, pieces: 40, maxCells: 310 },
+  { name: "Medium Plus", span: 10,     maxLen: 16, hearts: 3, hints: 2, undos: 2, coverage: 0.92, tightness: 0.86, freedom: 0.0766, pieces: 45, maxCells: 345 },
+  { name: "Tricky", span: 12,     maxLen: 17, hearts: 3, hints: 2, undos: 1, coverage: 0.93, tightness: 0.88, freedom: 0.0685, pieces: 50, maxCells: 380 },
+  { name: "Tough", span: 14,     maxLen: 18, hearts: 3, hints: 2, undos: 1, coverage: 0.94, tightness: 0.9, freedom: 0.0612, pieces: 55, maxCells: 420 },
+  { name: "Hard", span: 17,     maxLen: 19, hearts: 3, hints: 1, undos: 1, coverage: 0.94, tightness: 0.92, freedom: 0.0547, pieces: 60, maxCells: 460 },
+  { name: "Very Hard", span: 20,     maxLen: 20, hearts: 3, hints: 1, undos: 1, coverage: 0.95, tightness: 0.94, freedom: 0.0489, pieces: 66, maxCells: 500 },
+  { name: "Super Hard", span: 24,     maxLen: 21, hearts: 3, hints: 1, undos: 1, coverage: 0.96, tightness: 0.95, freedom: 0.0437, pieces: 72, maxCells: 545 },
+  { name: "Expert", span: 30,     maxLen: 22, hearts: 3, hints: 1, undos: 1, coverage: 0.96, tightness: 0.96, freedom: 0.0391, pieces: 78, maxCells: 590 },
+  { name: "Elite", span: 36,     maxLen: 23, hearts: 3, hints: 1, undos: 1, coverage: 0.97, tightness: 0.97, freedom: 0.035, pieces: 85, maxCells: 635 },
+  { name: "Master", span: 45,     maxLen: 24, hearts: 3, hints: 1, undos: 1, coverage: 0.98, tightness: 0.98, freedom: 0.0312, pieces: 92, maxCells: 680 },
+  { name: "Pro", span: Infinity,     maxLen: 26, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 1.0, freedom: 0.0279, pieces: 100, maxCells: 730 },
 ];
 const MEDAL = { 1: "#CD7F32", 2: "#AEB6C4", 3: "#FFC24B" };
 const TIER_HUE = ["#5FCB8A", "#4CC79B", "#3FBFD6", "#3EA8EE", "#3E9BF0", "#5580F2", "#6C7BF0", "#8470F2", "#9A6BF0", "#C07AD8", "#F0A93E", "#F2891B", "#F2761B", "#FF6A4A", "#FF3D9A", "#B14BFF"];
@@ -1625,7 +1646,7 @@ export default function ArrowEscapeV3() {
     setHintsLeft((n) => n + 1);
   }, [flashNote]);
 
-  const maybeInterstitial = useCallback(() => {
+  const maybeInterstitial = useCallback(async () => {
     if (adsRemoved) return;
     const g = adGate.current;
     g.since++;
@@ -1633,7 +1654,8 @@ export default function ArrowEscapeV3() {
     if (g.since < AD_EVERY_LEVELS || now - g.at < AD_MIN_GAP_MS) return;
     g.since = 0;
     g.at = now;
-    Ads.interstitial();
+    // awaited: the next board must not load underneath the ad
+    await Ads.interstitial();
   }, [adsRemoved]);
 
   /* ── level control ── */
@@ -1727,8 +1749,8 @@ export default function ArrowEscapeV3() {
     else startJourney(level);
   }, [mode, level, startDaily, startJourney, applySetup, setup.mask]);
 
-  const nextLevel = useCallback(() => {
-    maybeInterstitial();
+  const nextLevel = useCallback(async () => {
+    await maybeInterstitial();
     if (mode === "custom") {
       startJourney(level);
       return;
@@ -1744,7 +1766,7 @@ export default function ArrowEscapeV3() {
     if (n >= b) persist({ level: n, best: b });
     else persist({ best: b });
     startJourney(n, true);
-  }, [mode, level, best, persist, startJourney]);
+  }, [mode, level, best, persist, startJourney, maybeInterstitial]);
 
   /* ── popups ── */
   const addPop = useCallback((cell, text, hue) => {
@@ -3198,7 +3220,7 @@ let CSS = makeCSS(C);
 const BOARD_W = "min(93vw, 412px)";
 const CELL_CAP = 62;
 const VIEW_PAD = 0.6;  // just enough margin for the stroke, no wasted screen
-const DOT_PAD = 9;   // dots are drawn well past it and clipped by the viewport
+const DOT_PAD = 2;   // just past the viewBox edge; more is invisible and costs a render
 
 const makeStyles = (C) => ({
   playRoot: { position: "fixed", inset: 0, height: "100dvh", touchAction: "none", overscrollBehavior: "none", background: C.bg, color: C.ink, fontFamily: "'Nunito', system-ui, sans-serif", display: "flex", flexDirection: "column", WebkitTapHighlightColor: "transparent", userSelect: "none", overflow: "hidden" },
