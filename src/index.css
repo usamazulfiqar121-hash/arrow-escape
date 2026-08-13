@@ -120,3 +120,13 @@ html, body {
 * {
   box-sizing: border-box;
 }
+
+/* Safe area fix for status bar overlap */
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+body {
+  padding-top: var(--safe-top);
+  padding-bottom: var(--safe-bottom);
+}
