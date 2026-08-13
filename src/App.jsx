@@ -1453,7 +1453,7 @@ export default function ArrowEscapeV3() {
   const [sfxOn, setSfxOn] = useState(true);
   const [musicOn, setMusicOn] = useState(true);
   const [theme, setTheme] = useState("ink");
-  const [dark, setDark] = useState(false);
+  const [dark, setDark] = useState(true);
   const [coachSeen, setCoachSeen] = useState(true);
   const [ranks, setRanks] = useState({}); // shape name -> 1 bronze | 2 silver | 3 gold
   const [customs, setCustoms] = useState([]);
@@ -1572,7 +1572,7 @@ export default function ArrowEscapeV3() {
         setSfxOn(p.sfx !== false);
         setMusicOn(p.music !== false);
         setTheme(p.theme || "ink");
-        setDark(!!p.dark);
+        setDark(p.dark !== false);
         setCoachSeen(!!p.coachSeen);
         setTut(p.tut ?? 0);
         // migrate the old flat list into bronze ranks
@@ -3223,7 +3223,7 @@ const VIEW_PAD = 0.6;  // just enough margin for the stroke, no wasted screen
 const DOT_PAD = 2;   // just past the viewBox edge; more is invisible and costs a render
 
 const makeStyles = (C) => ({
-  playRoot: { position: "fixed", inset: 0, height: "100dvh", touchAction: "none", overscrollBehavior: "none", background: C.bg, color: C.ink, fontFamily: "'Nunito', system-ui, sans-serif", display: "flex", flexDirection: "column", WebkitTapHighlightColor: "transparent", userSelect: "none", overflow: "hidden" },
+  playRoot: { position: "fixed", inset: 0, height: "100dvh", boxSizing: "border-box", paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "env(safe-area-inset-bottom, 0px)", touchAction: "none", overscrollBehavior: "none", background: C.bg, color: C.ink, fontFamily: "'Nunito', system-ui, sans-serif", display: "flex", flexDirection: "column", WebkitTapHighlightColor: "transparent", userSelect: "none", overflow: "hidden" },
   hud: { display: "flex", alignItems: "center", gap: 8, padding: "12px 14px 8px" },
   hudBtn: { width: 42, height: 42, borderRadius: "50%", background: C.card, border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 2px 8px rgba(27,36,64,0.08)", flexShrink: 0 },
   hudMid: { flex: 1, textAlign: "center" },
@@ -3241,7 +3241,7 @@ const makeStyles = (C) => ({
   footNum: { fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 12, color: C.accent },
   scorePill: { fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 19, color: C.ink },
 
-  shellBody: { flex: 1, minHeight: 0, width: BOARD_W, overflowY: "auto", paddingBottom: 8 },
+  shellBody: { flex: 1, minHeight: 0, width: BOARD_W, overflowY: "auto", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch", paddingBottom: 8 },
   home: { display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 6 },
   streakChip: { background: C.card, borderRadius: 999, padding: "7px 16px", fontWeight: 900, fontSize: 14, boxShadow: "0 2px 8px rgba(27,36,64,0.07)", marginBottom: 16 },
   homeCards: { display: "flex", gap: 12, width: "100%" },
@@ -3261,7 +3261,7 @@ const makeStyles = (C) => ({
   navBtn: { flex: 1, background: "transparent", border: "none", borderRadius: 16, padding: "9px 1px", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, cursor: "pointer", fontFamily: "'Nunito',sans-serif" },
   navOn: { background: C.bg },
   navLabel: { fontSize: 8.5, fontWeight: 800, color: C.muted },
-  page: { minHeight: "100dvh", background: C.bg, color: C.ink, fontFamily: "'Nunito', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", padding: "12px 14px 26px", WebkitTapHighlightColor: "transparent", userSelect: "none", touchAction: "manipulation" },
+  page: { height: "100dvh", boxSizing: "border-box", overflow: "hidden", background: C.bg, color: C.ink, fontFamily: "'Nunito', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", padding: "calc(10px + env(safe-area-inset-top, 0px)) 14px calc(10px + env(safe-area-inset-bottom, 0px))", WebkitTapHighlightColor: "transparent", userSelect: "none", touchAction: "manipulation" },
   settings: { width: BOARD_W, background: C.card, borderRadius: 18, padding: 14, marginBottom: 12, boxShadow: "0 8px 26px rgba(27,36,64,0.12)" },
   tglRow: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: "transparent", border: "none", padding: "9px 2px", cursor: "pointer", textAlign: "left" },
   tglLabel: { display: "block", fontWeight: 800, fontSize: 13.5, color: C.ink },
