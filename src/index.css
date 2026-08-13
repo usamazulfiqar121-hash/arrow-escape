@@ -121,7 +121,3 @@ html, body {
   box-sizing: border-box;
 }
 
-body {
-  padding-top: var(--safe-top);
-  padding-bottom: var(--safe-bottom);
-}
