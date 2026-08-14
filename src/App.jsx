@@ -18,6 +18,10 @@ const LIGHT = {
   gridLine: "#B9C6E0",
   overlay: "rgba(255,255,255,0.96)",
   coachBg: "#E9F1FF",
+  edge: "rgba(27,36,64,0.00)",
+  sh1: "0 2px 8px rgba(27,36,64,0.07)",
+  sh2: "0 6px 20px rgba(27,36,64,0.10)",
+  sh3: "0 14px 36px rgba(27,36,64,0.14)",
 };
 
 /* High contrast — vivid arrows on near-black, easier in low light and for
@@ -38,6 +42,10 @@ const DARK = {
   gridLine: "#3C4E76",
   overlay: "rgba(8,12,26,0.96)",
   coachBg: "#16223F",
+  edge: "rgba(140,170,255,0.10)",
+  sh1: "0 2px 10px rgba(0,0,0,0.40)",
+  sh2: "0 8px 26px rgba(0,0,0,0.50)",
+  sh3: "0 18px 46px rgba(0,0,0,0.60)",
 };
 
 const C = { ...LIGHT, __dark: false };
@@ -735,22 +743,42 @@ function fitMask(mask, maxCells) {
 }
 
 
+// blow a hand-drawn shape up so the same outline holds far more arrows —
+// an 11x11 sketch only has room for a handful otherwise
+function scaleMask(mask, k) {
+  if (k <= 1) return mask;
+  const cols = mask.cols * k;
+  const rows = mask.rows * k;
+  const cells = new Set();
+  for (const i of mask.cells) {
+    const x = (i % mask.cols) * k;
+    const y = Math.floor(i / mask.cols) * k;
+    for (let dy = 0; dy < k; dy++) for (let dx = 0; dx < k; dx++) cells.add((y + dy) * cols + x + dx);
+  }
+  return { ...mask, cols, rows, cells };
+}
+
 function makeLevelFromMask(rawMask, tierIdx = 7) {
   const idx = Math.max(0, Math.min(TIERS.length - 1, tierIdx | 0));
   const tier = TIERS[idx];
-  const mask = fitMask(rawMask, tier.maxCells);
+  // pack a drawn shape as full as the tier allows before building
+  const room = rawMask.cells.size ? Math.sqrt(tier.maxCells / rawMask.cells.size) : 1;
+  const mask = fitMask(scaleMask(rawMask, Math.max(1, Math.min(4, Math.floor(room)))), tier.maxCells);
+  const chessWeight = idx >= HARD_TIER ? 0.9 : 0;
   let best = null;
-  for (let i = 0; i < (mask.cells.size > 240 ? 2 : 5); i++) {
+  for (let i = 0; i < (mask.cells.size > 240 ? 3 : 6); i++) {
     const pieces = buildBoard(mask, tier);
     if (pieces.length < 3) continue;
     const mb = measureBoard(pieces, mask.cols, mask.rows);
     const fill = pieces.reduce((a, p) => a + p.cells.length, 0) / mask.cells.size;
     // prefer the target openness, reward boards with more forced moments, and
     // heavily punish a board that leaves the shape half empty
-    const gap = Math.abs(mb.freedom - tier.freedom) - mb.forced * 0.35 + Math.max(0, tier.coverage - 0.06 - fill) * 4;
+    const gap = Math.abs(mb.freedom - tier.freedom) - mb.forced * 0.35 + Math.max(0, tier.coverage - 0.06 - fill) * 4
+      - (chessWeight ? chessScore(pieces, mask.cols, mask.rows) * chessWeight : 0);
     if (!best || gap < best.gap) best = { pieces, gap };
   }
   if (!best) best = { pieces: buildBoard(mask, tier), gap: 1 };
+  assignLocks(best.pieces, mask.cols, mask.rows, lockRatio(idx));
   return {
     mask, pieces: best.pieces, tier, tierIndex: idx, stepInTier: 1,
     hearts: tier.hearts, hints: tier.hints, undos: tier.undos,
@@ -763,6 +791,44 @@ function makeLevelFromMask(rawMask, tierIdx = 7) {
    solution reads like a forced line rather than a pile of free choices.
    We solve the board a few times and score how often the position forces
    the player's hand, and how long those forced runs get.               */
+// Some arrows are sealed shut until a particular other arrow has left. Locks are
+// handed out along a real solve order — a sealed arrow always depends on one that
+// comes before it — so a board with locks stays solvable by construction.
+function assignLocks(pieces, cols, rows, ratio) {
+  if (ratio <= 0 || pieces.length < 8) return;
+  const lanes = pieces.map((p) => exitLine(p.cells[0], p.dir, cols, rows));
+  const owner = new Map();
+  pieces.forEach((p) => p.cells.forEach((c) => owner.set(c, p.id)));
+  const alive = new Set(pieces.map((p) => p.id));
+  const isFree = (id) =>
+    lanes[id].every((c) => {
+      const o = owner.get(c);
+      return o === undefined || !alive.has(o);
+    });
+
+  const order = [];
+  while (alive.size) {
+    const free = [...alive].filter(isFree);
+    if (!free.length) return; // not a clean board — leave it alone
+    const pick = free[(RND() * free.length) | 0];
+    order.push(pick);
+    alive.delete(pick);
+  }
+
+  const byId = new Map(pieces.map((p) => [p.id, p]));
+  const first = Math.max(2, Math.floor(order.length * 0.22)); // the opening stays free
+  const room = order.length - first;
+  const want = Math.min(Math.round(order.length * ratio), room);
+  if (want < 1) return;
+  const stride = Math.max(1, Math.floor(room / want));
+  for (let n = 0, i = first; n < want && i < order.length; n++, i += stride) {
+    const p = byId.get(order[i]);
+    if (!p) continue;
+    const back = 1 + ((RND() * Math.min(i, 6)) | 0); // depends on a recent earlier arrow
+    p.needs = order[Math.max(0, i - back)];
+  }
+}
+
 function chessScore(pieces, cols, rows) {
   if (pieces.length < 6) return 0;
   const lanes = pieces.map((p) => exitLine(p.cells[0], p.dir, cols, rows));
@@ -825,39 +891,13 @@ function makeLevel(level, seed) {
     if (!best || gap < best.gap) best = { pieces, gap };
   }
   if (!best) best = { pieces: buildBoard(mask, tier), gap: 1 };
+  assignLocks(best.pieces, mask.cols, mask.rows, lockRatio(index));
   RND = Math.random;
 
   return { mask, pieces: best.pieces, tier, tierIndex: index, stepInTier, hearts: tier.hearts, hints: tier.hints, undos: tier.undos };
 }
 
 /* how many arrows a removal sets free — the heart of chain scoring */
-// which arrows does removing this one set free — returns their head cells so
-// the board can show the cascade the move just opened
-function freedHeads(pieces, aliveSet, removedId, cols, rows) {
-  const occBefore = new Map();
-  const occAfter = new Map();
-  pieces.forEach((p) => {
-    if (!aliveSet.has(p.id)) return;
-    p.cells.forEach((c) => {
-      occBefore.set(c, p.id);
-      if (p.id !== removedId) occAfter.set(c, p.id);
-    });
-  });
-  const blocked = (p, occ) => {
-    for (const c of exitLine(p.cells[0], p.dir, cols, rows)) {
-      const o = occ.get(c);
-      if (o !== undefined && o !== p.id) return true;
-    }
-    return false;
-  };
-  const out = [];
-  for (const p of pieces) {
-    if (!aliveSet.has(p.id) || p.id === removedId) continue;
-    if (blocked(p, occBefore) && !blocked(p, occAfter)) out.push(p.cells[0]);
-  }
-  return out;
-}
-
 function countFreed(pieces, aliveSet, removedId, cols, rows) {
   const occBefore = new Map();
   const occAfter = new Map();
@@ -1195,22 +1235,22 @@ function curatedKey(level) {
 }
 
 const TIERS = [
-  { name: "Warm Up", span: 2,     maxLen: 10, hearts: 3, hints: 3, undos: 3, coverage: 0.92, tightness: 0.80, freedom: 0.105, pieces: 22, maxCells: 150 },
-  { name: "Little Easy", span: 3,     maxLen: 11, hearts: 3, hints: 3, undos: 3, coverage: 0.93, tightness: 0.83, freedom: 0.095, pieces: 26, maxCells: 185 },
-  { name: "Easy", span: 4,     maxLen: 12, hearts: 3, hints: 3, undos: 2, coverage: 0.93, tightness: 0.85, freedom: 0.086, pieces: 30, maxCells: 220 },
-  { name: "Easy Plus", span: 5,     maxLen: 13, hearts: 3, hints: 2, undos: 2, coverage: 0.94, tightness: 0.87, freedom: 0.078, pieces: 34, maxCells: 255 },
-  { name: "Little Medium", span: 6,     maxLen: 14, hearts: 3, hints: 2, undos: 2, coverage: 0.94, tightness: 0.88, freedom: 0.071, pieces: 38, maxCells: 290 },
-  { name: "Medium", span: 8,     maxLen: 15, hearts: 3, hints: 2, undos: 2, coverage: 0.95, tightness: 0.90, freedom: 0.064, pieces: 43, maxCells: 325 },
-  { name: "Medium Plus", span: 10,     maxLen: 16, hearts: 3, hints: 2, undos: 2, coverage: 0.95, tightness: 0.91, freedom: 0.058, pieces: 48, maxCells: 360 },
-  { name: "Tricky", span: 12,     maxLen: 17, hearts: 3, hints: 2, undos: 1, coverage: 0.96, tightness: 0.92, freedom: 0.052, pieces: 53, maxCells: 395 },
-  { name: "Tough", span: 14,     maxLen: 18, hearts: 3, hints: 2, undos: 1, coverage: 0.96, tightness: 0.93, freedom: 0.047, pieces: 58, maxCells: 430 },
-  { name: "Hard", span: 17,     maxLen: 19, hearts: 3, hints: 1, undos: 1, coverage: 0.97, tightness: 0.94, freedom: 0.042, pieces: 63, maxCells: 470 },
-  { name: "Very Hard", span: 20,     maxLen: 20, hearts: 3, hints: 1, undos: 1, coverage: 0.97, tightness: 0.95, freedom: 0.038, pieces: 69, maxCells: 510 },
-  { name: "Super Hard", span: 24,     maxLen: 21, hearts: 3, hints: 1, undos: 1, coverage: 0.98, tightness: 0.96, freedom: 0.034, pieces: 75, maxCells: 555 },
-  { name: "Expert", span: 30,     maxLen: 22, hearts: 3, hints: 1, undos: 1, coverage: 0.98, tightness: 0.97, freedom: 0.031, pieces: 81, maxCells: 600 },
-  { name: "Elite", span: 36,     maxLen: 23, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.98, freedom: 0.028, pieces: 88, maxCells: 645 },
-  { name: "Master", span: 45,     maxLen: 24, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.99, freedom: 0.025, pieces: 95, maxCells: 690 },
-  { name: "Pro", span: Infinity,     maxLen: 26, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 1.0, freedom: 0.022, pieces: 102, maxCells: 740 },
+  { name: "Warm Up", span: 2,     maxLen: 10, hearts: 3, hints: 3, undos: 3, coverage: 0.94, tightness: 0.80, freedom: 0.105, pieces: 32, maxCells: 150 },
+  { name: "Little Easy", span: 3,     maxLen: 11, hearts: 3, hints: 3, undos: 3, coverage: 0.95, tightness: 0.83, freedom: 0.095, pieces: 38, maxCells: 185 },
+  { name: "Easy", span: 4,     maxLen: 12, hearts: 3, hints: 3, undos: 2, coverage: 0.95, tightness: 0.85, freedom: 0.086, pieces: 44, maxCells: 220 },
+  { name: "Easy Plus", span: 5,     maxLen: 13, hearts: 3, hints: 2, undos: 2, coverage: 0.96, tightness: 0.87, freedom: 0.078, pieces: 49, maxCells: 255 },
+  { name: "Little Medium", span: 6,     maxLen: 14, hearts: 3, hints: 2, undos: 2, coverage: 0.96, tightness: 0.88, freedom: 0.071, pieces: 55, maxCells: 290 },
+  { name: "Medium", span: 8,     maxLen: 15, hearts: 3, hints: 2, undos: 2, coverage: 0.97, tightness: 0.90, freedom: 0.064, pieces: 62, maxCells: 325 },
+  { name: "Medium Plus", span: 10,     maxLen: 16, hearts: 3, hints: 2, undos: 2, coverage: 0.97, tightness: 0.91, freedom: 0.058, pieces: 70, maxCells: 360 },
+  { name: "Tricky", span: 12,     maxLen: 17, hearts: 3, hints: 2, undos: 1, coverage: 0.98, tightness: 0.92, freedom: 0.052, pieces: 77, maxCells: 395 },
+  { name: "Tough", span: 14,     maxLen: 18, hearts: 3, hints: 2, undos: 1, coverage: 0.98, tightness: 0.93, freedom: 0.047, pieces: 84, maxCells: 430 },
+  { name: "Hard", span: 17,     maxLen: 19, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.94, freedom: 0.042, pieces: 91, maxCells: 470 },
+  { name: "Very Hard", span: 20,     maxLen: 20, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.95, freedom: 0.038, pieces: 100, maxCells: 510 },
+  { name: "Super Hard", span: 24,     maxLen: 21, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.96, freedom: 0.034, pieces: 109, maxCells: 555 },
+  { name: "Expert", span: 30,     maxLen: 22, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.97, freedom: 0.031, pieces: 117, maxCells: 600 },
+  { name: "Elite", span: 36,     maxLen: 23, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.98, freedom: 0.028, pieces: 128, maxCells: 645 },
+  { name: "Master", span: 45,     maxLen: 24, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.99, freedom: 0.025, pieces: 138, maxCells: 690 },
+  { name: "Pro", span: Infinity,     maxLen: 26, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 1.0, freedom: 0.022, pieces: 148, maxCells: 740 },
 ];
 const MEDAL = { 1: "#CD7F32", 2: "#AEB6C4", 3: "#FFC24B" };
 const TIER_HUE = ["#5FCB8A", "#4CC79B", "#3FBFD6", "#3EA8EE", "#3E9BF0", "#5580F2", "#6C7BF0", "#8470F2", "#9A6BF0", "#C07AD8", "#F0A93E", "#F2891B", "#F2761B", "#FF6A4A", "#FF3D9A", "#B14BFF"];
@@ -1256,7 +1296,10 @@ function parseMask(key) {
    is the same shape for every player, everywhere. */
 
 const CURATED_UNTIL = 120;
-const HARD_TIER = 9; // TIERS index where "Hard" begins — chess-style boards from here up // hand-drawn art up to here, generated art beyond
+const HARD_TIER = 9; // TIERS index where "Hard" begins — chess-style boards from here up
+const LOCK_TIER = 5; // "Medium" — sealed arrows start appearing here
+// how much of a board is sealed: a taste at Medium, a real constraint by Pro
+const lockRatio = (index) => (index < LOCK_TIER ? 0 : Math.min(0.26, 0.06 + (index - LOCK_TIER) * 0.02)); // hand-drawn art up to here, generated art beyond
 const FORM_A = ["Twin", "Wide", "Tall", "Round", "Sharp", "Split", "Deep", "Open", "Half", "Broad"];
 const FORM_B = ["Bloom", "Arch", "Crest", "Drift", "Prism", "Wave", "Knot", "Spire", "Vault", "Ridge"];
 
@@ -1550,7 +1593,6 @@ export default function ArrowEscapeV3() {
   const tutClears = useRef(0);
   const [pops, setPops] = useState([]);
   const [ring, setRing] = useState(null);
-  const [glow, setGlow] = useState(null); // { key, cells } — arrows the last move set free
   const [phase, setPhase] = useState("playing");
   const [heartPop, setHeartPop] = useState(false);
   const [screen, setScreen] = useState("home"); // home | play | studio | collection | settings
@@ -1651,13 +1693,15 @@ export default function ArrowEscapeV3() {
 
   const blockerOf = useCallback(
     (piece) => {
+      // sealed: the arrow it waits on is still on the board
+      if (piece.needs !== undefined && alive.has(piece.needs)) return piece.needs;
       for (const c of exitLine(piece.cells[0], piece.dir, cols, rows)) {
         const o = occupancy.get(c);
         if (o !== undefined && o !== piece.id) return o;
       }
       return null;
     },
-    [occupancy, cols, rows]
+    [occupancy, alive, cols, rows]
   );
 
   const progress = pieces.length ? ((pieces.length - alive.size) / pieces.length) * 100 : 0;
@@ -1790,7 +1834,6 @@ export default function ArrowEscapeV3() {
     setHoldId(null);
     setPops([]);
     setRing(null);
-    setGlow(null);
     setPhase("playing");
     setLevelKey((k) => k + 1);
     viewRef.current = { scale: 1, tx: 0, ty: 0 };
@@ -1858,6 +1901,30 @@ export default function ArrowEscapeV3() {
     else if (mode === "custom") applySetup(makeLevelFromMask(setup.mask, setup.tierIndex), false);
     else startJourney(level);
   }, [mode, level, startDaily, startJourney, applySetup, setup.mask]);
+
+  // Android hardware back / side-swipe: step back through the app instead of
+  // dropping straight out of the game
+  useEffect(() => {
+    let handle = null;
+    let dropped = false;
+    (async () => {
+      try {
+        const { App } = await import("@capacitor/app");
+        const h = await App.addListener("backButton", () => {
+          if (screen !== "home") setScreen("home");
+          else App.exitApp();
+        });
+        if (dropped) h.remove();
+        else handle = h;
+      } catch {
+        /* not running under Capacitor — nothing to hook */
+      }
+    })();
+    return () => {
+      dropped = true;
+      handle?.remove();
+    };
+  }, [screen]);
 
   const nextLevel = useCallback(async () => {
     await maybeInterstitial();
@@ -1935,13 +2002,7 @@ export default function ArrowEscapeV3() {
       buzz(10);
       lastMiss.current = { id: -1, t: 0 };
 
-      const freedCells = freedHeads(pieces, alive, piece.id, cols, rows);
-      const freed = freedCells.length;
-      if (freed > 0) {
-        const gk = Date.now() + piece.id;
-        setGlow({ key: gk, cells: freedCells });
-        setTimeout(() => setGlow((g) => (g && g.key === gk ? null : g)), 760);
-      }
+      const freed = countFreed(pieces, alive, piece.id, cols, rows);
       const nextCombo = combo + 1;
       const gain = (10 + freed * 15) * Math.min(nextCombo, 5);
       setCombo(nextCombo);
@@ -2393,15 +2454,15 @@ export default function ArrowEscapeV3() {
           </button>
         </div>
 
-        {tut < 9 && mode === "journey" && (
+        {tut < 9 && mode === "journey" && level <= 4 && (
           <div style={S.tutBar} className="ovin">
             <span style={S.tutStep}>{tut + 1}/3</span>
             <span style={S.tutText}>
               {tut === 0
-                ? "Tap an arrow to send it off the board."
+                ? "Tap an arrow to send it off"
                 : tut === 1
-                ? "An arrow only leaves if its path is clear all the way out — tapping a blocked one costs a life."
-                : "Hold an arrow to trace where it is aimed. Tap # to trace them all."}
+                ? "Its path must be clear — blocked costs a life"
+                : "Hold an arrow to trace its route"}
             </span>
             <button style={S.tutSkip} onClick={() => setTutStep(9)}>Skip</button>
           </div>
@@ -2433,7 +2494,7 @@ export default function ArrowEscapeV3() {
           onPointerCancel={onViewUp}
         >
           <div
-            style={{ transform: `translate(${view.tx}px, ${view.ty}px) scale(${view.scale})`, transformOrigin: "0 0", transition: snap ? "transform 240ms cubic-bezier(.4,0,.2,1)" : "none", width: "100%", height: "100%", touchAction: "none" }}
+            style={{ transform: `translate3d(${view.tx}px, ${view.ty}px, 0) scale(${view.scale})`, transformOrigin: "0 0", transition: snap ? "transform 320ms cubic-bezier(.22,.9,.26,1)" : "none", willChange: "transform", backfaceVisibility: "hidden", width: "100%", height: "100%", touchAction: "none" }}
           >
             <svg
               key={levelKey}
@@ -2505,7 +2566,8 @@ export default function ArrowEscapeV3() {
                 const isBlk = bad?.blocker === p.id;
                 const isHint = hintId === p.id;
                 const isHeld = holdId === p.id;
-                const tone = isBad || isBlk ? C.danger : isHint || isHeld ? C.accent : toneFor(p.dir, theme);
+                const isSealed = p.needs !== undefined && alive.has(p.needs);
+                const tone = isBad || isBlk ? C.danger : isHint || isHeld ? C.accent : isSealed ? C.stop : toneFor(p.dir, theme);
                 const cls = isBad ? "shake" : isBlk ? "flash" : isHint ? "hint" : "settle";
                 return (
                   <Piece
@@ -2516,7 +2578,7 @@ export default function ArrowEscapeV3() {
                     width={W_BOARD}
                     hit={bigTouch ? 78 : 52}
                     className={cls}
-                    style={{ "--d": `${Math.min(idx, 11) * 14}ms` }}
+                    style={{ "--d": `${Math.min(idx, 16) * 18}ms` }}
                     onDown={onPieceDown(p)}
                   />
                 );
@@ -2527,21 +2589,6 @@ export default function ArrowEscapeV3() {
                   <DepartingPiece key={`f${key}`} piece={pieces[id]} cols={cols} rows={rows} tone={C.accent} />
                 ) : null
               )}
-
-              {glow &&
-                glow.cells.map((c, i) => (
-                  <circle
-                    key={`${glow.key}-${i}`}
-                    className="freeglow"
-                    cx={cx(c, cols)}
-                    cy={cy(c, cols)}
-                    r={cols * 3.2}
-                    fill="none"
-                    stroke={C.go}
-                    strokeWidth={cols * 0.8}
-                    style={{ animationDelay: `${Math.min(i, 8) * 45}ms` }}
-                  />
-                ))}
 
               {ring && (
                 <circle
@@ -2577,20 +2624,24 @@ export default function ArrowEscapeV3() {
           </div>
         </div>
 
-        <button style={S.gridToggle} onClick={() => { setGrid((g) => !g); persist({ grid: !grid }); }} aria-label="Toggle grid">
-          <Hash on={grid} />
-        </button>
-
         <div style={S.playFoot}>
-          <button style={{ ...S.footBtn, opacity: undosLeft > 0 && history.length ? 1 : 0.35 }} onClick={undo} disabled={undosLeft <= 0 || !history.length}>
-            <Undo />
-            <span style={S.footNum}>{undosLeft}</span>
-          </button>
+          <div style={S.footGroup}>
+            <button style={{ ...S.footBtn, opacity: undosLeft > 0 && history.length ? 1 : 0.35 }} onClick={undo} disabled={undosLeft <= 0 || !history.length}>
+              <Undo />
+              <span style={S.footNum}>{undosLeft}</span>
+            </button>
+            <button style={S.gridToggle} onClick={() => { setGrid((g) => !g); persist({ grid: !grid }); }} aria-label="Toggle grid">
+              <Hash on={grid} />
+            </button>
+          </div>
           <div style={S.scorePill}>{score.toLocaleString()}</div>
-          <button style={S.footBtn} onClick={cycleZoom}>
-            <Magnifier zoomed={view.scale > 1.01} />
-            {view.scale > 1.01 && <span style={S.footNum}>{Math.round(view.scale)}×</span>}
-          </button>
+          <div style={S.footGroup}>
+            <span style={S.footSpacer} aria-hidden="true" />
+            <button style={S.footBtn} onClick={cycleZoom}>
+              <Magnifier zoomed={view.scale > 1.01} />
+              {view.scale > 1.01 && <span style={S.footNum}>{Math.round(view.scale)}×</span>}
+            </button>
+          </div>
         </div>
 
         {phase === "gameover" && (
@@ -3185,7 +3236,7 @@ function Toggle({ label, hint, on, onChange }) {
         <span style={S.tglHint}>{hint}</span>
       </span>
       <span style={{ ...S.tglTrack, background: on ? C.accent : C.line }}>
-        <span style={{ ...S.tglKnob, transform: `translateX(${on ? 18 : 0}px)` }} />
+        <span style={{ ...S.tglKnob, transform: `translate3d(${on ? 18 : 0}px, 0, 0)` }} />
       </span>
     </button>
   );
@@ -3295,17 +3346,15 @@ const makeCSS = (C) => `
 @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@600;800;900&family=DM+Mono:wght@500&display=swap');
 svg { shape-rendering: geometricPrecision; }
 @keyframes settleIn{0%{opacity:0;transform:translateY(9px) scale(.94)}62%{transform:translateY(-1px) scale(1.015)}100%{opacity:1;transform:translateY(0) scale(1)}}
-.settle{animation:settleIn 260ms cubic-bezier(.22,1.05,.32,1) backwards;animation-delay:var(--d,0ms);will-change:transform,opacity}
+.settle{animation:settleIn 300ms cubic-bezier(.2,1.02,.3,1) backwards;animation-delay:var(--d,0ms);will-change:transform,opacity}
 @keyframes snakeOut{to{stroke-dashoffset:var(--off)}}
-.snake{animation:snakeOut 300ms cubic-bezier(.32,0,.32,1) forwards;will-change:stroke-dashoffset}
+.snake{animation:snakeOut 340ms cubic-bezier(.5,0,.28,1) forwards;will-change:stroke-dashoffset}
 @keyframes chevOut{to{transform:translate(var(--tx),var(--ty))}}
-.chev-out{animation:chevOut 300ms cubic-bezier(.32,0,.32,1) forwards;will-change:transform}
+.chev-out{animation:chevOut 340ms cubic-bezier(.5,0,.28,1) forwards;will-change:transform}
 @keyframes depFade{0%,72%{opacity:1}100%{opacity:0}}
-.dep-fade{animation:depFade 300ms linear forwards}
+.dep-fade{animation:depFade 340ms cubic-bezier(.4,0,1,1) forwards}
 @keyframes ringOut{0%{opacity:.5;transform:scale(.35)}100%{opacity:0;transform:scale(1.7)}}
-@keyframes freeGlow{0%{opacity:0;transform:scale(.45)}30%{opacity:.95}100%{opacity:0;transform:scale(1.5)}}
-.freeglow{animation:freeGlow 700ms cubic-bezier(.2,.85,.3,1) backwards;transform-box:fill-box;transform-origin:center;pointer-events:none}
-.ring{animation:ringOut 420ms cubic-bezier(.16,.86,.28,1) forwards;transform-box:fill-box;transform-origin:center;will-change:transform,opacity}
+.ring{animation:ringOut 460ms cubic-bezier(.14,.84,.26,1) forwards;will-change:transform,opacity;transform-box:fill-box;transform-origin:center;will-change:transform,opacity}
 @keyframes nudge{0%,100%{transform:translateX(0)}22%{transform:translateX(-9px)}55%{transform:translateX(9px)}80%{transform:translateX(-4px)}}
 .shake{animation:nudge 420ms cubic-bezier(.36,.07,.19,.97);will-change:transform}
 @keyframes flashDim{0%,100%{opacity:1}50%{opacity:.3}}
@@ -3322,7 +3371,7 @@ svg { shape-rendering: geometricPrecision; }
 .pop{animation:popUp 1000ms cubic-bezier(.12,.88,.24,1) forwards;pointer-events:none;will-change:transform,opacity}
 @keyframes ovin{from{opacity:0;transform:scale(.97)}to{opacity:1;transform:scale(1)}}
 .ovin{animation:ovin 340ms cubic-bezier(.16,.86,.26,1)}
-.confetti{position:absolute;top:-20px;width:9px;height:15px;border-radius:2px;animation-name:fall;animation-timing-function:linear;animation-iteration-count:infinite}
+.confetti{position:absolute;top:-20px;width:9px;height:15px;border-radius:2px;animation-name:fall;animation-timing-function:linear;animation-iteration-count:infinite;will-change:transform,opacity}
 @keyframes fall{0%{transform:translateY(0) rotate(0)}100%{transform:translateY(105vh) rotate(540deg)}}
 
 /* every button gives instant physical feedback */
@@ -3345,7 +3394,7 @@ button:active:not(:disabled) { transform: scale(.945); }
 .nav-on { animation: navPop 420ms cubic-bezier(.28,1.32,.44,1); }
 
 button:focus-visible{outline:3px solid ${C.accent};outline-offset:3px}
-@media (prefers-reduced-motion: reduce){.settle,.snake,.chev-out,.dep-fade,.ring,.shake,.flash,.hint,.hbreak,.starpop,.ovin,.confetti,.badge-in,.pop,.freeglow{animation-duration:1ms!important}}
+@media (prefers-reduced-motion: reduce){.settle,.snake,.chev-out,.dep-fade,.ring,.shake,.flash,.hint,.hbreak,.starpop,.ovin,.confetti,.badge-in,.pop{animation-duration:1ms!important}}
 `;
 
 let CSS = makeCSS(C);
@@ -3360,49 +3409,51 @@ const DOT_PAD = 2;   // just past the viewBox edge; more is invisible and costs 
 const makeStyles = (C) => ({
   playRoot: { position: "fixed", inset: 0, height: "100dvh", boxSizing: "border-box", paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "env(safe-area-inset-bottom, 0px)", touchAction: "none", overscrollBehavior: "none", background: C.bg, color: C.ink, fontFamily: "'Nunito', system-ui, sans-serif", display: "flex", flexDirection: "column", WebkitTapHighlightColor: "transparent", userSelect: "none", overflow: "hidden" },
   hud: { display: "flex", alignItems: "center", gap: 8, padding: "12px 14px 8px" },
-  hudBtn: { width: 42, height: 42, borderRadius: "50%", background: C.card, border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 2px 8px rgba(27,36,64,0.08)", flexShrink: 0 },
+  hudBtn: { width: 42, height: 42, borderRadius: "50%", background: C.card, border: `1px solid ${C.edge}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: C.sh1, flexShrink: 0 },
   hudMid: { flex: 1, textAlign: "center" },
   leftCount: { fontWeight: 800, fontSize: 12, color: C.muted },
   diffLabel: { fontWeight: 900, fontSize: 15, letterSpacing: "0.01em" },
   hudHearts: { display: "flex", gap: 4, justifyContent: "center", alignItems: "center", marginTop: 3 },
-  hintPill: { display: "flex", alignItems: "center", gap: 5, background: C.card, border: "none", borderRadius: 999, padding: "10px 14px", cursor: "pointer", boxShadow: "0 2px 8px rgba(27,36,64,0.08)", flexShrink: 0 },
+  hintPill: { display: "flex", alignItems: "center", gap: 5, background: C.card, border: `1px solid ${C.edge}`, borderRadius: 999, padding: "10px 14px", cursor: "pointer", boxShadow: C.sh1, flexShrink: 0 },
   hintTxt: { fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 13, color: C.accent },
   topTrack: { height: 5, margin: "0 16px 4px", borderRadius: 999, background: C.line, overflow: "hidden" },
   topFill: { height: "100%", borderRadius: 999, background: C.accent, transition: "width 320ms cubic-bezier(.4,0,.2,1)" },
   playViewport: { flex: 1, minHeight: 0, width: "100%", overflow: "hidden", touchAction: "none", overscrollBehavior: "contain" },
-  gridToggle: { position: "absolute", right: 18, bottom: 92, width: 50, height: 50, borderRadius: 16, background: C.card, border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 4px 14px rgba(27,36,64,0.12)" },
-  playFoot: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 18px 20px" },
-  footBtn: { position: "relative", display: "flex", alignItems: "center", gap: 5, background: C.card, border: "none", borderRadius: 999, padding: "11px 16px", cursor: "pointer", boxShadow: "0 2px 8px rgba(27,36,64,0.08)" },
+  gridToggle: { width: 46, height: 46, borderRadius: 999, background: C.card, border: `1px solid ${C.edge}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: C.sh1, flexShrink: 0 },
+  footGroup: { display: "flex", alignItems: "center", gap: 8 },
+  footSpacer: { display: "block", width: 46, flexShrink: 0 },
+  playFoot: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "12px 16px 20px" },
+  footBtn: { position: "relative", display: "flex", alignItems: "center", gap: 5, background: C.card, border: `1px solid ${C.edge}`, borderRadius: 999, padding: "11px 16px", cursor: "pointer", boxShadow: C.sh1 },
   footNum: { fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 12, color: C.accent },
-  scorePill: { fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 19, color: C.ink },
+  scorePill: { fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 20, letterSpacing: "-0.02em", color: C.ink, fontVariantNumeric: "tabular-nums", textAlign: "center", flexShrink: 0 },
 
-  shellBody: { flex: 1, minHeight: 0, width: BOARD_W, overflowY: "auto", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch", paddingBottom: 8 },
+  shellBody: { flex: 1, minHeight: 0, width: BOARD_W, overflowY: "auto", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch", scrollBehavior: "smooth", paddingBottom: 8 },
   home: { display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 6 },
-  streakChip: { background: C.card, borderRadius: 999, padding: "7px 16px", fontWeight: 900, fontSize: 14, boxShadow: "0 2px 8px rgba(27,36,64,0.07)", marginBottom: 16 },
+  streakChip: { background: C.card, border: `1px solid ${C.edge}`, borderRadius: 999, padding: "7px 16px", fontWeight: 900, fontSize: 14, boxShadow: C.sh1, marginBottom: 16 },
   homeCards: { display: "flex", gap: 12, width: "100%" },
-  homeCard: { flex: 1, background: C.card, border: "none", borderRadius: 20, padding: "14px 12px 12px", cursor: "pointer", boxShadow: "0 4px 16px rgba(27,36,64,0.08)", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontFamily: "'Nunito',sans-serif" },
-  homeCardTitle: { fontWeight: 900, fontSize: 17, color: C.ink },
+  homeCard: { flex: 1, background: C.card, border: "none", border: `1px solid ${C.edge}`, borderRadius: 20, padding: "14px 12px 12px", cursor: "pointer", boxShadow: C.sh2, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontFamily: "'Nunito',sans-serif" },
+  homeCardTitle: { fontWeight: 900, fontSize: 17, letterSpacing: "-0.01em", color: C.ink },
   homeCardSub: { fontSize: 11, fontWeight: 700, color: C.muted },
   homeCardArt: { width: 74, height: 62, margin: "8px 0" },
   homeCardBtn: { width: "100%", background: C.accent, color: "#fff", borderRadius: 999, padding: "9px 0", fontWeight: 900, fontSize: 13 },
   brandWrap: { textAlign: "center", margin: "auto 0", padding: "34px 0" },
-  brand: { fontWeight: 900, fontSize: 33, letterSpacing: "-0.03em", color: C.ink },
-  homeLevel: { fontWeight: 900, fontSize: 21, color: C.accent, marginTop: 8 },
+  brand: { fontWeight: 900, fontSize: 34, letterSpacing: "-0.035em", color: C.ink, lineHeight: 1.05 },
+  homeLevel: { fontWeight: 900, fontSize: 21, letterSpacing: "-0.01em", color: C.accent, marginTop: 8 },
   homeDiff: { fontWeight: 900, fontSize: 15, marginTop: 2 },
-  continueBtn: { width: "100%", background: C.accent, color: "#fff", border: "none", borderRadius: 999, padding: "17px 0", fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 17, cursor: "pointer", boxShadow: "0 8px 22px rgba(47,123,246,0.3)" },
+  continueBtn: { width: "100%", background: C.accent, color: "#fff", border: "none", borderRadius: 999, padding: "17px 0", fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 17, cursor: "pointer", boxShadow: `0 10px 26px ${C.accent}4d` },
   homeFoot: { fontSize: 12, fontWeight: 700, color: C.muted, marginTop: 12 },
 
-  nav: { width: BOARD_W, display: "flex", gap: 4, background: C.card, borderRadius: 22, padding: 6, marginTop: 8, boxShadow: "0 4px 16px rgba(27,36,64,0.09)" },
-  navBtn: { flex: 1, background: "transparent", border: "none", borderRadius: 16, padding: "9px 1px", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, cursor: "pointer", fontFamily: "'Nunito',sans-serif" },
+  nav: { width: BOARD_W, display: "flex", gap: 4, background: C.card, border: `1px solid ${C.edge}`, borderRadius: 22, padding: 6, marginTop: 8, boxShadow: C.sh2 },
+  navBtn: { flex: 1, background: "transparent", border: "none", borderRadius: 16, padding: "9px 1px", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, cursor: "pointer", fontFamily: "'Nunito',sans-serif", transition: "background 260ms cubic-bezier(.4,0,.2,1)" },
   navOn: { background: C.bg },
   navLabel: { fontSize: 8.5, fontWeight: 800, color: C.muted },
   page: { height: "100dvh", boxSizing: "border-box", overflow: "hidden", background: C.bg, color: C.ink, fontFamily: "'Nunito', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", padding: "calc(10px + env(safe-area-inset-top, 0px)) 14px calc(10px + env(safe-area-inset-bottom, 0px))", WebkitTapHighlightColor: "transparent", userSelect: "none", touchAction: "manipulation" },
-  settings: { width: BOARD_W, background: C.card, borderRadius: 18, padding: 14, marginBottom: 12, boxShadow: "0 8px 26px rgba(27,36,64,0.12)" },
+  settings: { width: BOARD_W, background: C.card, border: `1px solid ${C.edge}`, borderRadius: 18, padding: 14, marginBottom: 12, boxShadow: C.sh2 },
   tglRow: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: "transparent", border: "none", padding: "9px 2px", cursor: "pointer", textAlign: "left" },
   tglLabel: { display: "block", fontWeight: 800, fontSize: 13.5, color: C.ink },
   tglHint: { display: "block", fontSize: 11, color: C.muted, fontWeight: 600, marginTop: 1 },
-  tglTrack: { width: 40, height: 22, borderRadius: 999, padding: 2, flexShrink: 0, transition: "background 200ms ease" },
-  tglKnob: { display: "block", width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "transform 200ms cubic-bezier(.34,1.4,.64,1)", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" },
+  tglTrack: { width: 40, height: 22, borderRadius: 999, padding: 2, flexShrink: 0, transition: "background 260ms cubic-bezier(.4,0,.2,1)" },
+  tglKnob: { display: "block", width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "transform 260ms cubic-bezier(.26,1.36,.4,1)", boxShadow: "0 1px 4px rgba(0,0,0,0.28)", willChange: "transform" },
   tip: { marginTop: 8, padding: "10px 12px", background: C.bg, borderRadius: 12, fontSize: 12, fontWeight: 600, color: C.muted, lineHeight: 1.5 },
   studioGrid: { display: "grid", gridTemplateColumns: "repeat(11, 1fr)", gap: 3, touchAction: "none", marginBottom: 12 },
   studioCell: { aspectRatio: "1 / 1", border: "none", borderRadius: 4, padding: 0, cursor: "pointer" },
@@ -3421,7 +3472,7 @@ const makeStyles = (C) => ({
   swatch: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 2, padding: 4, borderRadius: 10, border: "2px solid transparent", background: C.bg, cursor: "pointer" },
   swatchDot: { width: 8, height: 8, borderRadius: 2 },
   colTitle: { fontWeight: 900, fontSize: 14, marginBottom: 10, padding: "0 2px" },
-  chapterCard: { width: "100%", background: C.card, borderRadius: 18, padding: 14, boxShadow: "0 4px 16px rgba(27,36,64,0.08)", marginTop: 14 },
+  chapterCard: { width: "100%", background: C.card, border: `1px solid ${C.edge}`, borderRadius: 18, padding: 14, boxShadow: C.sh2, marginTop: 14 },
   chapRow: { display: "flex", alignItems: "center", gap: 11 },
   chapBadge: { width: 34, height: 34, borderRadius: 12, color: "#fff", fontWeight: 900, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
   chapName: { fontWeight: 900, fontSize: 15, color: C.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
@@ -3471,10 +3522,10 @@ const makeStyles = (C) => ({
   lvCell: { background: C.bg, border: "2px solid", borderRadius: 12, padding: "9px 2px 7px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, fontFamily: "'Nunito',sans-serif" },
   lvNum: { fontWeight: 900, fontSize: 13, color: C.ink },
   lvStars: { fontSize: 8.5, color: C.gold, letterSpacing: "-0.5px", minHeight: 11 },
-  tutBar: { display: "flex", alignItems: "center", gap: 10, width: "calc(100% - 28px)", alignSelf: "center", background: C.accent, borderRadius: 14, padding: "11px 13px", marginBottom: 8 },
-  tutStep: { fontWeight: 900, fontSize: 11, color: "#fff", background: "rgba(255,255,255,0.22)", borderRadius: 999, padding: "3px 8px", flexShrink: 0 },
-  tutText: { flex: 1, fontSize: 12.5, fontWeight: 700, color: "#fff", lineHeight: 1.35 },
-  tutSkip: { background: "rgba(255,255,255,0.2)", border: "none", borderRadius: 999, padding: "6px 11px", fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 11, color: "#fff", cursor: "pointer", flexShrink: 0 },
+  tutBar: { display: "inline-flex", alignItems: "center", gap: 8, maxWidth: "calc(100% - 40px)", alignSelf: "center", background: C.card, border: `1.5px solid ${C.accent}44`, borderRadius: 999, padding: "7px 8px 7px 10px", marginBottom: 8, boxShadow: `0 6px 18px ${C.accent}1f` },
+  tutStep: { fontWeight: 900, fontSize: 10, color: "#fff", background: C.accent, borderRadius: 999, padding: "2px 7px", flexShrink: 0, letterSpacing: 0.2 },
+  tutText: { fontSize: 11.5, fontWeight: 700, color: C.ink, lineHeight: 1.3 },
+  tutSkip: { background: "transparent", border: "none", borderRadius: 999, padding: "4px 7px", fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 10.5, color: C.muted, cursor: "pointer", flexShrink: 0 },
   coach: { width: "calc(100% - 28px)", alignSelf: "center", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, background: C.coachBg, border: "none", borderRadius: 12, padding: "8px 12px", marginBottom: 8, cursor: "pointer", textAlign: "left" },
   coachText: { fontSize: 12, fontWeight: 600, color: C.ink, fontFamily: "'Nunito',sans-serif" },
   coachX: { fontSize: 12, color: C.muted, fontWeight: 800 },
@@ -3486,16 +3537,16 @@ const makeStyles = (C) => ({
   ovCard: { textAlign: "center", padding: 24, width: "100%", maxWidth: 280 },
   ovTitle: { fontWeight: 900, fontSize: 21, marginBottom: 6 },
   ovSub: { fontSize: 13, color: C.muted, marginBottom: 20, fontWeight: 600, lineHeight: 1.45 },
-  primary: { display: "block", width: "100%", background: C.accent, color: "#fff", border: "none", borderRadius: 999, padding: "14px 30px", fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 15, cursor: "pointer", boxShadow: "0 6px 18px rgba(47,123,246,0.32)" },
+  primary: { display: "block", width: "100%", background: C.accent, color: "#fff", border: "none", borderRadius: 999, padding: "14px 30px", fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 15, cursor: "pointer", boxShadow: `0 8px 22px ${C.accent}52` },
   ghost: { display: "block", width: "100%", marginTop: 8, background: "transparent", color: C.muted, border: "none", padding: 10, fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 13, cursor: "pointer" },
   winWrap: { position: "fixed", inset: 0, background: "linear-gradient(180deg,#1E8BFF 0%,#3AA0FF 55%,#5FB6FF 100%)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", zIndex: 40, padding: 20 },
   winInner: { position: "relative", textAlign: "center", width: "100%", maxWidth: 320 },
   winKicker: { color: "rgba(255,255,255,0.92)", fontWeight: 800, fontSize: 15 },
   winTitle: { color: "#fff", fontWeight: 900, fontSize: 27, letterSpacing: "-0.02em", margin: "6px 0 18px" },
-  winCard: { background: C.card, borderRadius: 22, padding: 20, boxShadow: "0 14px 40px rgba(0,40,90,0.28)" },
+  winCard: { background: C.card, borderRadius: 22, padding: 20, boxShadow: "0 18px 48px rgba(0,20,60,0.34)" },
   winStars: { display: "flex", gap: 10, justifyContent: "center", margin: "18px 0 6px" },
   winMeta: { color: "rgba(255,255,255,0.92)", fontSize: 13, fontWeight: 700, marginBottom: 18 },
-  winBtn: { display: "block", width: "100%", background: "#fff", color: C.accent, border: "none", borderRadius: 999, padding: "14px 30px", fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 15, cursor: "pointer", boxShadow: "0 6px 20px rgba(0,40,90,0.22)" },
+  winBtn: { display: "block", width: "100%", background: "#fff", color: C.accent, border: "none", borderRadius: 999, padding: "14px 30px", fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 15, cursor: "pointer", boxShadow: "0 8px 24px rgba(0,20,60,0.28)" },
   winGhost: { display: "block", width: "100%", marginTop: 10, background: "transparent", color: "#fff", border: "none", padding: 10, fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 14, cursor: "pointer" },
 });
 
