@@ -757,6 +757,47 @@ function makeLevelFromMask(rawMask, tierIdx = 7) {
   };
 }
 
+/* ── chess-style position evaluation ──────────────────────────────
+   From Hard upward a board should not just be tight, it should contain
+   real combinations: stretches where only one arrow is playable, so the
+   solution reads like a forced line rather than a pile of free choices.
+   We solve the board a few times and score how often the position forces
+   the player's hand, and how long those forced runs get.               */
+function chessScore(pieces, cols, rows) {
+  if (pieces.length < 6) return 0;
+  const lanes = pieces.map((p) => exitLine(p.cells[0], p.dir, cols, rows));
+  const owner = new Map();
+  pieces.forEach((p) => p.cells.forEach((c) => owner.set(c, p.id)));
+
+  let total = 0;
+  const RUNS = 3;
+  for (let r = 0; r < RUNS; r++) {
+    const alive = new Set(pieces.map((p) => p.id));
+    const isFree = (id) =>
+      lanes[id].every((c) => {
+        const o = owner.get(c);
+        return o === undefined || !alive.has(o);
+      });
+    let only = 0;      // positions with exactly one legal move
+    let near = 0;      // positions with two
+    let run = 0;
+    let bestRun = 0;
+    let states = 0;
+    while (alive.size) {
+      const free = [...alive].filter(isFree);
+      if (!free.length) return 0; // unsolvable ordering — never reward it
+      states++;
+      if (free.length === 1) { only++; run++; if (run > bestRun) bestRun = run; }
+      else { if (free.length === 2) near++; run = 0; }
+      alive.delete(free[(RND() * free.length) | 0]);
+    }
+    if (!states) return 0;
+    // a long forced line is worth far more than the same count scattered about
+    total += (only / states) + (near / states) * 0.4 + Math.min(bestRun, 8) / 8 * 0.6;
+  }
+  return total / RUNS;
+}
+
 function makeLevel(level, seed) {
   if (seed !== undefined) RND = mulberry32(seed);
   const { tier, index, step: stepInTier } = tierFor(level);
@@ -765,7 +806,11 @@ function makeLevel(level, seed) {
       ? artMask(level) || proceduralMask(level)
       : parseMask(curatedKey(seed !== undefined ? (seed % 9973) + 1 : level));
   const mask = fitMask(raw, tier.maxCells);
-  const tries = mask.cells.size > 240 ? 2 : mask.cells.size > 90 ? 4 : 7;
+  // Hard and above are judged like chess positions, and get extra candidate
+  // boards to choose from — the generator plays out more lines before deciding
+  const chessWeight = index >= HARD_TIER ? 0.9 : 0;
+  let tries = mask.cells.size > 240 ? 2 : mask.cells.size > 90 ? 4 : 7;
+  if (chessWeight && mask.cells.size <= 420) tries += 2;
 
   let best = null;
   for (let i = 0; i < tries; i++) {
@@ -775,7 +820,8 @@ function makeLevel(level, seed) {
     const fill = pieces.reduce((a, p) => a + p.cells.length, 0) / mask.cells.size;
     // prefer the target openness, reward boards with more forced moments, and
     // heavily punish a board that leaves the shape half empty
-    const gap = Math.abs(mb.freedom - tier.freedom) - mb.forced * 0.35 + Math.max(0, tier.coverage - 0.06 - fill) * 4;
+    const gap = Math.abs(mb.freedom - tier.freedom) - mb.forced * 0.35 + Math.max(0, tier.coverage - 0.06 - fill) * 4
+      - (chessWeight ? chessScore(pieces, mask.cols, mask.rows) * chessWeight : 0);
     if (!best || gap < best.gap) best = { pieces, gap };
   }
   if (!best) best = { pieces: buildBoard(mask, tier), gap: 1 };
@@ -785,6 +831,33 @@ function makeLevel(level, seed) {
 }
 
 /* how many arrows a removal sets free — the heart of chain scoring */
+// which arrows does removing this one set free — returns their head cells so
+// the board can show the cascade the move just opened
+function freedHeads(pieces, aliveSet, removedId, cols, rows) {
+  const occBefore = new Map();
+  const occAfter = new Map();
+  pieces.forEach((p) => {
+    if (!aliveSet.has(p.id)) return;
+    p.cells.forEach((c) => {
+      occBefore.set(c, p.id);
+      if (p.id !== removedId) occAfter.set(c, p.id);
+    });
+  });
+  const blocked = (p, occ) => {
+    for (const c of exitLine(p.cells[0], p.dir, cols, rows)) {
+      const o = occ.get(c);
+      if (o !== undefined && o !== p.id) return true;
+    }
+    return false;
+  };
+  const out = [];
+  for (const p of pieces) {
+    if (!aliveSet.has(p.id) || p.id === removedId) continue;
+    if (blocked(p, occBefore) && !blocked(p, occAfter)) out.push(p.cells[0]);
+  }
+  return out;
+}
+
 function countFreed(pieces, aliveSet, removedId, cols, rows) {
   const occBefore = new Map();
   const occAfter = new Map();
@@ -1122,22 +1195,22 @@ function curatedKey(level) {
 }
 
 const TIERS = [
-  { name: "Warm Up", span: 2,     maxLen: 10, hearts: 3, hints: 3, undos: 3, coverage: 0.88, tightness: 0.66, freedom: 0.15, pieces: 20, maxCells: 150 },
-  { name: "Little Easy", span: 3,     maxLen: 11, hearts: 3, hints: 3, undos: 3, coverage: 0.89, tightness: 0.7, freedom: 0.1341, pieces: 24, maxCells: 180 },
-  { name: "Easy", span: 4,     maxLen: 12, hearts: 3, hints: 3, undos: 2, coverage: 0.9, tightness: 0.74, freedom: 0.1199, pieces: 28, maxCells: 210 },
-  { name: "Easy Plus", span: 5,     maxLen: 13, hearts: 3, hints: 2, undos: 2, coverage: 0.9, tightness: 0.78, freedom: 0.1072, pieces: 32, maxCells: 240 },
-  { name: "Little Medium", span: 6,     maxLen: 14, hearts: 3, hints: 2, undos: 2, coverage: 0.91, tightness: 0.81, freedom: 0.0958, pieces: 36, maxCells: 275 },
-  { name: "Medium", span: 8,     maxLen: 15, hearts: 3, hints: 2, undos: 2, coverage: 0.92, tightness: 0.84, freedom: 0.0857, pieces: 40, maxCells: 310 },
-  { name: "Medium Plus", span: 10,     maxLen: 16, hearts: 3, hints: 2, undos: 2, coverage: 0.92, tightness: 0.86, freedom: 0.0766, pieces: 45, maxCells: 345 },
-  { name: "Tricky", span: 12,     maxLen: 17, hearts: 3, hints: 2, undos: 1, coverage: 0.93, tightness: 0.88, freedom: 0.0685, pieces: 50, maxCells: 380 },
-  { name: "Tough", span: 14,     maxLen: 18, hearts: 3, hints: 2, undos: 1, coverage: 0.94, tightness: 0.9, freedom: 0.0612, pieces: 55, maxCells: 420 },
-  { name: "Hard", span: 17,     maxLen: 19, hearts: 3, hints: 1, undos: 1, coverage: 0.94, tightness: 0.92, freedom: 0.0547, pieces: 60, maxCells: 460 },
-  { name: "Very Hard", span: 20,     maxLen: 20, hearts: 3, hints: 1, undos: 1, coverage: 0.95, tightness: 0.94, freedom: 0.0489, pieces: 66, maxCells: 500 },
-  { name: "Super Hard", span: 24,     maxLen: 21, hearts: 3, hints: 1, undos: 1, coverage: 0.96, tightness: 0.95, freedom: 0.0437, pieces: 72, maxCells: 545 },
-  { name: "Expert", span: 30,     maxLen: 22, hearts: 3, hints: 1, undos: 1, coverage: 0.96, tightness: 0.96, freedom: 0.0391, pieces: 78, maxCells: 590 },
-  { name: "Elite", span: 36,     maxLen: 23, hearts: 3, hints: 1, undos: 1, coverage: 0.97, tightness: 0.97, freedom: 0.035, pieces: 85, maxCells: 635 },
-  { name: "Master", span: 45,     maxLen: 24, hearts: 3, hints: 1, undos: 1, coverage: 0.98, tightness: 0.98, freedom: 0.0312, pieces: 92, maxCells: 680 },
-  { name: "Pro", span: Infinity,     maxLen: 26, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 1.0, freedom: 0.0279, pieces: 100, maxCells: 730 },
+  { name: "Warm Up", span: 2,     maxLen: 10, hearts: 3, hints: 3, undos: 3, coverage: 0.92, tightness: 0.80, freedom: 0.105, pieces: 22, maxCells: 150 },
+  { name: "Little Easy", span: 3,     maxLen: 11, hearts: 3, hints: 3, undos: 3, coverage: 0.93, tightness: 0.83, freedom: 0.095, pieces: 26, maxCells: 185 },
+  { name: "Easy", span: 4,     maxLen: 12, hearts: 3, hints: 3, undos: 2, coverage: 0.93, tightness: 0.85, freedom: 0.086, pieces: 30, maxCells: 220 },
+  { name: "Easy Plus", span: 5,     maxLen: 13, hearts: 3, hints: 2, undos: 2, coverage: 0.94, tightness: 0.87, freedom: 0.078, pieces: 34, maxCells: 255 },
+  { name: "Little Medium", span: 6,     maxLen: 14, hearts: 3, hints: 2, undos: 2, coverage: 0.94, tightness: 0.88, freedom: 0.071, pieces: 38, maxCells: 290 },
+  { name: "Medium", span: 8,     maxLen: 15, hearts: 3, hints: 2, undos: 2, coverage: 0.95, tightness: 0.90, freedom: 0.064, pieces: 43, maxCells: 325 },
+  { name: "Medium Plus", span: 10,     maxLen: 16, hearts: 3, hints: 2, undos: 2, coverage: 0.95, tightness: 0.91, freedom: 0.058, pieces: 48, maxCells: 360 },
+  { name: "Tricky", span: 12,     maxLen: 17, hearts: 3, hints: 2, undos: 1, coverage: 0.96, tightness: 0.92, freedom: 0.052, pieces: 53, maxCells: 395 },
+  { name: "Tough", span: 14,     maxLen: 18, hearts: 3, hints: 2, undos: 1, coverage: 0.96, tightness: 0.93, freedom: 0.047, pieces: 58, maxCells: 430 },
+  { name: "Hard", span: 17,     maxLen: 19, hearts: 3, hints: 1, undos: 1, coverage: 0.97, tightness: 0.94, freedom: 0.042, pieces: 63, maxCells: 470 },
+  { name: "Very Hard", span: 20,     maxLen: 20, hearts: 3, hints: 1, undos: 1, coverage: 0.97, tightness: 0.95, freedom: 0.038, pieces: 69, maxCells: 510 },
+  { name: "Super Hard", span: 24,     maxLen: 21, hearts: 3, hints: 1, undos: 1, coverage: 0.98, tightness: 0.96, freedom: 0.034, pieces: 75, maxCells: 555 },
+  { name: "Expert", span: 30,     maxLen: 22, hearts: 3, hints: 1, undos: 1, coverage: 0.98, tightness: 0.97, freedom: 0.031, pieces: 81, maxCells: 600 },
+  { name: "Elite", span: 36,     maxLen: 23, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.98, freedom: 0.028, pieces: 88, maxCells: 645 },
+  { name: "Master", span: 45,     maxLen: 24, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.99, freedom: 0.025, pieces: 95, maxCells: 690 },
+  { name: "Pro", span: Infinity,     maxLen: 26, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 1.0, freedom: 0.022, pieces: 102, maxCells: 740 },
 ];
 const MEDAL = { 1: "#CD7F32", 2: "#AEB6C4", 3: "#FFC24B" };
 const TIER_HUE = ["#5FCB8A", "#4CC79B", "#3FBFD6", "#3EA8EE", "#3E9BF0", "#5580F2", "#6C7BF0", "#8470F2", "#9A6BF0", "#C07AD8", "#F0A93E", "#F2891B", "#F2761B", "#FF6A4A", "#FF3D9A", "#B14BFF"];
@@ -1182,7 +1255,8 @@ function parseMask(key) {
    rather than random, then cleaned so there are no spurs or holes. Level 200
    is the same shape for every player, everywhere. */
 
-const CURATED_UNTIL = 120; // hand-drawn art up to here, generated art beyond
+const CURATED_UNTIL = 120;
+const HARD_TIER = 9; // TIERS index where "Hard" begins — chess-style boards from here up // hand-drawn art up to here, generated art beyond
 const FORM_A = ["Twin", "Wide", "Tall", "Round", "Sharp", "Split", "Deep", "Open", "Half", "Broad"];
 const FORM_B = ["Bloom", "Arch", "Crest", "Drift", "Prism", "Wave", "Knot", "Spire", "Vault", "Ridge"];
 
@@ -1476,6 +1550,7 @@ export default function ArrowEscapeV3() {
   const tutClears = useRef(0);
   const [pops, setPops] = useState([]);
   const [ring, setRing] = useState(null);
+  const [glow, setGlow] = useState(null); // { key, cells } — arrows the last move set free
   const [phase, setPhase] = useState("playing");
   const [heartPop, setHeartPop] = useState(false);
   const [screen, setScreen] = useState("home"); // home | play | studio | collection | settings
@@ -1715,6 +1790,7 @@ export default function ArrowEscapeV3() {
     setHoldId(null);
     setPops([]);
     setRing(null);
+    setGlow(null);
     setPhase("playing");
     setLevelKey((k) => k + 1);
     viewRef.current = { scale: 1, tx: 0, ty: 0 };
@@ -1737,9 +1813,10 @@ export default function ArrowEscapeV3() {
   const startCustom = useCallback(
     (mask) => {
       setMode("custom");
-      applySetup(makeLevelFromMask(mask, tierFor(level).index), false);
+      // shapes you draw yourself always run at the hardest settings — Studio is the pro arena
+      applySetup(makeLevelFromMask(mask, TIERS.length - 1), false);
     },
-    [applySetup, level]
+    [applySetup]
   );
 
   const saveCustom = useCallback(
@@ -1858,7 +1935,13 @@ export default function ArrowEscapeV3() {
       buzz(10);
       lastMiss.current = { id: -1, t: 0 };
 
-      const freed = countFreed(pieces, alive, piece.id, cols, rows);
+      const freedCells = freedHeads(pieces, alive, piece.id, cols, rows);
+      const freed = freedCells.length;
+      if (freed > 0) {
+        const gk = Date.now() + piece.id;
+        setGlow({ key: gk, cells: freedCells });
+        setTimeout(() => setGlow((g) => (g && g.key === gk ? null : g)), 760);
+      }
       const nextCombo = combo + 1;
       const gain = (10 + freed * 15) * Math.min(nextCombo, 5);
       setCombo(nextCombo);
@@ -2444,6 +2527,21 @@ export default function ArrowEscapeV3() {
                   <DepartingPiece key={`f${key}`} piece={pieces[id]} cols={cols} rows={rows} tone={C.accent} />
                 ) : null
               )}
+
+              {glow &&
+                glow.cells.map((c, i) => (
+                  <circle
+                    key={`${glow.key}-${i}`}
+                    className="freeglow"
+                    cx={cx(c, cols)}
+                    cy={cy(c, cols)}
+                    r={cols * 3.2}
+                    fill="none"
+                    stroke={C.go}
+                    strokeWidth={cols * 0.8}
+                    style={{ animationDelay: `${Math.min(i, 8) * 45}ms` }}
+                  />
+                ))}
 
               {ring && (
                 <circle
@@ -3039,6 +3137,8 @@ function ShapeStudio({ onPlay, saved, onSave, onDelete }) {
         Anything you draw becomes a real puzzle — the board is generated inside your
         shape and is always solvable. Send the code to a friend and they play the
         exact same board.
+        <br />
+        Studio boards are built at <b>Pro</b> — the hardest settings in the game.
       </div>
     </div>
   );
@@ -3194,18 +3294,20 @@ const TinyArrow = () => (
 const makeCSS = (C) => `
 @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@600;800;900&family=DM+Mono:wght@500&display=swap');
 svg { shape-rendering: geometricPrecision; }
-@keyframes settleIn{0%{opacity:0;transform:translateY(6px)}100%{opacity:1;transform:translateY(0)}}
-.settle{animation:settleIn 165ms cubic-bezier(.2,.9,.3,1) backwards;animation-delay:var(--d,0ms)}
+@keyframes settleIn{0%{opacity:0;transform:translateY(9px) scale(.94)}62%{transform:translateY(-1px) scale(1.015)}100%{opacity:1;transform:translateY(0) scale(1)}}
+.settle{animation:settleIn 260ms cubic-bezier(.22,1.05,.32,1) backwards;animation-delay:var(--d,0ms);will-change:transform,opacity}
 @keyframes snakeOut{to{stroke-dashoffset:var(--off)}}
-.snake{animation:snakeOut 240ms cubic-bezier(.45,0,.7,.1) forwards;will-change:stroke-dashoffset}
+.snake{animation:snakeOut 300ms cubic-bezier(.32,0,.32,1) forwards;will-change:stroke-dashoffset}
 @keyframes chevOut{to{transform:translate(var(--tx),var(--ty))}}
-.chev-out{animation:chevOut 240ms cubic-bezier(.45,0,.7,.1) forwards;will-change:transform}
+.chev-out{animation:chevOut 300ms cubic-bezier(.32,0,.32,1) forwards;will-change:transform}
 @keyframes depFade{0%,72%{opacity:1}100%{opacity:0}}
-.dep-fade{animation:depFade 240ms linear forwards}
+.dep-fade{animation:depFade 300ms linear forwards}
 @keyframes ringOut{0%{opacity:.5;transform:scale(.35)}100%{opacity:0;transform:scale(1.7)}}
-.ring{animation:ringOut 320ms cubic-bezier(.16,.9,.3,1) forwards;transform-box:fill-box;transform-origin:center;will-change:transform,opacity}
+@keyframes freeGlow{0%{opacity:0;transform:scale(.45)}30%{opacity:.95}100%{opacity:0;transform:scale(1.5)}}
+.freeglow{animation:freeGlow 700ms cubic-bezier(.2,.85,.3,1) backwards;transform-box:fill-box;transform-origin:center;pointer-events:none}
+.ring{animation:ringOut 420ms cubic-bezier(.16,.86,.28,1) forwards;transform-box:fill-box;transform-origin:center;will-change:transform,opacity}
 @keyframes nudge{0%,100%{transform:translateX(0)}22%{transform:translateX(-9px)}55%{transform:translateX(9px)}80%{transform:translateX(-4px)}}
-.shake{animation:nudge 340ms ease}
+.shake{animation:nudge 420ms cubic-bezier(.36,.07,.19,.97);will-change:transform}
 @keyframes flashDim{0%,100%{opacity:1}50%{opacity:.3}}
 .flash{animation:flashDim 340ms ease infinite}
 @keyframes hintPulse{0%,100%{opacity:1}50%{opacity:.25}}
@@ -3213,37 +3315,37 @@ svg { shape-rendering: geometricPrecision; }
 @keyframes hbreak{0%{transform:scale(1)}35%{transform:scale(1.4)}100%{transform:scale(1)}}
 .hbreak{animation:hbreak 430ms ease;display:inline-flex}
 @keyframes starpop{0%{transform:scale(0) rotate(-25deg);opacity:0}70%{transform:scale(1.25) rotate(7deg);opacity:1}100%{transform:scale(1) rotate(0);opacity:1}}
-.starpop{animation:starpop 460ms cubic-bezier(.34,1.56,.64,1) backwards}
+.starpop{animation:starpop 620ms cubic-bezier(.26,1.42,.42,1) backwards}
 @keyframes badgeIn{0%{transform:scale(.4);opacity:0}100%{transform:scale(1);opacity:1}}
-.badge-in{animation:badgeIn 160ms cubic-bezier(.34,1.56,.64,1)}
+.badge-in{animation:badgeIn 340ms cubic-bezier(.26,1.46,.42,1)}
 @keyframes popUp{0%{transform:translateY(0);opacity:0}20%{transform:translateY(calc(var(--rise,60px) * -0.3));opacity:1}100%{transform:translateY(calc(var(--rise,60px) * -1));opacity:0}}
-.pop{animation:popUp 820ms cubic-bezier(.15,.95,.3,1) forwards;pointer-events:none;will-change:transform,opacity}
+.pop{animation:popUp 1000ms cubic-bezier(.12,.88,.24,1) forwards;pointer-events:none;will-change:transform,opacity}
 @keyframes ovin{from{opacity:0;transform:scale(.97)}to{opacity:1;transform:scale(1)}}
-.ovin{animation:ovin 240ms ease-out}
+.ovin{animation:ovin 340ms cubic-bezier(.16,.86,.26,1)}
 .confetti{position:absolute;top:-20px;width:9px;height:15px;border-radius:2px;animation-name:fall;animation-timing-function:linear;animation-iteration-count:infinite}
 @keyframes fall{0%{transform:translateY(0) rotate(0)}100%{transform:translateY(105vh) rotate(540deg)}}
 
 /* every button gives instant physical feedback */
-button { transition: transform 110ms cubic-bezier(.34,1.4,.64,1), background 180ms ease, opacity 180ms ease; }
-button:active:not(:disabled) { transform: scale(.93); }
+button { transition: transform 160ms cubic-bezier(.22,1.2,.36,1), background 200ms cubic-bezier(.4,0,.2,1), opacity 200ms cubic-bezier(.4,0,.2,1), box-shadow 200ms cubic-bezier(.4,0,.2,1); }
+button:active:not(:disabled) { transform: scale(.945); }
 
-@keyframes screenIn { from { opacity: 0; transform: translateY(14px) scale(.985); } to { opacity: 1; transform: none; } }
-.screen-in { animation: screenIn 260ms cubic-bezier(.18,.9,.26,1) both; will-change: transform, opacity; }
+@keyframes screenIn { from { opacity: 0; transform: translateY(18px) scale(.978); } to { opacity: 1; transform: none; } }
+.screen-in { animation: screenIn 380ms cubic-bezier(.16,.84,.24,1) both; will-change: transform, opacity; }
 
-@keyframes boardIn { from { opacity: 0; transform: scale(.9); } to { opacity: 1; transform: scale(1); } }
-.board-in { animation: boardIn 300ms cubic-bezier(.16,.92,.26,1) backwards; transform-origin: center; }
+@keyframes boardIn { from { opacity: 0; transform: scale(.88); } to { opacity: 1; transform: scale(1); } }
+.board-in { animation: boardIn 420ms cubic-bezier(.16,.9,.24,1) backwards; transform-origin: center; will-change: transform, opacity; }
 
-@keyframes hudIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: none; } }
-.hud-in { animation: hudIn 260ms cubic-bezier(.2,.85,.3,1) both; }
+@keyframes hudIn { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: none; } }
+.hud-in { animation: hudIn 360ms cubic-bezier(.16,.86,.26,1) both; }
 
-@keyframes cardIn { from { opacity: 0; transform: translateY(16px) scale(.96); } to { opacity: 1; transform: none; } }
-.card-in { animation: cardIn 300ms cubic-bezier(.2,1.06,.3,1) both; will-change: transform, opacity; }
+@keyframes cardIn { from { opacity: 0; transform: translateY(20px) scale(.955); } to { opacity: 1; transform: none; } }
+.card-in { animation: cardIn 440ms cubic-bezier(.18,1.02,.28,1) both; will-change: transform, opacity; }
 
-@keyframes navPop { 0% { transform: scale(1); } 45% { transform: scale(1.18); } 100% { transform: scale(1); } }
-.nav-on { animation: navPop 280ms cubic-bezier(.34,1.5,.64,1); }
+@keyframes navPop { 0% { transform: scale(1); } 40% { transform: scale(1.22) rotate(-3deg); } 70% { transform: scale(.97) rotate(1deg); } 100% { transform: scale(1) rotate(0); } }
+.nav-on { animation: navPop 420ms cubic-bezier(.28,1.32,.44,1); }
 
 button:focus-visible{outline:3px solid ${C.accent};outline-offset:3px}
-@media (prefers-reduced-motion: reduce){.settle,.snake,.chev-out,.dep-fade,.ring,.shake,.flash,.hint,.hbreak,.starpop,.ovin,.confetti,.badge-in,.pop{animation-duration:1ms!important}}
+@media (prefers-reduced-motion: reduce){.settle,.snake,.chev-out,.dep-fade,.ring,.shake,.flash,.hint,.hbreak,.starpop,.ovin,.confetti,.badge-in,.pop,.freeglow{animation-duration:1ms!important}}
 `;
 
 let CSS = makeCSS(C);
