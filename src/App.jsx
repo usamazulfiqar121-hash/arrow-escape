@@ -2567,7 +2567,7 @@ export default function ArrowEscapeV3() {
                 const isHint = hintId === p.id;
                 const isHeld = holdId === p.id;
                 const isSealed = p.needs !== undefined && alive.has(p.needs);
-                const tone = isBad || isBlk ? C.danger : isHint || isHeld ? C.accent : isSealed ? C.stop : toneFor(p.dir, theme);
+                const tone = isBad || isBlk ? C.danger : isHint || isHeld ? C.accent : isSealed ? C.muted : toneFor(p.dir, theme);
                 const cls = isBad ? "shake" : isBlk ? "flash" : isHint ? "hint" : "settle";
                 return (
                   <Piece
@@ -2578,7 +2578,7 @@ export default function ArrowEscapeV3() {
                     width={W_BOARD}
                     hit={bigTouch ? 78 : 52}
                     className={cls}
-                    style={{ "--d": `${Math.min(idx, 16) * 18}ms` }}
+                    style={{ "--d": `${Math.min(idx, 16) * 18}ms`, opacity: isSealed && !isBad && !isBlk && !isHint && !isHeld ? 0.45 : 1 }}
                     onDown={onPieceDown(p)}
                   />
                 );
@@ -2634,7 +2634,10 @@ export default function ArrowEscapeV3() {
               <Hash on={grid} />
             </button>
           </div>
-          <div style={S.scorePill}>{score.toLocaleString()}</div>
+          <div style={S.scoreWrap}>
+            <div key={score} style={S.scorePill} className="score-tick">{score.toLocaleString()}</div>
+            <div style={S.scoreCap}>score</div>
+          </div>
           <div style={S.footGroup}>
             <span style={S.footSpacer} aria-hidden="true" />
             <button style={S.footBtn} onClick={cycleZoom}>
@@ -3364,6 +3367,8 @@ svg { shape-rendering: geometricPrecision; }
 @keyframes hbreak{0%{transform:scale(1)}35%{transform:scale(1.4)}100%{transform:scale(1)}}
 .hbreak{animation:hbreak 430ms ease;display:inline-flex}
 @keyframes starpop{0%{transform:scale(0) rotate(-25deg);opacity:0}70%{transform:scale(1.25) rotate(7deg);opacity:1}100%{transform:scale(1) rotate(0);opacity:1}}
+@keyframes scoreTick{0%{transform:scale(1)}28%{transform:scale(1.13)}100%{transform:scale(1)}}
+.score-tick{animation:scoreTick 340ms cubic-bezier(.24,1.3,.4,1);will-change:transform}
 .starpop{animation:starpop 620ms cubic-bezier(.26,1.42,.42,1) backwards}
 @keyframes badgeIn{0%{transform:scale(.4);opacity:0}100%{transform:scale(1);opacity:1}}
 .badge-in{animation:badgeIn 340ms cubic-bezier(.26,1.46,.42,1)}
@@ -3394,7 +3399,7 @@ button:active:not(:disabled) { transform: scale(.945); }
 .nav-on { animation: navPop 420ms cubic-bezier(.28,1.32,.44,1); }
 
 button:focus-visible{outline:3px solid ${C.accent};outline-offset:3px}
-@media (prefers-reduced-motion: reduce){.settle,.snake,.chev-out,.dep-fade,.ring,.shake,.flash,.hint,.hbreak,.starpop,.ovin,.confetti,.badge-in,.pop{animation-duration:1ms!important}}
+@media (prefers-reduced-motion: reduce){.settle,.snake,.chev-out,.dep-fade,.ring,.shake,.flash,.hint,.hbreak,.starpop,.ovin,.confetti,.badge-in,.pop,.score-tick{animation-duration:1ms!important}}
 `;
 
 let CSS = makeCSS(C);
@@ -3425,7 +3430,9 @@ const makeStyles = (C) => ({
   playFoot: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "12px 16px 20px" },
   footBtn: { position: "relative", display: "flex", alignItems: "center", gap: 5, background: C.card, border: `1px solid ${C.edge}`, borderRadius: 999, padding: "11px 16px", cursor: "pointer", boxShadow: C.sh1 },
   footNum: { fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 12, color: C.accent },
-  scorePill: { fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 20, letterSpacing: "-0.02em", color: C.ink, fontVariantNumeric: "tabular-nums", textAlign: "center", flexShrink: 0 },
+  scoreWrap: { display: "flex", flexDirection: "column", alignItems: "center", gap: 1, flexShrink: 0, minWidth: 92 },
+  scorePill: { fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 30, lineHeight: 1, letterSpacing: "-0.035em", color: C.ink, fontVariantNumeric: "tabular-nums", textAlign: "center" },
+  scoreCap: { fontSize: 9.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: C.muted },
 
   shellBody: { flex: 1, minHeight: 0, width: BOARD_W, overflowY: "auto", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch", scrollBehavior: "smooth", paddingBottom: 8 },
   home: { display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 6 },
