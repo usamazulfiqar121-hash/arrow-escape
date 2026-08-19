@@ -1550,13 +1550,35 @@ function DepartingPiece({ piece, cols, rows, tone }) {
   );
 }
 
+// A mask drawn as one path instead of one rect element per cell. The Collection shows
+// dozens of thumbnails at once; at ~190 cells each that was thousands of DOM
+// nodes and made the tab hang. Paths are built once and cached by key.
+function maskPath(m, inset = 0.15, size = 0.7) {
+  let d = "";
+  for (const i of m.cells) {
+    const x = (i % m.cols) + inset;
+    const y = Math.floor(i / m.cols) + inset;
+    d += `M${x} ${y}h${size}v${size}h-${size}z`;
+  }
+  return d;
+}
+
+const THUMB_PATH = new Map();
+function cachedMask(shapeKey) {
+  let hit = THUMB_PATH.get(shapeKey);
+  if (!hit) {
+    const m = parseMask(shapeKey);
+    hit = { cols: m.cols, rows: m.rows, d: maskPath(m) };
+    THUMB_PATH.set(shapeKey, hit);
+  }
+  return hit;
+}
+
 function ShapeThumb({ shapeKey, on }) {
-  const m = parseMask(shapeKey);
+  const m = cachedMask(shapeKey);
   return (
     <svg viewBox={`0 0 ${m.cols} ${m.rows}`} style={{ width: 40, height: 40 }}>
-      {[...m.cells].map((i) => (
-        <rect key={i} x={(i % m.cols) + 0.15} y={Math.floor(i / m.cols) + 0.15} width={0.7} height={0.7} rx={0.2} fill={on ? C.accent : C.line} />
-      ))}
+      <path d={m.d} fill={on ? C.accent : C.line} />
     </svg>
   );
 }
@@ -1593,6 +1615,7 @@ export default function ArrowEscapeV3() {
   const tutClears = useRef(0);
   const [pops, setPops] = useState([]);
   const [ring, setRing] = useState(null);
+  const [booted, setBooted] = useState(false); // first paint waits for saved settings
   const [phase, setPhase] = useState("playing");
   const [heartPop, setHeartPop] = useState(false);
   const [screen, setScreen] = useState("home"); // home | play | studio | collection | settings
@@ -1752,6 +1775,8 @@ export default function ArrowEscapeV3() {
               }
       } catch {
         setCoachSeen(false);
+      } finally {
+        setBooted(true);
       }
     })();
   }, []);
@@ -2408,6 +2433,12 @@ export default function ArrowEscapeV3() {
     [phase === "cleared"]
   );
 
+  // Nothing is drawn until the saved theme is known — otherwise the app flashes
+  // its defaults and then repaints, which reads as a light/dark jitter on launch.
+  if (!booted) {
+    return <div style={{ position: "fixed", inset: 0, background: C.bg }} />;
+  }
+
   /* ═══════════  PLAY SCREEN — full bleed, like a real puzzle app  ═══════════ */
   if (screen === "play") {
     return (
@@ -2425,7 +2456,7 @@ export default function ArrowEscapeV3() {
           <div style={S.hudMid}>
             <div style={{ ...S.diffLabel, color: mode === "journey" ? TIER_HUE[tierIndex] ?? C.accent : C.accent }}>
               {mode === "custom" ? "Your board" : mode === "daily" ? "Daily" : tier.name}
-              <span style={S.leftCount}> · {alive.size} left</span>
+              <span key={alive.size} style={S.leftCount} className="left-tick"> · {alive.size} left</span>
             </div>
             <div style={S.hudHearts}>
               {shield && <span style={S.shieldTag}>🛡</span>}
@@ -2436,7 +2467,11 @@ export default function ArrowEscapeV3() {
                 </>
               ) : (
                 Array.from({ length: maxHearts }).map((_, i) => (
-                  <span key={i} className={heartPop && i === hearts ? "hbreak" : ""} style={S.inl}>
+                  <span
+                    key={i}
+                    className={heartPop && i === hearts ? "hbreak" : hearts === 1 && i === 0 ? "heart-low" : ""}
+                    style={S.inl}
+                  >
                     <Heart on={i < hearts} />
                   </span>
                 ))
@@ -2636,7 +2671,13 @@ export default function ArrowEscapeV3() {
           </div>
           <div style={S.scoreWrap}>
             <div key={score} style={S.scorePill} className="score-tick">{score.toLocaleString()}</div>
-            <div style={S.scoreCap}>score</div>
+            {combo >= 2 ? (
+              <div key={`c${combo}`} style={S.comboCap} className="combo-in">
+                {Math.min(combo, 5)}× chain
+              </div>
+            ) : (
+              <div style={S.scoreCap}>score</div>
+            )}
           </div>
           <div style={S.footGroup}>
             <span style={S.footSpacer} aria-hidden="true" />
@@ -2867,10 +2908,7 @@ export default function ArrowEscapeV3() {
                   return (
                     <div key={f.n} style={{ ...S.foundItem, border: `2px solid ${MEDAL[f.r ?? 1]}` }}>
                       <svg viewBox={`0 0 ${m.cols} ${m.rows}`} style={{ width: 38, height: 38 }}>
-                        {[...m.cells].map((i) => (
-                          <rect key={i} x={(i % m.cols) + 0.14} y={((i / m.cols) | 0) + 0.14}
-                                width={0.72} height={0.72} rx={0.2} fill={C.accent} />
-                        ))}
+                        <path d={maskPath(m, 0.14, 0.72)} fill={C.accent} />
                       </svg>
                       <span style={S.foundName}>{f.n}</span>
                     </div>
@@ -3161,10 +3199,7 @@ function ShapeStudio({ onPlay, saved, onSave, onDelete }) {
                 <div key={code} style={S.savedItem}>
                   <button style={S.savedBtn} onClick={() => onPlay(m)} aria-label="Play saved shape">
                     <svg viewBox={`0 0 ${m.cols} ${m.rows}`} style={{ width: 44, height: 44 }}>
-                      {[...m.cells].map((i) => (
-                        <rect key={i} x={(i % m.cols) + 0.12} y={((i / m.cols) | 0) + 0.12}
-                              width={0.76} height={0.76} rx={0.22} fill={C.accent} />
-                      ))}
+                      <path d={maskPath(m, 0.12, 0.76)} fill={C.accent} />
                     </svg>
                   </button>
                   <button style={S.savedX} onClick={() => onDelete(code)} aria-label="Delete">✕</button>
@@ -3201,10 +3236,7 @@ function ShapeStudio({ onPlay, saved, onSave, onDelete }) {
 function MaskIcon({ mask, colour, size = 40 }) {
   return (
     <svg viewBox={`0 0 ${mask.cols} ${mask.rows}`} style={{ width: size, height: size, display: "block" }}>
-      {[...mask.cells].map((i) => (
-        <rect key={i} x={(i % mask.cols) + 0.12} y={((i / mask.cols) | 0) + 0.12}
-              width={0.76} height={0.76} rx={0.24} fill={colour} />
-      ))}
+      <path d={maskPath(mask, 0.12, 0.76)} fill={colour} />
     </svg>
   );
 }
@@ -3309,12 +3341,10 @@ const HomeIcon = () => (
   </svg>
 );
 function MiniShape({ shapeKey }) {
-  const m = parseMask(shapeKey);
+  const m = cachedMask(shapeKey);
   return (
     <svg viewBox={`0 0 ${m.cols} ${m.rows}`} style={{ width: "100%", height: "100%" }}>
-      {[...m.cells].map((i) => (
-        <rect key={i} x={(i % m.cols) + 0.14} y={((i / m.cols) | 0) + 0.14} width={0.72} height={0.72} rx={0.24} fill={C.accent} opacity={0.85} />
-      ))}
+      <path d={m.d} fill={C.accent} opacity={0.85} />
     </svg>
   );
 }
@@ -3369,6 +3399,12 @@ svg { shape-rendering: geometricPrecision; }
 @keyframes starpop{0%{transform:scale(0) rotate(-25deg);opacity:0}70%{transform:scale(1.25) rotate(7deg);opacity:1}100%{transform:scale(1) rotate(0);opacity:1}}
 @keyframes scoreTick{0%{transform:scale(1)}28%{transform:scale(1.13)}100%{transform:scale(1)}}
 .score-tick{animation:scoreTick 340ms cubic-bezier(.24,1.3,.4,1);will-change:transform}
+@keyframes comboIn{0%{opacity:0;transform:translateY(4px) scale(.86)}55%{transform:translateY(0) scale(1.06)}100%{opacity:1;transform:scale(1)}}
+.combo-in{animation:comboIn 300ms cubic-bezier(.24,1.3,.4,1)}
+@keyframes leftTick{0%{opacity:.35}100%{opacity:1}}
+.left-tick{animation:leftTick 260ms ease-out}
+@keyframes heartLow{0%,100%{transform:scale(1)}50%{transform:scale(1.16)}}
+.heart-low{animation:heartLow 1100ms ease-in-out infinite}
 .starpop{animation:starpop 620ms cubic-bezier(.26,1.42,.42,1) backwards}
 @keyframes badgeIn{0%{transform:scale(.4);opacity:0}100%{transform:scale(1);opacity:1}}
 .badge-in{animation:badgeIn 340ms cubic-bezier(.26,1.46,.42,1)}
@@ -3399,7 +3435,7 @@ button:active:not(:disabled) { transform: scale(.945); }
 .nav-on { animation: navPop 420ms cubic-bezier(.28,1.32,.44,1); }
 
 button:focus-visible{outline:3px solid ${C.accent};outline-offset:3px}
-@media (prefers-reduced-motion: reduce){.settle,.snake,.chev-out,.dep-fade,.ring,.shake,.flash,.hint,.hbreak,.starpop,.ovin,.confetti,.badge-in,.pop,.score-tick{animation-duration:1ms!important}}
+@media (prefers-reduced-motion: reduce){.settle,.snake,.chev-out,.dep-fade,.ring,.shake,.flash,.hint,.hbreak,.starpop,.ovin,.confetti,.badge-in,.pop,.score-tick,.combo-in,.heart-low,.left-tick{animation-duration:1ms!important}}
 `;
 
 let CSS = makeCSS(C);
@@ -3419,33 +3455,34 @@ const makeStyles = (C) => ({
   leftCount: { fontWeight: 800, fontSize: 12, color: C.muted },
   diffLabel: { fontWeight: 900, fontSize: 15, letterSpacing: "0.01em" },
   hudHearts: { display: "flex", gap: 4, justifyContent: "center", alignItems: "center", marginTop: 3 },
-  hintPill: { display: "flex", alignItems: "center", gap: 5, background: C.card, border: `1px solid ${C.edge}`, borderRadius: 999, padding: "10px 14px", cursor: "pointer", boxShadow: C.sh1, flexShrink: 0 },
+  hintPill: { display: "flex", alignItems: "center", gap: 5, background: C.card, border: `1px solid ${C.edge}`, borderRadius: 999, padding: "10px 14px", cursor: "pointer", boxShadow: C.sh1, flexShrink: 0, transition: "opacity 260ms cubic-bezier(.4,0,.2,1)" },
   hintTxt: { fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 13, color: C.accent },
-  topTrack: { height: 5, margin: "0 16px 4px", borderRadius: 999, background: C.line, overflow: "hidden" },
-  topFill: { height: "100%", borderRadius: 999, background: C.accent, transition: "width 320ms cubic-bezier(.4,0,.2,1)" },
-  playViewport: { flex: 1, minHeight: 0, width: "100%", overflow: "hidden", touchAction: "none", overscrollBehavior: "contain" },
+  topTrack: { height: 5, margin: "0 16px 4px", borderRadius: 999, background: C.line, overflow: "hidden", boxShadow: `inset 0 1px 2px ${C.bg}` },
+  topFill: { height: "100%", borderRadius: 999, background: `linear-gradient(90deg, ${C.accent}, ${C.flow})`, transition: "width 420ms cubic-bezier(.22,.9,.26,1)", boxShadow: `0 0 10px ${C.accent}66` },
+  playViewport: { flex: 1, minHeight: 0, width: "100%", overflow: "hidden", touchAction: "none", overscrollBehavior: "contain", background: `radial-gradient(120% 78% at 50% 34%, ${C.card} 0%, ${C.bg} 68%)` },
   gridToggle: { width: 46, height: 46, borderRadius: 999, background: C.card, border: `1px solid ${C.edge}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: C.sh1, flexShrink: 0 },
   footGroup: { display: "flex", alignItems: "center", gap: 8 },
   footSpacer: { display: "block", width: 46, flexShrink: 0 },
-  playFoot: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "12px 16px 20px" },
-  footBtn: { position: "relative", display: "flex", alignItems: "center", gap: 5, background: C.card, border: `1px solid ${C.edge}`, borderRadius: 999, padding: "11px 16px", cursor: "pointer", boxShadow: C.sh1 },
+  playFoot: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "12px 16px 20px", borderTop: `1px solid ${C.edge}` },
+  footBtn: { position: "relative", display: "flex", alignItems: "center", gap: 5, background: C.card, border: `1px solid ${C.edge}`, borderRadius: 999, padding: "11px 16px", cursor: "pointer", boxShadow: C.sh1, transition: "opacity 260ms cubic-bezier(.4,0,.2,1)" },
   footNum: { fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 12, color: C.accent },
   scoreWrap: { display: "flex", flexDirection: "column", alignItems: "center", gap: 1, flexShrink: 0, minWidth: 92 },
   scorePill: { fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 30, lineHeight: 1, letterSpacing: "-0.035em", color: C.ink, fontVariantNumeric: "tabular-nums", textAlign: "center" },
+  comboCap: { fontSize: 10, fontWeight: 900, letterSpacing: "0.1em", textTransform: "uppercase", color: C.flow },
   scoreCap: { fontSize: 9.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: C.muted },
 
   shellBody: { flex: 1, minHeight: 0, width: BOARD_W, overflowY: "auto", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch", scrollBehavior: "smooth", paddingBottom: 8 },
   home: { display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 6 },
-  streakChip: { background: C.card, border: `1px solid ${C.edge}`, borderRadius: 999, padding: "7px 16px", fontWeight: 900, fontSize: 14, boxShadow: C.sh1, marginBottom: 16 },
+  streakChip: { background: C.card, border: `1px solid ${C.edge}`, borderRadius: 999, padding: "7px 16px", fontWeight: 900, fontSize: 14, boxShadow: C.sh1, marginBottom: 16, letterSpacing: "0.01em" },
   homeCards: { display: "flex", gap: 12, width: "100%" },
-  homeCard: { flex: 1, background: C.card, border: "none", border: `1px solid ${C.edge}`, borderRadius: 20, padding: "14px 12px 12px", cursor: "pointer", boxShadow: C.sh2, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontFamily: "'Nunito',sans-serif" },
+  homeCard: { flex: 1, background: `linear-gradient(180deg, ${C.card} 0%, ${C.card} 62%, ${C.bg} 190%)`, border: `1px solid ${C.edge}`, borderRadius: 20, padding: "14px 12px 12px", cursor: "pointer", boxShadow: C.sh2, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontFamily: "'Nunito',sans-serif" },
   homeCardTitle: { fontWeight: 900, fontSize: 17, letterSpacing: "-0.01em", color: C.ink },
   homeCardSub: { fontSize: 11, fontWeight: 700, color: C.muted },
   homeCardArt: { width: 74, height: 62, margin: "8px 0" },
   homeCardBtn: { width: "100%", background: C.accent, color: "#fff", borderRadius: 999, padding: "9px 0", fontWeight: 900, fontSize: 13 },
   brandWrap: { textAlign: "center", margin: "auto 0", padding: "34px 0" },
   brand: { fontWeight: 900, fontSize: 34, letterSpacing: "-0.035em", color: C.ink, lineHeight: 1.05 },
-  homeLevel: { fontWeight: 900, fontSize: 21, letterSpacing: "-0.01em", color: C.accent, marginTop: 8 },
+  homeLevel: { fontWeight: 900, fontSize: 26, letterSpacing: "-0.03em", color: C.accent, marginTop: 8, lineHeight: 1.1 },
   homeDiff: { fontWeight: 900, fontSize: 15, marginTop: 2 },
   continueBtn: { width: "100%", background: C.accent, color: "#fff", border: "none", borderRadius: 999, padding: "17px 0", fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 17, cursor: "pointer", boxShadow: `0 10px 26px ${C.accent}4d` },
   homeFoot: { fontSize: 12, fontWeight: 700, color: C.muted, marginTop: 12 },
@@ -3455,7 +3492,7 @@ const makeStyles = (C) => ({
   navOn: { background: C.bg },
   navLabel: { fontSize: 8.5, fontWeight: 800, color: C.muted },
   page: { height: "100dvh", boxSizing: "border-box", overflow: "hidden", background: C.bg, color: C.ink, fontFamily: "'Nunito', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", padding: "calc(10px + env(safe-area-inset-top, 0px)) 14px calc(10px + env(safe-area-inset-bottom, 0px))", WebkitTapHighlightColor: "transparent", userSelect: "none", touchAction: "manipulation" },
-  settings: { width: BOARD_W, background: C.card, border: `1px solid ${C.edge}`, borderRadius: 18, padding: 14, marginBottom: 12, boxShadow: C.sh2 },
+  settings: { width: BOARD_W, background: `linear-gradient(180deg, ${C.card} 0%, ${C.card} 78%, ${C.bg} 240%)`, border: `1px solid ${C.edge}`, borderRadius: 18, padding: 14, marginBottom: 12, boxShadow: C.sh2 },
   tglRow: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: "transparent", border: "none", padding: "9px 2px", cursor: "pointer", textAlign: "left" },
   tglLabel: { display: "block", fontWeight: 800, fontSize: 13.5, color: C.ink },
   tglHint: { display: "block", fontSize: 11, color: C.muted, fontWeight: 600, marginTop: 1 },
@@ -3479,14 +3516,14 @@ const makeStyles = (C) => ({
   swatch: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 2, padding: 4, borderRadius: 10, border: "2px solid transparent", background: C.bg, cursor: "pointer" },
   swatchDot: { width: 8, height: 8, borderRadius: 2 },
   colTitle: { fontWeight: 900, fontSize: 14, marginBottom: 10, padding: "0 2px" },
-  chapterCard: { width: "100%", background: C.card, border: `1px solid ${C.edge}`, borderRadius: 18, padding: 14, boxShadow: C.sh2, marginTop: 14 },
+  chapterCard: { width: "100%", background: `linear-gradient(180deg, ${C.card} 0%, ${C.card} 70%, ${C.bg} 200%)`, border: `1px solid ${C.edge}`, borderRadius: 18, padding: 14, boxShadow: C.sh2, marginTop: 14 },
   chapRow: { display: "flex", alignItems: "center", gap: 11 },
   chapBadge: { width: 34, height: 34, borderRadius: 12, color: "#fff", fontWeight: 900, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
   chapName: { fontWeight: 900, fontSize: 15, color: C.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
   chapSub: { fontSize: 11, fontWeight: 700, color: C.muted, marginTop: 1 },
   chapSticker: { flexShrink: 0 },
   chapTrack: { height: 6, borderRadius: 999, background: C.bg, overflow: "hidden", marginTop: 11 },
-  chapFill: { height: "100%", borderRadius: 999, transition: "width 400ms cubic-bezier(.4,0,.2,1)" },
+  chapFill: { height: "100%", borderRadius: 999, transition: "width 520ms cubic-bezier(.22,.9,.26,1)" },
   chapHint: { fontSize: 10.5, fontWeight: 700, color: C.muted, marginTop: 7, textAlign: "center" },
   emptyNote: { fontSize: 12, fontWeight: 600, color: C.muted, background: C.bg, borderRadius: 12, padding: "12px 14px", lineHeight: 1.5 },
   stickerGrid: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 },
@@ -3546,7 +3583,7 @@ const makeStyles = (C) => ({
   ovSub: { fontSize: 13, color: C.muted, marginBottom: 20, fontWeight: 600, lineHeight: 1.45 },
   primary: { display: "block", width: "100%", background: C.accent, color: "#fff", border: "none", borderRadius: 999, padding: "14px 30px", fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 15, cursor: "pointer", boxShadow: `0 8px 22px ${C.accent}52` },
   ghost: { display: "block", width: "100%", marginTop: 8, background: "transparent", color: C.muted, border: "none", padding: 10, fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 13, cursor: "pointer" },
-  winWrap: { position: "fixed", inset: 0, background: "linear-gradient(180deg,#1E8BFF 0%,#3AA0FF 55%,#5FB6FF 100%)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", zIndex: 40, padding: 20 },
+  winWrap: { position: "fixed", inset: 0, background: "radial-gradient(90% 60% at 50% 22%, #58B4FF 0%, #2E96FF 42%, #1668D8 100%)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", zIndex: 40, padding: 20 },
   winInner: { position: "relative", textAlign: "center", width: "100%", maxWidth: 320 },
   winKicker: { color: "rgba(255,255,255,0.92)", fontWeight: 800, fontSize: 15 },
   winTitle: { color: "#fff", fontWeight: 900, fontSize: 27, letterSpacing: "-0.02em", margin: "6px 0 18px" },
