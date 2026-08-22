@@ -1715,8 +1715,13 @@ export default function ArrowEscapeV3() {
   const [levelStars, setLevelStars] = useState({}); // level -> 1..3
   const [adsRemoved, setAdsRemoved] = useState(false);
   const [adWatchCount, setAdWatchCount] = useState(0); // rewarded views toward free ad removal
+  const [watchingAd, setWatchingAd] = useState(false);
   const [adNote, setAdNote] = useState("");
   const adGate = useRef({ at: 0, since: 0 });
+  const advancing = useRef(false);   // one level advance at a time — the win overlay is tappable anywhere
+  const adBusy = useRef(false);      // one reward watch at a time, so one ad counts once
+  const adWatchRef = useRef(0);      // authoritative view count, immune to stale closures
+  const returnTo = useRef("home");   // which shell screen opened the board, for Back
   const [badges, setBadges] = useState([]);
   const [stats, setStats] = useState({ arrows: 0, flawRun: 0, noUndo: 0, bestChain: 0 });
   const [view, setView] = useState({ scale: 1, tx: 0, ty: 0 });
@@ -1862,6 +1867,7 @@ export default function ArrowEscapeV3() {
         setLevelStars(p.levelStars ?? {});
         setAdsRemoved(!!p.adsRemoved);
         setAdWatchCount(Math.max(0, p.adWatchCount | 0));
+        adWatchRef.current = Math.max(0, p.adWatchCount | 0);
         setBadges(p.badges ?? []);
         setStats(p.stats ?? { arrows: 0, flawRun: 0, noUndo: 0, bestChain: 0 });
         setStreak(p.streak ?? 0);
@@ -2042,7 +2048,11 @@ export default function ArrowEscapeV3() {
       try {
         const { App } = await import("@capacitor/app");
         const h = await App.addListener("backButton", () => {
-          if (screen !== "home") setScreen("home");
+          // step back one level of navigation, rather than always jumping home:
+          // the board returns to whichever screen opened it, shell screens go
+          // home, and only home itself exits.
+          if (screen === "play") setScreen(returnTo.current || "home");
+          else if (screen !== "home") setScreen("home");
           else App.exitApp();
         });
         if (dropped) h.remove();
@@ -2058,22 +2068,30 @@ export default function ArrowEscapeV3() {
   }, [screen]);
 
   const nextLevel = useCallback(async () => {
-    await maybeInterstitial();
-    if (mode === "custom") {
-      startJourney(level);
-      return;
+    // the whole win overlay is tappable, so an impatient player can fire this
+    // several times while the interstitial is still loading — one at a time.
+    if (advancing.current) return;
+    advancing.current = true;
+    try {
+      await maybeInterstitial();
+      if (mode === "custom") {
+        startJourney(level);
+        return;
+      }
+      if (mode === "daily") {
+        startJourney(level);
+        return;
+      }
+      const n = level + 1;
+      const b = Math.max(best, n);
+      setLevel(n);
+      setBest(b);
+      if (n >= b) persist({ level: n, best: b });
+      else persist({ best: b });
+      startJourney(n, true);
+    } finally {
+      advancing.current = false;
     }
-    if (mode === "daily") {
-      startJourney(level);
-      return;
-    }
-    const n = level + 1;
-    const b = Math.max(best, n);
-    setLevel(n);
-    setBest(b);
-    if (n >= b) persist({ level: n, best: b });
-    else persist({ best: b });
-    startJourney(n, true);
   }, [mode, level, best, persist, startJourney, maybeInterstitial]);
 
   /* ── popups ── */
@@ -2258,6 +2276,14 @@ export default function ArrowEscapeV3() {
             const bl = level + 1;
             setBest(bl);
             persist({ level: bl, best: bl });
+          }
+
+          // stars were being shown on the win screen but never written down,
+          // so the Levels list always read back empty — keep the best run.
+          if (mode === "journey" && (levelStars[level] ?? 0) < stars) {
+            const nextStars = { ...levelStars, [level]: stars };
+            setLevelStars(nextStars);
+            persist({ levelStars: nextStars });
           }
         }, 340);
       }
@@ -2552,7 +2578,7 @@ export default function ArrowEscapeV3() {
         <style>{CSS}</style>
 
         <div style={S.hud} className="hud-in">
-          <button style={S.hudBtn} onClick={() => setScreen("home")} aria-label="Back">
+          <button style={S.hudBtn} onClick={() => setScreen(returnTo.current || "home")} aria-label="Back">
             <ChevLeft />
           </button>
           <button style={S.hudBtn} onClick={restart} aria-label="Restart">
@@ -2860,7 +2886,7 @@ export default function ArrowEscapeV3() {
         </div>
 
             <div style={S.homeCards}>
-              <button style={{ ...S.homeCard, animationDelay: "40ms" }} className="card-in" onClick={() => { startDaily(); setScreen("play"); }}>
+              <button style={{ ...S.homeCard, animationDelay: "40ms" }} className="card-in" onClick={() => { returnTo.current = "home"; startDaily(); setScreen("play"); }}>
                 <div style={S.homeCardTitle}>Daily</div>
                 <div style={S.homeCardSub}>{todayKey().slice(5).replace("-", " / ")}</div>
                 <div style={S.homeCardArt}>
@@ -2915,7 +2941,7 @@ export default function ArrowEscapeV3() {
               <div style={{ ...S.homeDiff, color: TIER_HUE[tierFor(best).index] ?? C.accent }}>{tierFor(best).tier.name}</div>
             </div>
 
-            <button style={{ ...S.continueBtn, animationDelay: "230ms" }} className="card-in" onClick={() => { startJourney(best); setScreen("play"); }}>
+            <button style={{ ...S.continueBtn, animationDelay: "230ms" }} className="card-in" onClick={() => { returnTo.current = "home"; startJourney(best); setScreen("play"); }}>
               Continue
             </button>
             <div style={S.homeFoot}>Best {bestScore.toLocaleString()} · level {best}</div>
@@ -2953,7 +2979,7 @@ export default function ArrowEscapeV3() {
                           <button
                             key={n}
                             style={{ ...S.lvCell, borderColor: st ? ci.hue : "transparent" }}
-                            onClick={() => { startJourney(n); setScreen("play"); }}
+                            onClick={() => { returnTo.current = "levels"; startJourney(n); setScreen("play"); }}
                           >
                             <span style={S.lvNum}>{n}</span>
                             <span style={S.lvStars}>{st ? "★".repeat(st) : "·"}</span>
@@ -3066,7 +3092,7 @@ export default function ArrowEscapeV3() {
 
         {screen === "studio" && (
           <ShapeStudio
-            onPlay={(m) => { startCustom(m); setScreen("play"); }}
+            onPlay={(m) => { returnTo.current = "studio"; startCustom(m); setScreen("play"); }}
             saved={customs}
             onSave={saveCustom}
             onDelete={deleteCustom}
@@ -3125,22 +3151,35 @@ export default function ArrowEscapeV3() {
                 <div style={{ ...S.chapFill, width: `${Math.min(100, (adWatchCount / AD_REMOVAL_GOAL) * 100)}%`, background: C.go }} />
               </div>
               <button
-                style={{ ...S.buyBtn, width: "100%", marginTop: 10, background: C.go }}
+                style={{ ...S.buyBtn, width: "100%", marginTop: 10, background: C.go, opacity: watchingAd ? 0.6 : 1 }}
+                disabled={watchingAd}
                 onClick={async () => {
-                  const watched = await Ads.rewarded("removeAdsProgress");
-                  if (!watched) { flashNote("No ad available right now."); return; }
-                  const n = adWatchCount + 1;
-                  if (n >= AD_REMOVAL_GOAL) {
-                    setAdsRemoved(true);
-                    persist({ adsRemoved: true, adWatchCount: n });
-                    flashNote("Ads removed — thank you.");
-                  } else {
+                  // repeated taps used to start several ads at once and then
+                  // credit only one of them — serialise, and count from a ref
+                  // so no view is lost to a stale render.
+                  if (adBusy.current) return;
+                  adBusy.current = true;
+                  setWatchingAd(true);
+                  try {
+                    const watched = await Ads.rewarded("removeAdsProgress");
+                    if (!watched) { flashNote("No ad available right now."); return; }
+                    const n = adWatchRef.current + 1;
+                    adWatchRef.current = n;
                     setAdWatchCount(n);
-                    persist({ adWatchCount: n });
+                    if (n >= AD_REMOVAL_GOAL) {
+                      setAdsRemoved(true);
+                      persist({ adsRemoved: true, adWatchCount: n });
+                      flashNote("Ads removed — thank you.");
+                    } else {
+                      persist({ adWatchCount: n });
+                    }
+                  } finally {
+                    adBusy.current = false;
+                    setWatchingAd(false);
                   }
                 }}
               >
-                Watch ad
+                {watchingAd ? "Loading ad…" : "Watch ad"}
               </button>
             </div>
           )}

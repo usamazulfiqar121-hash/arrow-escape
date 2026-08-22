@@ -27,70 +27,129 @@ const IDS = TESTING ? GOOGLE_TEST_IDS : PROD_IDS;
 // AdMob.initialize() must resolve before any prepare/show call, but
 // window.ArrowAds has to exist synchronously before the app mounts. So the
 // object is created immediately; every method just awaits this promise first.
-const initPromise = AdMob.initialize()
-  .then(() => {
-    // A persistent bottom banner, shown once at startup. Failures here
-    // (e.g. a plugin version whose API shape differs) are caught below and
-    // never block interstitial or rewarded ads.
-    return AdMob.showBanner({
+// initPromise itself never rejects — each step below catches its own errors
+// so a banner problem is never mislabeled as an initialize failure.
+// TEMPORARY — surfaces exactly what's happening on screen since there's no
+// ADB access to read console logs on the test device. Remove this whole
+// block once ads are confirmed working; it must never ship to real users.
+const DEBUG_ALERT = false; // set true again if ads stop working and you need to see why
+function debugLog(msg) {
+  console.log(msg);
+  if (DEBUG_ALERT) { try { window.alert(msg); } catch {} }
+}
+function debugError(label, e) {
+  const msg = label + ": " + (e?.message || e?.toString?.() || JSON.stringify(e));
+  console.error(msg);
+  if (DEBUG_ALERT) { try { window.alert(msg); } catch {} }
+}
+
+const initPromise = (async () => {
+  try {
+    await AdMob.initialize();
+    debugLog("[ads] initialize OK");
+  } catch (e) {
+    debugError("[ads] initialize FAILED", e);
+  }
+  try {
+    // A persistent bottom banner, shown once at startup.
+    await AdMob.showBanner({
       adId: IDS.banner,
       adSize: BannerAdSize.ADAPTIVE_BANNER,
       position: BannerAdPosition.BOTTOM_CENTER,
       isTesting: TESTING,
-    }).catch((e) => console.error("[ads] banner failed to show", e));
-  })
-  .catch((e) => {
-    console.error("[ads] AdMob.initialize() failed", e);
-  });
+    });
+    debugLog("[ads] banner OK");
+  } catch (e) {
+    debugError("[ads] banner FAILED", e);
+  }
+})();
+
+// Only one ad may be in flight at a time. Without this, tapping a button
+// repeatedly starts a second/third prepare+show before the first finishes,
+// which stacks ads on top of each other and lets their reward events cross
+// wires. Repeat taps now quietly join the ad already running instead.
+let rewardedInFlight = null;
+let interstitialInFlight = null;
+
+async function runRewarded() {
+  const handles = [];
+  const cleanup = async () => {
+    for (const h of handles) { try { await h?.remove?.(); } catch {} }
+  };
+  let timer;
+  try {
+    await initPromise;
+    await AdMob.prepareRewardVideoAd({ adId: IDS.rewarded, isTesting: TESTING });
+
+    // Track whether the viewer actually earned the reward, not just
+    // whether the ad opened. Listeners are registered — and confirmed
+    // attached — before the ad is shown, so a fast viewer can't finish
+    // before we're listening. If RewardAdPluginEvents turns out not to
+    // match this plugin version, none of these three ever fire and the
+    // 60s timeout falls back to the old "shown = credited" behaviour —
+    // so this can only get stricter, never break rewards.
+    let settle;
+    const earned = new Promise((resolve) => { settle = resolve; });
+    let settled = false;
+    const settleOnce = (v) => { if (!settled) { settled = true; settle(v); } };
+
+    try {
+      const results = await Promise.allSettled([
+        AdMob.addListener(RewardAdPluginEvents.Rewarded, () => settleOnce(true)),
+        AdMob.addListener(RewardAdPluginEvents.Dismissed, () => settleOnce(false)),
+        AdMob.addListener(RewardAdPluginEvents.FailedToShow, () => settleOnce(false)),
+      ]);
+      for (const r of results) {
+        if (r.status === "fulfilled" && r.value) handles.push(r.value);
+        else if (r.status === "rejected") console.error("[ads] a reward listener failed to register", r.reason);
+      }
+    } catch (e) {
+      console.error("[ads] reward event listeners unavailable, falling back", e);
+    }
+
+    timer = setTimeout(() => settleOnce(true), 60000);
+    await AdMob.showRewardVideoAd();
+    const result = await earned;
+    clearTimeout(timer);
+    return result;
+  } catch (e) {
+    clearTimeout(timer);
+    debugError("[ads] rewarded FAILED", e);
+    return false;
+  } finally {
+    await cleanup();
+  }
+}
 
 window.ArrowAds = {
   ready: true,
 
-  async showRewarded() {
-    const handles = [];
-    const cleanup = async () => {
-      for (const h of handles) { try { await h?.remove?.(); } catch {} }
-    };
-    try {
-      await initPromise;
-      await AdMob.prepareRewardVideoAd({ adId: IDS.rewarded, isTesting: TESTING });
-
-      // Track whether the viewer actually earned the reward, not just
-      // whether the ad opened. If RewardAdPluginEvents turns out not to
-      // match this plugin version, none of these three ever fire and the
-      // 60s timeout below falls back to the old "shown = credited"
-      // behaviour — so this can only get stricter, never break rewards.
-      const earned = new Promise(async (resolve) => {
-        let settled = false;
-        const settle = (v) => { if (!settled) { settled = true; resolve(v); } };
-        try {
-          handles.push(await AdMob.addListener(RewardAdPluginEvents.Rewarded, () => settle(true)));
-          handles.push(await AdMob.addListener(RewardAdPluginEvents.Dismissed, () => settle(false)));
-          handles.push(await AdMob.addListener(RewardAdPluginEvents.FailedToShow, () => settle(false)));
-        } catch (e) {
-          console.error("[ads] reward event listeners unavailable, falling back", e);
-        }
-        setTimeout(() => settle(true), 60000);
-      });
-
-      await AdMob.showRewardVideoAd();
-      return await earned;
-    } catch (e) {
-      console.error("[ads] rewarded failed", e);
-      return false;
-    } finally {
-      await cleanup();
-    }
+  showRewarded() {
+    if (rewardedInFlight) return rewardedInFlight;
+    rewardedInFlight = (async () => {
+      try {
+        return await runRewarded();
+      } finally {
+        rewardedInFlight = null;
+      }
+    })();
+    return rewardedInFlight;
   },
 
-  async showInterstitial() {
-    try {
-      await initPromise;
-      await AdMob.prepareInterstitial({ adId: IDS.interstitial, isTesting: TESTING });
-      await AdMob.showInterstitial();
-    } catch (e) {
-      console.error("[ads] interstitial failed", e);
-    }
+  showInterstitial() {
+    if (interstitialInFlight) return interstitialInFlight;
+    interstitialInFlight = (async () => {
+      try {
+        await initPromise;
+        await AdMob.prepareInterstitial({ adId: IDS.interstitial, isTesting: TESTING });
+        await AdMob.showInterstitial();
+      } catch (e) {
+        console.error("[ads] interstitial failed", e);
+      } finally {
+        interstitialInFlight = null;
+      }
+    })();
+    return interstitialInFlight;
   },
 
   // Exposed in case you want the game to hide/show the banner around
