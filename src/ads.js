@@ -1,4 +1,4 @@
-import { AdMob, BannerAdSize, BannerAdPosition } from '@capacitor-community/admob';
+import { AdMob, BannerAdSize, BannerAdPosition, RewardAdPluginEvents } from '@capacitor-community/admob';
 
 // Flip to false when you're ready to go live on your own ad units.
 // true  -> Google's official sample ad units. These always fill, instantly,
@@ -47,19 +47,39 @@ window.ArrowAds = {
   ready: true,
 
   async showRewarded() {
+    const handles = [];
+    const cleanup = async () => {
+      for (const h of handles) { try { await h?.remove?.(); } catch {} }
+    };
     try {
       await initPromise;
       await AdMob.prepareRewardVideoAd({ adId: IDS.rewarded, isTesting: TESTING });
+
+      // Track whether the viewer actually earned the reward, not just
+      // whether the ad opened. If RewardAdPluginEvents turns out not to
+      // match this plugin version, none of these three ever fire and the
+      // 60s timeout below falls back to the old "shown = credited"
+      // behaviour — so this can only get stricter, never break rewards.
+      const earned = new Promise(async (resolve) => {
+        let settled = false;
+        const settle = (v) => { if (!settled) { settled = true; resolve(v); } };
+        try {
+          handles.push(await AdMob.addListener(RewardAdPluginEvents.Rewarded, () => settle(true)));
+          handles.push(await AdMob.addListener(RewardAdPluginEvents.Dismissed, () => settle(false)));
+          handles.push(await AdMob.addListener(RewardAdPluginEvents.FailedToShow, () => settle(false)));
+        } catch (e) {
+          console.error("[ads] reward event listeners unavailable, falling back", e);
+        }
+        setTimeout(() => settle(true), 60000);
+      });
+
       await AdMob.showRewardVideoAd();
-      // NOTE: this counts the ad as watched as soon as it is shown without
-      // throwing — it does not yet confirm the viewer watched to completion
-      // (AdMob fires a separate reward event for that). Someone could close
-      // the ad early and still be credited. Fine for now while you're
-      // getting ads to show at all; worth tightening before this ships.
-      return true;
+      return await earned;
     } catch (e) {
       console.error("[ads] rewarded failed", e);
       return false;
+    } finally {
+      await cleanup();
     }
   },
 

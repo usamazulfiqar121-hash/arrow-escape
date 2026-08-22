@@ -18,6 +18,10 @@ const LIGHT = {
   gridLine: "#B9C6E0",
   overlay: "rgba(255,255,255,0.96)",
   coachBg: "#E9F1FF",
+  edge: "rgba(27,36,64,0.00)",
+  sh1: "0 2px 8px rgba(27,36,64,0.07)",
+  sh2: "0 6px 20px rgba(27,36,64,0.10)",
+  sh3: "0 14px 36px rgba(27,36,64,0.14)",
 };
 
 /* High contrast — vivid arrows on near-black, easier in low light and for
@@ -38,6 +42,10 @@ const DARK = {
   gridLine: "#3C4E76",
   overlay: "rgba(8,12,26,0.96)",
   coachBg: "#16223F",
+  edge: "rgba(140,170,255,0.10)",
+  sh1: "0 2px 10px rgba(0,0,0,0.40)",
+  sh2: "0 8px 26px rgba(0,0,0,0.50)",
+  sh3: "0 18px 46px rgba(0,0,0,0.60)",
 };
 
 const C = { ...LIGHT, __dark: false };
@@ -735,37 +743,178 @@ function fitMask(mask, maxCells) {
 }
 
 
+// blow a hand-drawn shape up so the same outline holds far more arrows —
+// an 11x11 sketch only has room for a handful otherwise
+function scaleMask(mask, k) {
+  if (k <= 1) return mask;
+  const cols = mask.cols * k;
+  const rows = mask.rows * k;
+  const cells = new Set();
+  for (const i of mask.cells) {
+    const x = (i % mask.cols) * k;
+    const y = Math.floor(i / mask.cols) * k;
+    for (let dy = 0; dy < k; dy++) for (let dx = 0; dx < k; dx++) cells.add((y + dy) * cols + x + dx);
+  }
+  return { ...mask, cols, rows, cells };
+}
+
+// A shape hashes to one stable number, so the same drawing — or the same shared
+// code on someone else's phone — always produces the same puzzle.
+function maskSeed(m) {
+  let h = 2166136261;
+  h = Math.imul(h ^ m.cols, 16777619);
+  h = Math.imul(h ^ m.rows, 16777619);
+  for (const i of [...m.cells].sort((a, b) => a - b)) h = Math.imul(h ^ i, 16777619);
+  return (h >>> 0) || 1;
+}
+
 function makeLevelFromMask(rawMask, tierIdx = 7) {
   const idx = Math.max(0, Math.min(TIERS.length - 1, tierIdx | 0));
   const tier = TIERS[idx];
-  const mask = fitMask(rawMask, tier.maxCells);
+  const norm = { ...rawMask, cells: new Set([...rawMask.cells].sort((a, b) => a - b)) };
+  RND = mulberry32(maskSeed(norm));
+  // pack a drawn shape as full as the tier allows before building
+  const room = norm.cells.size ? Math.sqrt(tier.maxCells / norm.cells.size) : 1;
+  const mask = fitMask(scaleMask(norm, Math.max(1, Math.min(4, Math.floor(room)))), tier.maxCells);
+  const chessWeight = idx >= HARD_TIER ? 0.9 : 0;
   let best = null;
-  for (let i = 0; i < (mask.cells.size > 240 ? 2 : 5); i++) {
+  for (let i = 0; i < (mask.cells.size > 240 ? 3 : 6); i++) {
     const pieces = buildBoard(mask, tier);
     if (pieces.length < 3) continue;
     const mb = measureBoard(pieces, mask.cols, mask.rows);
     const fill = pieces.reduce((a, p) => a + p.cells.length, 0) / mask.cells.size;
     // prefer the target openness, reward boards with more forced moments, and
     // heavily punish a board that leaves the shape half empty
-    const gap = Math.abs(mb.freedom - tier.freedom) - mb.forced * 0.35 + Math.max(0, tier.coverage - 0.06 - fill) * 4;
+    const gap = Math.abs(mb.freedom - tier.freedom) - mb.forced * 0.35 + Math.max(0, tier.coverage - 0.06 - fill) * 4
+      - (chessWeight ? chessScore(pieces, mask.cols, mask.rows) * chessWeight : 0);
     if (!best || gap < best.gap) best = { pieces, gap };
   }
   if (!best) best = { pieces: buildBoard(mask, tier), gap: 1 };
+  assignLocks(best.pieces, mask.cols, mask.rows, lockRatio(idx));
+  RND = Math.random;
   return {
     mask, pieces: best.pieces, tier, tierIndex: idx, stepInTier: 1,
     hearts: tier.hearts, hints: tier.hints, undos: tier.undos,
   };
 }
 
+/* ── chess-style position evaluation ──────────────────────────────
+   From Hard upward a board should not just be tight, it should contain
+   real combinations: stretches where only one arrow is playable, so the
+   solution reads like a forced line rather than a pile of free choices.
+   We solve the board a few times and score how often the position forces
+   the player's hand, and how long those forced runs get.               */
+// Some arrows are sealed shut until a particular other arrow has left. Locks are
+// handed out along a real solve order — a sealed arrow always depends on one that
+// comes before it — so a board with locks stays solvable by construction.
+function assignLocks(pieces, cols, rows, ratio) {
+  if (ratio <= 0 || pieces.length < 8) return;
+  const lanes = pieces.map((p) => exitLine(p.cells[0], p.dir, cols, rows));
+  const owner = new Map();
+  pieces.forEach((p) => p.cells.forEach((c) => owner.set(c, p.id)));
+  const alive = new Set(pieces.map((p) => p.id));
+  const isFree = (id) =>
+    lanes[id].every((c) => {
+      const o = owner.get(c);
+      return o === undefined || !alive.has(o);
+    });
+
+  const order = [];
+  while (alive.size) {
+    const free = [...alive].filter(isFree);
+    if (!free.length) return; // not a clean board — leave it alone
+    const pick = free[(RND() * free.length) | 0];
+    order.push(pick);
+    alive.delete(pick);
+  }
+
+  const byId = new Map(pieces.map((p) => [p.id, p]));
+  const first = Math.max(2, Math.floor(order.length * 0.22)); // the opening stays free
+  const room = order.length - first;
+  const want = Math.min(Math.round(order.length * ratio), room);
+  if (want < 1) return;
+  const stride = Math.max(1, Math.floor(room / want));
+  for (let n = 0, i = first; n < want && i < order.length; n++, i += stride) {
+    const p = byId.get(order[i]);
+    if (!p) continue;
+    const back = 1 + ((RND() * Math.min(i, 6)) | 0); // depends on a recent earlier arrow
+    p.needs = order[Math.max(0, i - back)];
+  }
+}
+
+function chessScore(pieces, cols, rows) {
+  if (pieces.length < 6) return 0;
+  const lanes = pieces.map((p) => exitLine(p.cells[0], p.dir, cols, rows));
+  const owner = new Map();
+  pieces.forEach((p) => p.cells.forEach((c) => owner.set(c, p.id)));
+
+  let total = 0;
+  const RUNS = 3;
+  for (let r = 0; r < RUNS; r++) {
+    const alive = new Set(pieces.map((p) => p.id));
+    const isFree = (id) =>
+      lanes[id].every((c) => {
+        const o = owner.get(c);
+        return o === undefined || !alive.has(o);
+      });
+    let only = 0;      // positions with exactly one legal move
+    let near = 0;      // positions with two
+    let run = 0;
+    let bestRun = 0;
+    let states = 0;
+    while (alive.size) {
+      const free = [...alive].filter(isFree);
+      if (!free.length) return 0; // unsolvable ordering — never reward it
+      states++;
+      if (free.length === 1) { only++; run++; if (run > bestRun) bestRun = run; }
+      else { if (free.length === 2) near++; run = 0; }
+      alive.delete(free[(RND() * free.length) | 0]);
+    }
+    if (!states) return 0;
+    // a long forced line is worth far more than the same count scattered about
+    total += (only / states) + (near / states) * 0.4 + Math.min(bestRun, 8) / 8 * 0.6;
+  }
+  return total / RUNS;
+}
+
+// The first minute decides whether anyone plays a second one. Levels 1-4 are
+// deliberately small and open — a new player clears one in under a minute and
+// learns the rule by winning, not by reading. By level 5 the real curve begins.
+const INTRO = [
+  { cells: 0.30, pieces: 0.34, freedom: 2.1 },
+  { cells: 0.44, pieces: 0.48, freedom: 1.7 },
+  { cells: 0.60, pieces: 0.64, freedom: 1.4 },
+  { cells: 0.80, pieces: 0.82, freedom: 1.15 },
+];
+
+function introTier(tier, level) {
+  const f = INTRO[level - 1];
+  if (!f) return tier;
+  return {
+    ...tier,
+    maxCells: Math.max(40, Math.round(tier.maxCells * f.cells)),
+    pieces: Math.max(8, Math.round(tier.pieces * f.pieces)),
+    freedom: Math.min(0.34, tier.freedom * f.freedom),
+    tightness: Math.max(0.5, tier.tightness - 0.14),
+  };
+}
+
 function makeLevel(level, seed) {
-  if (seed !== undefined) RND = mulberry32(seed);
-  const { tier, index, step: stepInTier } = tierFor(level);
+  // a level number must always rebuild the same board — otherwise replaying it
+  // from the Levels list hands the player a different puzzle
+  RND = mulberry32(seed !== undefined ? seed : level * 9176 + 17);
+  const { tier: baseTier, index, step: stepInTier } = tierFor(level);
+  const tier = seed === undefined ? introTier(baseTier, level) : baseTier;
   const raw =
     seed === undefined && level > CURATED_UNTIL
       ? artMask(level) || proceduralMask(level)
       : parseMask(curatedKey(seed !== undefined ? (seed % 9973) + 1 : level));
   const mask = fitMask(raw, tier.maxCells);
-  const tries = mask.cells.size > 240 ? 2 : mask.cells.size > 90 ? 4 : 7;
+  // Hard and above are judged like chess positions, and get extra candidate
+  // boards to choose from — the generator plays out more lines before deciding
+  const chessWeight = index >= HARD_TIER ? 0.9 : 0;
+  let tries = mask.cells.size > 240 ? 2 : mask.cells.size > 90 ? 4 : 7;
+  if (chessWeight && mask.cells.size <= 420) tries += 2;
 
   let best = null;
   for (let i = 0; i < tries; i++) {
@@ -775,10 +924,12 @@ function makeLevel(level, seed) {
     const fill = pieces.reduce((a, p) => a + p.cells.length, 0) / mask.cells.size;
     // prefer the target openness, reward boards with more forced moments, and
     // heavily punish a board that leaves the shape half empty
-    const gap = Math.abs(mb.freedom - tier.freedom) - mb.forced * 0.35 + Math.max(0, tier.coverage - 0.06 - fill) * 4;
+    const gap = Math.abs(mb.freedom - tier.freedom) - mb.forced * 0.35 + Math.max(0, tier.coverage - 0.06 - fill) * 4
+      - (chessWeight ? chessScore(pieces, mask.cols, mask.rows) * chessWeight : 0);
     if (!best || gap < best.gap) best = { pieces, gap };
   }
   if (!best) best = { pieces: buildBoard(mask, tier), gap: 1 };
+  assignLocks(best.pieces, mask.cols, mask.rows, lockRatio(index));
   RND = Math.random;
 
   return { mask, pieces: best.pieces, tier, tierIndex: index, stepInTier, hearts: tier.hearts, hints: tier.hints, undos: tier.undos };
@@ -956,6 +1107,7 @@ const Ads = {
    after a loss, and never during the tutorial. */
 const AD_EVERY_LEVELS = 8;
 const AD_MIN_GAP_MS = 210000;
+const AD_REMOVAL_GOAL = 30; // rewarded views to earn permanent ad removal, free
 
 /* ═══════════  shapes  ═══════════ */
 
@@ -1041,10 +1193,67 @@ const SHAPES = {
   keyArt: { name: "Key", rows: ["...#####...............", "..########.............", ".##########............", "#####..####............", "####....###############", "###.....###############", "###.....###############", "####...################", ".##########......###.##", ".#########.......###.##", "..#######........###.##", ".....##..........###.#.", "..................#...."] },
   mushroomArt: { name: "Mushroom", rows: ["......#########......", "....#############....", "..#################..", ".###################.", ".###################.", "#####################", "#####################", "#####################", ".......#######.......", ".......#######.......", ".......#######.......", ".......#######.......", ".......#######.......", ".......#######.......", ".......#######.......", ".......#######.......", ".......#######.......", ".......#######.......", ".......#######.......", "........#####........"] },
   rocketArt: { name: "Rocket", rows: [".......##.......", ".......##.......", "......####......", "......#####.....", ".....######.....", "....########....", "....########....", "....########....", "....########....", "....########....", "...##########...", "...##########...", "..############..", "..############..", ".##############.", ".##############.", "################", "##...######...##", "......####......", "......####......", ".......##.......", ".......##......."] },
+  owlArt: { name: "Owl", rows: ["..##......##...", ".####....####..", "..#############", ".##############", "###############", "###############", "##.####.####.##", "##.#..#.#..#.##", "##.####.####.##", "###############", "#######.#######", "######...######", "###############", "###############", ".#############.", ".#############.", "..###########..", "...#########...", "...###...###...", "..####...####.."] },
+  whaleArt: { name: "Whale", rows: ["...........###...", "..........####...", ".........#####...", "..#####..#####...", ".#########.......", "###############..", "#################", "#################", "#################", "#################", "#################", ".###############.", ".##############..", "..############...", "...#########.....", "....#######......", "...####..####....", "..####....####..."] },
+  cactusArt: { name: "Cactus", rows: ["......####......", "......####......", "###...####...###", "####..####..####", "####..####..####", "####..####..####", "####..####..####", "#############.##", "################", "################", "..####..####..##", "......####......", "......####......", "......####......", "......####......", "......####......", "....########....", "..############..", ".##############.", ".##############."] },
+  boltArt: { name: "Bolt", rows: ["........####", ".......#####", "......######", ".....#######", "....########", "...#########", "..#########.", ".#########..", "###########.", "############", "#########...", "########....", ".#######....", "..######....", "...#####....", "....####....", ".....###....", "......##....", "......##....", ".......#...."] },
+  crabArt: { name: "Crab", rows: ["##..........##..", "###........###..", ".###......###...", "..####..####....", "...##########...", "..############..", ".##############.", "################", "################", "##.##########.##", "##.##########.##", "################", ".##############.", "..############..", "..##..####..##..", ".###...##...###.", "###.........###.", "##...........##."] },
+  penguinArt: { name: "Penguin", rows: ["....######....", "...########...", "..##########..", "..##########..", "..#.######.#..", "..##########..", "...###..###...", "....######....", ".#############", "##############", "###########..#", "####....####..", "####....####..", "####....####..", "####....####..", "####....####..", "#####..#####..", "############..", ".##########...", "###......###.."] },
+  lighthouseArt: { name: "Lighthouse", rows: [".....####.....", "....######....", "...########...", "..##########..", "..#.######.#..", "..##########..", "...########...", "....######....", "....######....", "...########...", "...##....##...", "...########...", "...##....##...", "...########...", "..##########..", "..##########..", ".############.", ".############.", "##############", "##############"] },
+  bearArt: { name: "Bear", rows: [".###......###.", "####......####", "####......####", ".############.", "##############", "##############", "##.########.##", "##.########.##", "##############", "#####.##.#####", "######..######", "##############", ".############.", ".############.", "..##########..", "..####..####..", ".####....####.", ".###......###."] },
+  flowerArt: { name: "Flower", rows: ["....####....", "...######...", "..########..", "..########..", "###......###", "####....####", "####....####", "###......###", "..########..", "..########..", "...######...", "....####....", ".....##.....", ".....##.....", "..####......", ".#####......", ".....##.....", ".....##.....", "......#####.", "......#####.", ".....##.....", ".....##....."] },
+  cameraArt: { name: "Camera", rows: [".....######.....", ".....######.....", ".....######.....", "################", "################", "###..######..###", "##....####....##", "##...######...##", "##..########..##", "##..########..##", "##..########..##", "##...######...##", "##....####....##", "###..######..###", "################", "################"] },
+  boatArt: { name: "Sailboat", rows: [".......##.......", ".......###......", ".......####.....", ".......#####....", "....########....", "...#########....", "..##########....", ".###########....", ".......##.......", ".......##.......", "################", "################", ".##############.", "..############..", "...##########...", "....########...."] },
+  dinoArt: { name: "Dino", rows: ["...........#####", "..........######", "..........##.###", "..........######", "..........#####.", "..........####..", ".#####..######..", "..###########...", "..###########...", "#############...", "#############...", ".############...", ".###########....", ".##########.....", ".#####.####.....", ".####..####.....", ".####..####.....", "####...####.....", "####...#####...."] },
+  beeArt: { name: "Bee", rows: ["..##......##..", "..###....###..", "...##....##...", "....######....", "...########...", "..##########..", "..##########..", "##############", "##############", "##############", "##############", "##############", "##############", ".############.", ".############.", "..##########..", "...########...", "....######....", ".....####.....", "......##......"] },
+  castleArt: { name: "Castle", rows: ["##..##..##..##", "##..##..##..##", "##############", "##############", "##############", "##.###..###.##", "##.###..###.##", "##############", "##############", "##############", "##############", "#####....#####", "####......####", "####......####", "####......####", "####......####", "####......####", "##############", "##############"] },
+  ghostArt: { name: "Ghost", rows: ["....######....", "..##########..", ".############.", "##############", "##############", "##.##....##.##", "##.##....##.##", "##############", "##############", "##############", "##############", "##############", "##############", "##############", "##############", "##############", "###.###.###.##", "##..##..##..##"] },
+  iceArt: { name: "Ice Cream", rows: ["....######....", "..##########..", ".############.", "##############", "##############", "##############", "##############", ".############.", "..##########..", "..##########..", "...########...", "...########...", "....######....", "....######....", ".....####.....", ".....####.....", "......##......", "......##......"] },
+  turtleArt: { name: "Turtle", rows: ["....########....", "..############..", ".##############.", "################", "################", "###.########.###", "###.########.###", "################", "################", "################", "################", ".##############.", "..############..", "...##########...", "..############..", ".####......####.", ".###........###."] },
+  robotArt: { name: "Robot", rows: ["...##....##...", "...##....##...", "..##########..", ".############.", "##############", "##.##....##.##", "##.##....##.##", "##############", "####......####", "##############", "##############", "..##########..", "##############", "##############", "##############", "##############", "..##########..", "..####..####..", "..####..####..", "..####..####..", ".#####..#####."] },
+  balloonArt: { name: "Balloon", rows: ["....######....", "..##########..", ".############.", "##############", "##############", "##############", "##############", "##############", ".############.", ".############.", "..##########..", "...########...", "....######....", ".....####.....", "......##......", "......##......", ".....###......", "......###.....", ".....###......", "......##......"] },
+  foxArt: { name: "Fox", rows: ["##..........##", "###........###", "####......####", "##############", "##############", "##############", "##.########.##", "##.########.##", "##############", ".############.", ".############.", "..##########..", "..####..####..", "..##########..", "...########...", "....######....", ".....####.....", "......##......"] },
+  cupcakeArt: { name: "Cupcake", rows: ["......##......", ".....####.....", "...########...", "..##########..", ".############.", "##############", "##############", "##############", "##############", "##############", "##############", ".############.", ".############.", ".##.######.##.", ".##.######.##.", "..##########..", "..##########..", "...########...", "...########...", "....######...."] },
+  snailArt: { name: "Snail", rows: ["..........##..##..", "..........##..##..", "..........##..##..", "....######.####...", "..##########.##...", ".#############....", "##############....", "####......####....", "###..####..###....", "#########..###....", "###..####..###....", "####......####....", "##############....", ".#############....", "..################", "..################"] },
+  mountainArt: { name: "Mountain", rows: ["......##........", ".....####.......", ".....#####......", "....#######.....", "....########....", "...##########...", "...###########..", "..#############.", "..##############", ".###############", ".###############", "################", "################", "################", "################", "################"] },
+  teapotArt: { name: "Teapot", rows: ["......####......", ".....######.....", "...##########...", ".##############.", "################", "################", "##############..", "##############..", "##############..", "##############..", "###############.", "###############.", ".##############.", "..############..", "...##########...", "....########...."] },
+  keyholeArt: { name: "Keyhole", rows: ["....########....", "..############..", ".##############.", "################", "################", "###..######..###", "##....####....##", "##....####....##", "###..######..###", "################", "################", ".##############.", "..############..", "...##########...", "....########....", ".....######.....", "....########....", "...##########...", "..############..", "..############.."] },
+  appleArt: { name: "Apple", rows: [".......###....", ".......###....", "..###..###....", ".###########..", "##############", "##############", "##############", "##############", "##############", "##############", "##############", "##############", ".############.", ".############.", "..##########..", "..####..####..", ".####....####."] },
+  diceArt: { name: "Dice", rows: ["##############", "##############", "##############", "###.###.###.##", "###.###.###.##", "##############", "##############", "###.###.###.##", "###.###.###.##", "##############", "##############", "###.###.###.##", "###.###.###.##", "##############", "##############", "##############"] },
+  towerArt: { name: "Tower", rows: ["....########....", "...##########...", "..############..", "..############..", "...##########...", "....########....", "....########....", "....########....", "...##########...", "...##########...", "....########....", "....########....", "...##########...", "..############..", ".##############.", "################", "################", "################"] },
+  rabbitArt: { name: "Rabbit", rows: ["..##......##..", "..##......##..", "..###....###..", "..###....###..", "..####..####..", "..##########..", ".############.", "##############", "##############", "##############", "##.####.####.#", "##############", "#####.###.####", "######...#####", "##############", ".############.", ".############.", "..##########..", "..####...####.", ".####.....####"] },
+  frogArt: { name: "Frog", rows: ["..####....####..", ".######..######.", ".##.##....##.##.", ".######..######.", "..############..", ".##############.", "################", "################", "################", "###.########.###", "####........####", "################", ".##############.", "..############..", "###..######..###", "####........####", "##............##"] },
+  octopusArt: { name: "Octopus", rows: ["....########....", "..############..", ".##############.", "################", "##.##########.##", "##.##########.##", "################", "################", "################", "################", "##.##.####.##.##", "##.##.####.##.##", "##.##.####.##.##", "##.##.####.##.##", "##.##.####.##.##", "##.##.####.##.##"] },
+  dolphinArt: { name: "Dolphin", rows: [".......##.......", "......####......", ".....######.....", "....########....", "...##########...", "..############..", "###############.", "################", "################", "###############.", "##############..", ".############...", "..##########....", "...####..###....", "..####....###...", ".####......###.."] },
+  ladybugArt: { name: "Ladybug", rows: ["..##......##..", "...##....##...", "....######....", "...########...", "..##########..", ".############.", "##############", "###.####.#####", "###.####.#####", "##############", "####.##.######", "####.##.######", "##############", ".############.", ".############.", "..##########..", "...########...", "....######...."] },
+  spiderArt: { name: "Spider", rows: ["##..........##", ".##........##.", "..##......##..", "...########...", "..##########..", ".############.", "##############", "##.########.##", "##############", "##############", ".############.", "..##########..", "...########...", "..##......##..", ".##........##.", "##..........##"] },
+  sunArt: { name: "Sun", rows: ["......##......", "......##......", "...#######....", "....######....", "..##########..", ".############.", "##############", "##############", "##############", "##############", ".############.", "..##########..", "....######....", "...#######....", "......##......", "......##......"] },
+  moonArt: { name: "Moon", rows: ["......####....", "....########..", "...#########..", "..#####.......", ".#####........", ".####.........", "#####.........", "####..........", "####..........", "####..........", "#####.........", ".####.........", ".#####........", "..#####.......", "...#########..", "....########..", "......####...."] },
+  cloudArt: { name: "Cloud", rows: [".....######.....", "...##########...", "..############..", ".##############.", "################", "################", "################", "################", "################", ".##############.", "..############.."] },
+  starArt: { name: "Star", rows: ["......##......", "......##......", ".....####.....", ".....####.....", "##############", "##############", ".############.", "..##########..", "...########...", "...########...", "..##########..", "..###....###..", ".####....####.", ".###......###.", "###........###"] },
+  heartBigArt: { name: "Heartbeat", rows: ["..####....####..", ".######..######.", "################", "################", "################", "################", "################", ".##############.", ".##############.", "..############..", "...##########...", "....########....", ".....######.....", "......####......", ".......##......."] },
+  ringArt: { name: "Ring", rows: ["......##......", ".....####.....", "....##..##....", "...##....##...", "....######....", "..##########..", ".############.", "###........###", "###........###", "###........###", "###........###", "###........###", ".############.", "..##########..", "....######...."] },
+  giftArt: { name: "Gift", rows: ["..##......##..", ".####....####.", ".#####..#####.", "..############", "##############", "##############", "#####.##.#####", "##############", "##############", "#####.##.#####", "#####.##.#####", "#####.##.#####", "#####.##.#####", "#####.##.#####", "##############", "##############"] },
+  bellArt: { name: "Bell", rows: ["......##......", ".....####.....", "....######....", "...########...", "..##########..", "..##########..", ".############.", ".############.", "##############", "##############", "##############", "##############", "##############", "..##########..", "......##......", ".....####.....", "......##......"] },
+  lanternArt: { name: "Lantern", rows: ["......##......", "....######....", "..##########..", ".############.", "##############", "##.########.##", "##.########.##", "##.########.##", "##.########.##", "##.########.##", "##.########.##", "##############", ".############.", "..##########..", "....######....", "......##......"] },
+  windmillArt: { name: "Windmill", rows: ["..####.........", "..#####........", "..######.......", "..#######......", "#######........", "..#######......", "......####.....", "......####.....", ".....######....", ".....######....", ".....######....", ".....######....", "....########...", "....########...", "...##########..", "..############."] },
+  pyramidArt: { name: "Pyramid", rows: [".......##.......", "......####......", ".....######.....", ".....######.....", "....########....", "...##########...", "...##########...", "..############..", ".##############.", ".##############.", "################", "################", "################"] },
+  bridgeArt: { name: "Bridge", rows: ["....########....", "..############..", ".##############.", "###..######..###", "###..######..###", "###..######..###", "################", "################", "###.##.##.##.###", "###.##.##.##.###", "###.##.##.##.###", "###.##.##.##.###", "################", "################"] },
+  trainArt: { name: "Train", rows: ["....##........", "....##........", "..######......", "..######......", "..############", "..############", "###...##...###", "##############", "##############", "##.###..###.##", "##############", "..############", "..####..####..", "..####..####.."] },
+  carArt: { name: "Car", rows: [".....########.....", "....##########....", "...############...", "..##.########.##..", ".###.########.###.", "##################", "##################", "##################", "##################", "##################", "..####......####..", ".######....######.", ".######....######.", "..####......####.."] },
+  planeArt: { name: "Plane", rows: [".......##.......", ".......##.......", "......####......", "......####......", "......####......", "################", "################", "################", "......####......", "......####......", "......####......", "......####......", "....########....", "....########....", "..############.."] },
+  bikeArt: { name: "Bicycle", rows: ["..........####..", "..........####..", "....##########..", "...####.....##..", "..#####....###..", "..############..", ".###.####.####..", "####..##..#####.", "####..##..#####.", "####..##..#####.", ".###..##..####..", "..############..", "...##########..."] },
+  lampArt: { name: "Lamp", rows: ["....######....", "...########...", "..##########..", ".############.", "##############", "##############", ".############.", "..##########..", "......##......", "......##......", "......##......", "......##......", "......##......", "....######....", "..##########..", ".############."] },
+  bookArt: { name: "Book", rows: ["................", "..############..", ".##############.", "################", "###..######..###", "###..######..###", "###..######..###", "###..######..###", "###..######..###", "###..######..###", "################", ".##############.", "..############.."] },
+  pencilArt: { name: "Pencil", rows: ["..........####", ".........#####", "........######", ".......#####..", "......#####...", ".....#####....", "....#####.....", "...#####......", "..#####.......", ".#####........", "#####.........", "####..........", "###...........", "##............", "#............."] },
+  clockArt: { name: "Clock", rows: ["....########....", "..############..", ".##############.", "################", "###.##....##.###", "###.##....##.###", "###.########.###", "###.###..###.###", "###.###..###.###", "###.###..###.###", "################", ".##############.", "..############..", "....########....", "...##......##...", "..####....####.."] },
+  compassArt: { name: "Compass", rows: ["....########....", "..############..", ".##############.", "################", "################", "####..####..####", "####.######.####", "####.######.####", "####..####..####", "################", "################", ".##############.", "..############..", "....########...."] },
+  kiteArt: { name: "Kite", rows: [".......##.......", "......####......", ".....######.....", "....########....", "...##########...", "..############..", ".##############.", "################", ".##############.", "..############..", "...##########...", "....########....", ".....######.....", "......####......", ".......##.......", ".......##.......", "......####......", ".......##.......", "......####......"] },
+  donutArt: { name: "Donut", rows: ["....########....", "..############..", ".##############.", "################", "####........####", "###..........###", "###..........###", "###..........###", "###..........###", "####........####", "################", ".##############.", "..############..", "....########...."] },
 };
 
-const COLLECTABLE = ["Cat", "Dog", "Elephant", "Butterfly", "Umbrella", "Anchor", "Trophy", "Crown", "Tree", "Fish", "Bird", "Guitar", "Hourglass", "Key", "Mushroom", "Rocket", "Grid", "Diamond", "Heart", "Cross"];
-const THUMB = { Cat: "catArt", Dog: "dogArt", Elephant: "elephantArt", Butterfly: "butterflyArt", Umbrella: "umbrellaArt", Anchor: "anchorArt", Trophy: "trophyArt", Crown: "crownArt", Tree: "treeArt", Fish: "fishArt", Bird: "birdArt", Guitar: "guitarArt", Hourglass: "hourglassArt", Key: "keyArt", Mushroom: "mushroomArt", Rocket: "rocketArt", Grid: "square5", Diamond: "diamond7", Heart: "heart9", Cross: "cross7" };
+const COLLECTABLE = ["Cat", "Dog", "Elephant", "Butterfly", "Umbrella", "Anchor", "Trophy", "Crown", "Tree", "Fish", "Bird", "Guitar", "Hourglass", "Key", "Mushroom", "Rocket", "Owl", "Whale", "Cactus", "Bolt", "Crab", "Penguin", "Lighthouse", "Bear", "Flower", "Camera", "Sailboat", "Dino", "Bee", "Castle", "Ghost", "Ice Cream", "Turtle", "Robot", "Balloon", "Fox", "Cupcake", "Snail", "Mountain", "Teapot", "Keyhole", "Apple", "Dice", "Tower", "Rabbit", "Frog", "Octopus", "Dolphin", "Ladybug", "Spider", "Sun", "Moon", "Cloud", "Star", "Heartbeat", "Ring", "Gift", "Bell", "Lantern", "Windmill", "Pyramid", "Bridge", "Train", "Car", "Plane", "Bicycle", "Lamp", "Book", "Pencil", "Clock", "Compass", "Kite", "Donut", "Grid", "Diamond", "Heart", "Cross"];
+const THUMB = { "Cat": "catArt", "Dog": "dogArt", "Elephant": "elephantArt", "Butterfly": "butterflyArt", "Umbrella": "umbrellaArt", "Anchor": "anchorArt", "Trophy": "trophyArt", "Crown": "crownArt", "Tree": "treeArt", "Fish": "fishArt", "Bird": "birdArt", "Guitar": "guitarArt", "Hourglass": "hourglassArt", "Key": "keyArt", "Mushroom": "mushroomArt", "Rocket": "rocketArt", "Owl": "owlArt", "Whale": "whaleArt", "Cactus": "cactusArt", "Bolt": "boltArt", "Crab": "crabArt", "Penguin": "penguinArt", "Lighthouse": "lighthouseArt", "Bear": "bearArt", "Flower": "flowerArt", "Camera": "cameraArt", "Sailboat": "boatArt", "Dino": "dinoArt", "Bee": "beeArt", "Castle": "castleArt", "Ghost": "ghostArt", "Ice Cream": "iceArt", "Turtle": "turtleArt", "Robot": "robotArt", "Balloon": "balloonArt", "Fox": "foxArt", "Cupcake": "cupcakeArt", "Snail": "snailArt", "Mountain": "mountainArt", "Teapot": "teapotArt", "Keyhole": "keyholeArt", "Apple": "appleArt", "Dice": "diceArt", "Tower": "towerArt", "Rabbit": "rabbitArt", "Frog": "frogArt", "Octopus": "octopusArt", "Dolphin": "dolphinArt", "Ladybug": "ladybugArt", "Spider": "spiderArt", "Sun": "sunArt", "Moon": "moonArt", "Cloud": "cloudArt", "Star": "starArt", "Heartbeat": "heartBigArt", "Ring": "ringArt", "Gift": "giftArt", "Bell": "bellArt", "Lantern": "lanternArt", "Windmill": "windmillArt", "Pyramid": "pyramidArt", "Bridge": "bridgeArt", "Train": "trainArt", "Car": "carArt", "Plane": "planeArt", "Bicycle": "bikeArt", "Lamp": "lampArt", "Book": "bookArt", "Pencil": "pencilArt", "Clock": "clockArt", "Compass": "compassArt", "Kite": "kiteArt", "Donut": "donutArt", "Grid": "square5", "Diamond": "diamond7", "Heart": "heart9", "Cross": "cross7" };
 
 /* ═══════════  tiers  ═══════════ */
 
@@ -1055,7 +1264,17 @@ const THUMB = { Cat: "catArt", Dog: "dogArt", Elephant: "elephantArt", Butterfly
 const ART_POOL = [
   "catArt", "dogArt", "elephantArt", "butterflyArt", "umbrellaArt", "anchorArt",
   "trophyArt", "crownArt", "treeArt", "fishArt", "birdArt", "guitarArt",
-  "hourglassArt", "keyArt", "mushroomArt", "rocketArt",
+  "hourglassArt", "keyArt", "mushroomArt", "rocketArt", "owlArt", "whaleArt",
+  "cactusArt", "boltArt", "crabArt", "penguinArt", "lighthouseArt", "bearArt",
+  "flowerArt", "cameraArt", "boatArt", "dinoArt", "beeArt", "castleArt",
+  "ghostArt", "iceArt", "turtleArt", "robotArt", "balloonArt", "foxArt",
+  "cupcakeArt", "snailArt", "mountainArt", "teapotArt", "keyholeArt", "appleArt",
+  "diceArt", "towerArt", "rabbitArt", "frogArt", "octopusArt", "dolphinArt",
+  "ladybugArt", "spiderArt", "sunArt", "moonArt", "cloudArt", "starArt",
+  "heartBigArt", "ringArt", "giftArt", "bellArt", "lanternArt", "windmillArt",
+  "pyramidArt", "bridgeArt", "trainArt", "carArt", "planeArt", "bikeArt",
+  "lampArt", "bookArt", "pencilArt", "clockArt", "compassArt", "kiteArt",
+  "donutArt",
 ];
 
 function shuffledCycle(cycle) {
@@ -1089,22 +1308,22 @@ function curatedKey(level) {
 }
 
 const TIERS = [
-  { name: "Warm Up", span: 2,     maxLen: 10, hearts: 3, hints: 3, undos: 3, coverage: 0.88, tightness: 0.66, freedom: 0.15, pieces: 20, maxCells: 150 },
-  { name: "Little Easy", span: 3,     maxLen: 11, hearts: 3, hints: 3, undos: 3, coverage: 0.89, tightness: 0.7, freedom: 0.1341, pieces: 24, maxCells: 180 },
-  { name: "Easy", span: 4,     maxLen: 12, hearts: 3, hints: 3, undos: 2, coverage: 0.9, tightness: 0.74, freedom: 0.1199, pieces: 28, maxCells: 210 },
-  { name: "Easy Plus", span: 5,     maxLen: 13, hearts: 3, hints: 2, undos: 2, coverage: 0.9, tightness: 0.78, freedom: 0.1072, pieces: 32, maxCells: 240 },
-  { name: "Little Medium", span: 6,     maxLen: 14, hearts: 3, hints: 2, undos: 2, coverage: 0.91, tightness: 0.81, freedom: 0.0958, pieces: 36, maxCells: 275 },
-  { name: "Medium", span: 8,     maxLen: 15, hearts: 3, hints: 2, undos: 2, coverage: 0.92, tightness: 0.84, freedom: 0.0857, pieces: 40, maxCells: 310 },
-  { name: "Medium Plus", span: 10,     maxLen: 16, hearts: 3, hints: 2, undos: 2, coverage: 0.92, tightness: 0.86, freedom: 0.0766, pieces: 45, maxCells: 345 },
-  { name: "Tricky", span: 12,     maxLen: 17, hearts: 3, hints: 2, undos: 1, coverage: 0.93, tightness: 0.88, freedom: 0.0685, pieces: 50, maxCells: 380 },
-  { name: "Tough", span: 14,     maxLen: 18, hearts: 3, hints: 2, undos: 1, coverage: 0.94, tightness: 0.9, freedom: 0.0612, pieces: 55, maxCells: 420 },
-  { name: "Hard", span: 17,     maxLen: 19, hearts: 3, hints: 1, undos: 1, coverage: 0.94, tightness: 0.92, freedom: 0.0547, pieces: 60, maxCells: 460 },
-  { name: "Very Hard", span: 20,     maxLen: 20, hearts: 3, hints: 1, undos: 1, coverage: 0.95, tightness: 0.94, freedom: 0.0489, pieces: 66, maxCells: 500 },
-  { name: "Super Hard", span: 24,     maxLen: 21, hearts: 3, hints: 1, undos: 1, coverage: 0.96, tightness: 0.95, freedom: 0.0437, pieces: 72, maxCells: 545 },
-  { name: "Expert", span: 30,     maxLen: 22, hearts: 3, hints: 1, undos: 1, coverage: 0.96, tightness: 0.96, freedom: 0.0391, pieces: 78, maxCells: 590 },
-  { name: "Elite", span: 36,     maxLen: 23, hearts: 3, hints: 1, undos: 1, coverage: 0.97, tightness: 0.97, freedom: 0.035, pieces: 85, maxCells: 635 },
-  { name: "Master", span: 45,     maxLen: 24, hearts: 3, hints: 1, undos: 1, coverage: 0.98, tightness: 0.98, freedom: 0.0312, pieces: 92, maxCells: 680 },
-  { name: "Pro", span: Infinity,     maxLen: 26, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 1.0, freedom: 0.0279, pieces: 100, maxCells: 730 },
+  { name: "Warm Up", span: 2,     maxLen: 10, hearts: 3, hints: 3, undos: 3, coverage: 0.94, tightness: 0.80, freedom: 0.105, pieces: 32, maxCells: 150 },
+  { name: "Little Easy", span: 3,     maxLen: 11, hearts: 3, hints: 3, undos: 3, coverage: 0.95, tightness: 0.83, freedom: 0.095, pieces: 38, maxCells: 185 },
+  { name: "Easy", span: 4,     maxLen: 12, hearts: 3, hints: 3, undos: 2, coverage: 0.95, tightness: 0.85, freedom: 0.086, pieces: 44, maxCells: 220 },
+  { name: "Easy Plus", span: 5,     maxLen: 13, hearts: 3, hints: 2, undos: 2, coverage: 0.96, tightness: 0.87, freedom: 0.078, pieces: 49, maxCells: 255 },
+  { name: "Little Medium", span: 6,     maxLen: 14, hearts: 3, hints: 2, undos: 2, coverage: 0.96, tightness: 0.88, freedom: 0.071, pieces: 55, maxCells: 290 },
+  { name: "Medium", span: 8,     maxLen: 15, hearts: 3, hints: 2, undos: 2, coverage: 0.97, tightness: 0.90, freedom: 0.064, pieces: 62, maxCells: 325 },
+  { name: "Medium Plus", span: 10,     maxLen: 16, hearts: 3, hints: 2, undos: 2, coverage: 0.97, tightness: 0.91, freedom: 0.058, pieces: 70, maxCells: 360 },
+  { name: "Tricky", span: 12,     maxLen: 17, hearts: 3, hints: 2, undos: 1, coverage: 0.98, tightness: 0.92, freedom: 0.052, pieces: 77, maxCells: 395 },
+  { name: "Tough", span: 14,     maxLen: 18, hearts: 3, hints: 2, undos: 1, coverage: 0.98, tightness: 0.93, freedom: 0.047, pieces: 84, maxCells: 430 },
+  { name: "Hard", span: 17,     maxLen: 19, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.94, freedom: 0.042, pieces: 91, maxCells: 470 },
+  { name: "Very Hard", span: 20,     maxLen: 20, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.95, freedom: 0.038, pieces: 100, maxCells: 510 },
+  { name: "Super Hard", span: 24,     maxLen: 21, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.96, freedom: 0.034, pieces: 109, maxCells: 555 },
+  { name: "Expert", span: 30,     maxLen: 22, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.97, freedom: 0.031, pieces: 117, maxCells: 600 },
+  { name: "Elite", span: 36,     maxLen: 23, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.98, freedom: 0.028, pieces: 128, maxCells: 645 },
+  { name: "Master", span: 45,     maxLen: 24, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.99, freedom: 0.025, pieces: 138, maxCells: 690 },
+  { name: "Pro", span: Infinity,     maxLen: 26, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 1.0, freedom: 0.022, pieces: 148, maxCells: 740 },
 ];
 const MEDAL = { 1: "#CD7F32", 2: "#AEB6C4", 3: "#FFC24B" };
 const TIER_HUE = ["#5FCB8A", "#4CC79B", "#3FBFD6", "#3EA8EE", "#3E9BF0", "#5580F2", "#6C7BF0", "#8470F2", "#9A6BF0", "#C07AD8", "#F0A93E", "#F2891B", "#F2761B", "#FF6A4A", "#FF3D9A", "#B14BFF"];
@@ -1149,7 +1368,18 @@ function parseMask(key) {
    rather than random, then cleaned so there are no spurs or holes. Level 200
    is the same shape for every player, everywhere. */
 
-const CURATED_UNTIL = 44; // hand-drawn art up to here, generated art beyond
+const CURATED_UNTIL = 200;
+// Studio "quick pick" — a curated set of recognisable shapes so a casual player
+// can start a custom board with one tap instead of drawing on the 11x11 canvas.
+const QUICK_SHAPES = [
+  "heartBigArt", "starArt", "keyArt", "crownArt", "trophyArt", "ringArt",
+  "giftArt", "bellArt", "sunArt", "moonArt", "cloudArt", "donutArt",
+  "anchorArt", "umbrellaArt", "mushroomArt", "rocketArt",
+];
+const HARD_TIER = 9; // TIERS index where "Hard" begins — chess-style boards from here up
+const LOCK_TIER = 5; // "Medium" — sealed arrows start appearing here
+// how much of a board is sealed: a taste at Medium, a real constraint by Pro
+const lockRatio = (index) => (index < LOCK_TIER ? 0 : Math.min(0.26, 0.06 + (index - LOCK_TIER) * 0.02)); // hand-drawn art up to here, generated art beyond
 const FORM_A = ["Twin", "Wide", "Tall", "Round", "Sharp", "Split", "Deep", "Open", "Half", "Broad"];
 const FORM_B = ["Bloom", "Arch", "Crest", "Drift", "Prism", "Wave", "Knot", "Spire", "Vault", "Ridge"];
 
@@ -1400,13 +1630,35 @@ function DepartingPiece({ piece, cols, rows, tone }) {
   );
 }
 
+// A mask drawn as one path instead of one rect element per cell. The Collection shows
+// dozens of thumbnails at once; at ~190 cells each that was thousands of DOM
+// nodes and made the tab hang. Paths are built once and cached by key.
+function maskPath(m, inset = 0.15, size = 0.7) {
+  let d = "";
+  for (const i of m.cells) {
+    const x = (i % m.cols) + inset;
+    const y = Math.floor(i / m.cols) + inset;
+    d += `M${x} ${y}h${size}v${size}h-${size}z`;
+  }
+  return d;
+}
+
+const THUMB_PATH = new Map();
+function cachedMask(shapeKey) {
+  let hit = THUMB_PATH.get(shapeKey);
+  if (!hit) {
+    const m = parseMask(shapeKey);
+    hit = { cols: m.cols, rows: m.rows, d: maskPath(m) };
+    THUMB_PATH.set(shapeKey, hit);
+  }
+  return hit;
+}
+
 function ShapeThumb({ shapeKey, on }) {
-  const m = parseMask(shapeKey);
+  const m = cachedMask(shapeKey);
   return (
     <svg viewBox={`0 0 ${m.cols} ${m.rows}`} style={{ width: 40, height: 40 }}>
-      {[...m.cells].map((i) => (
-        <rect key={i} x={(i % m.cols) + 0.15} y={Math.floor(i / m.cols) + 0.15} width={0.7} height={0.7} rx={0.2} fill={on ? C.accent : C.line} />
-      ))}
+      <path d={m.d} fill={on ? C.accent : C.line} />
     </svg>
   );
 }
@@ -1443,6 +1695,7 @@ export default function ArrowEscapeV3() {
   const tutClears = useRef(0);
   const [pops, setPops] = useState([]);
   const [ring, setRing] = useState(null);
+  const [booted, setBooted] = useState(false); // first paint waits for saved settings
   const [phase, setPhase] = useState("playing");
   const [heartPop, setHeartPop] = useState(false);
   const [screen, setScreen] = useState("home"); // home | play | studio | collection | settings
@@ -1461,6 +1714,7 @@ export default function ArrowEscapeV3() {
   const [stickers, setStickers] = useState([]);
   const [levelStars, setLevelStars] = useState({}); // level -> 1..3
   const [adsRemoved, setAdsRemoved] = useState(false);
+  const [adWatchCount, setAdWatchCount] = useState(0); // rewarded views toward free ad removal
   const [adNote, setAdNote] = useState("");
   const adGate = useRef({ at: 0, since: 0 });
   const [badges, setBadges] = useState([]);
@@ -1543,13 +1797,38 @@ export default function ArrowEscapeV3() {
 
   const blockerOf = useCallback(
     (piece) => {
+      // sealed: the arrow it waits on is still on the board
+      if (piece.needs !== undefined && alive.has(piece.needs)) return piece.needs;
       for (const c of exitLine(piece.cells[0], piece.dir, cols, rows)) {
         const o = occupancy.get(c);
         if (o !== undefined && o !== piece.id) return o;
       }
       return null;
     },
-    [occupancy, cols, rows]
+    [occupancy, alive, cols, rows]
+  );
+
+  // the dot grid never changes while a board is in play — rebuilding its few
+  // hundred nodes on every tap was the main source of stutter
+  const dotLayer = useMemo(
+    () =>
+      Array.from({ length: (cols + DOT_PAD * 2) * (rows + DOT_PAD * 2) }).map((_, k) => {
+        const gx = (k % (cols + DOT_PAD * 2)) - DOT_PAD;
+        const gy = Math.floor(k / (cols + DOT_PAD * 2)) - DOT_PAD;
+        const inMask = gx >= 0 && gy >= 0 && gx < cols && gy < rows && mask.cells.has(gy * cols + gx);
+        return (
+          <circle
+            key={`d${k}`}
+            cx={gx * U + U / 2}
+            cy={gy * U + U / 2}
+            r={inMask ? 3.8 : 3}
+            fill={C.dot}
+            opacity={inMask ? 1 : 0.55}
+          />
+        );
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [cols, rows, mask, dark]
   );
 
   const progress = pieces.length ? ((pieces.length - alive.size) / pieces.length) * 100 : 0;
@@ -1582,6 +1861,7 @@ export default function ArrowEscapeV3() {
         setStickers(p.stickers ?? []);
         setLevelStars(p.levelStars ?? {});
         setAdsRemoved(!!p.adsRemoved);
+        setAdWatchCount(Math.max(0, p.adWatchCount | 0));
         setBadges(p.badges ?? []);
         setStats(p.stats ?? { arrows: 0, flawRun: 0, noUndo: 0, bestChain: 0 });
         setStreak(p.streak ?? 0);
@@ -1600,6 +1880,8 @@ export default function ArrowEscapeV3() {
               }
       } catch {
         setCoachSeen(false);
+      } finally {
+        setBooted(true);
       }
     })();
   }, []);
@@ -1694,6 +1976,7 @@ export default function ArrowEscapeV3() {
   const startJourney = useCallback(
     (lvl, keepScore) => {
       setMode("journey");
+      setLevel(lvl); // whatever level is actually loading — replaying an old one must not silently advance from the wrong number later
       const pre = nextRef.current && nextRef.current.lvl === lvl ? nextRef.current.setup : makeLevel(lvl);
       nextRef.current = null;
       applySetup(pre, keepScore);
@@ -1704,9 +1987,10 @@ export default function ArrowEscapeV3() {
   const startCustom = useCallback(
     (mask) => {
       setMode("custom");
-      applySetup(makeLevelFromMask(mask, tierFor(level).index), false);
+      // shapes you draw yourself always run at the hardest settings — Studio is the pro arena
+      applySetup(makeLevelFromMask(mask, TIERS.length - 1), false);
     },
-    [applySetup, level]
+    [applySetup]
   );
 
   const saveCustom = useCallback(
@@ -1748,6 +2032,30 @@ export default function ArrowEscapeV3() {
     else if (mode === "custom") applySetup(makeLevelFromMask(setup.mask, setup.tierIndex), false);
     else startJourney(level);
   }, [mode, level, startDaily, startJourney, applySetup, setup.mask]);
+
+  // Android hardware back / side-swipe: step back through the app instead of
+  // dropping straight out of the game
+  useEffect(() => {
+    let handle = null;
+    let dropped = false;
+    (async () => {
+      try {
+        const { App } = await import("@capacitor/app");
+        const h = await App.addListener("backButton", () => {
+          if (screen !== "home") setScreen("home");
+          else App.exitApp();
+        });
+        if (dropped) h.remove();
+        else handle = h;
+      } catch {
+        /* not running under Capacitor — nothing to hook */
+      }
+    })();
+    return () => {
+      dropped = true;
+      handle?.remove();
+    };
+  }, [screen]);
 
   const nextLevel = useCallback(async () => {
     await maybeInterstitial();
@@ -2231,6 +2539,12 @@ export default function ArrowEscapeV3() {
     [phase === "cleared"]
   );
 
+  // Nothing is drawn until the saved theme is known — otherwise the app flashes
+  // its defaults and then repaints, which reads as a light/dark jitter on launch.
+  if (!booted) {
+    return <div style={{ position: "fixed", inset: 0, background: C.bg }} />;
+  }
+
   /* ═══════════  PLAY SCREEN — full bleed, like a real puzzle app  ═══════════ */
   if (screen === "play") {
     return (
@@ -2248,7 +2562,7 @@ export default function ArrowEscapeV3() {
           <div style={S.hudMid}>
             <div style={{ ...S.diffLabel, color: mode === "journey" ? TIER_HUE[tierIndex] ?? C.accent : C.accent }}>
               {mode === "custom" ? "Your board" : mode === "daily" ? "Daily" : tier.name}
-              <span style={S.leftCount}> · {alive.size} left</span>
+              <span key={alive.size} style={S.leftCount} className="left-tick"> · {alive.size} left</span>
             </div>
             <div style={S.hudHearts}>
               {shield && <span style={S.shieldTag}>🛡</span>}
@@ -2259,7 +2573,11 @@ export default function ArrowEscapeV3() {
                 </>
               ) : (
                 Array.from({ length: maxHearts }).map((_, i) => (
-                  <span key={i} className={heartPop && i === hearts ? "hbreak" : ""} style={S.inl}>
+                  <span
+                    key={i}
+                    className={heartPop && i === hearts ? "hbreak" : hearts === 1 && i === 0 ? "heart-low" : ""}
+                    style={S.inl}
+                  >
                     <Heart on={i < hearts} />
                   </span>
                 ))
@@ -2277,15 +2595,15 @@ export default function ArrowEscapeV3() {
           </button>
         </div>
 
-        {tut < 9 && mode === "journey" && (
+        {tut < 9 && mode === "journey" && level <= 4 && (
           <div style={S.tutBar} className="ovin">
             <span style={S.tutStep}>{tut + 1}/3</span>
             <span style={S.tutText}>
               {tut === 0
-                ? "Tap an arrow to send it off the board."
+                ? "Tap an arrow to send it off"
                 : tut === 1
-                ? "An arrow only leaves if its path is clear all the way out — tapping a blocked one costs a life."
-                : "Hold an arrow to trace where it is aimed. Tap # to trace them all."}
+                ? "Its path must be clear — blocked costs a life"
+                : "Hold an arrow to trace its route"}
             </span>
             <button style={S.tutSkip} onClick={() => setTutStep(9)}>Skip</button>
           </div>
@@ -2317,7 +2635,7 @@ export default function ArrowEscapeV3() {
           onPointerCancel={onViewUp}
         >
           <div
-            style={{ transform: `translate(${view.tx}px, ${view.ty}px) scale(${view.scale})`, transformOrigin: "0 0", transition: snap ? "transform 240ms cubic-bezier(.4,0,.2,1)" : "none", width: "100%", height: "100%", touchAction: "none" }}
+            style={{ transform: `translate3d(${view.tx}px, ${view.ty}px, 0) scale(${view.scale})`, transformOrigin: "0 0", transition: snap ? "transform 320ms cubic-bezier(.22,.9,.26,1)" : "none", willChange: "transform", backfaceVisibility: "hidden", width: "100%", height: "100%", touchAction: "none" }}
           >
             <svg
               key={levelKey}
@@ -2347,21 +2665,7 @@ export default function ArrowEscapeV3() {
                 })}
 
               {/* dot field across the whole surface, not just the shape */}
-              {Array.from({ length: (cols + DOT_PAD * 2) * (rows + DOT_PAD * 2) }).map((_, k) => {
-                const gx = (k % (cols + DOT_PAD * 2)) - DOT_PAD;
-                const gy = Math.floor(k / (cols + DOT_PAD * 2)) - DOT_PAD;
-                const inMask = gx >= 0 && gy >= 0 && gx < cols && gy < rows && mask.cells.has(gy * cols + gx);
-                return (
-                  <circle
-                    key={`d${k}`}
-                    cx={gx * U + U / 2}
-                    cy={gy * U + U / 2}
-                    r={inMask ? 3.8 : 3}
-                    fill={C.dot}
-                    opacity={inMask ? 1 : 0.55}
-                  />
-                );
-              })}
+              {dotLayer}
 
 
               {holdId !== null && alive.has(holdId) && pieces[holdId] && (() => {
@@ -2389,7 +2693,8 @@ export default function ArrowEscapeV3() {
                 const isBlk = bad?.blocker === p.id;
                 const isHint = hintId === p.id;
                 const isHeld = holdId === p.id;
-                const tone = isBad || isBlk ? C.danger : isHint || isHeld ? C.accent : toneFor(p.dir, theme);
+                const isSealed = p.needs !== undefined && alive.has(p.needs);
+                const tone = isBad || isBlk ? C.danger : isHint || isHeld ? C.accent : isSealed ? C.muted : toneFor(p.dir, theme);
                 const cls = isBad ? "shake" : isBlk ? "flash" : isHint ? "hint" : "settle";
                 return (
                   <Piece
@@ -2400,7 +2705,7 @@ export default function ArrowEscapeV3() {
                     width={W_BOARD}
                     hit={bigTouch ? 78 : 52}
                     className={cls}
-                    style={{ "--d": `${Math.min(idx, 11) * 14}ms` }}
+                    style={{ "--d": `${Math.min(idx, 16) * 18}ms`, opacity: isSealed && !isBad && !isBlk && !isHint && !isHeld ? 0.45 : 1 }}
                     onDown={onPieceDown(p)}
                   />
                 );
@@ -2446,20 +2751,33 @@ export default function ArrowEscapeV3() {
           </div>
         </div>
 
-        <button style={S.gridToggle} onClick={() => { setGrid((g) => !g); persist({ grid: !grid }); }} aria-label="Toggle grid">
-          <Hash on={grid} />
-        </button>
-
         <div style={S.playFoot}>
-          <button style={{ ...S.footBtn, opacity: undosLeft > 0 && history.length ? 1 : 0.35 }} onClick={undo} disabled={undosLeft <= 0 || !history.length}>
-            <Undo />
-            <span style={S.footNum}>{undosLeft}</span>
-          </button>
-          <div style={S.scorePill}>{score.toLocaleString()}</div>
-          <button style={S.footBtn} onClick={cycleZoom}>
-            <Magnifier zoomed={view.scale > 1.01} />
-            {view.scale > 1.01 && <span style={S.footNum}>{Math.round(view.scale)}×</span>}
-          </button>
+          <div style={S.footGroup}>
+            <button style={{ ...S.footBtn, opacity: undosLeft > 0 && history.length ? 1 : 0.35 }} onClick={undo} disabled={undosLeft <= 0 || !history.length}>
+              <Undo />
+              <span style={S.footNum}>{undosLeft}</span>
+            </button>
+            <button style={S.gridToggle} onClick={() => { setGrid((g) => !g); persist({ grid: !grid }); }} aria-label="Toggle grid">
+              <Hash on={grid} />
+            </button>
+          </div>
+          <div style={S.scoreWrap}>
+            <div key={score} style={S.scorePill} className="score-tick">{score.toLocaleString()}</div>
+            {combo >= 2 ? (
+              <div key={`c${combo}`} style={S.comboCap} className="combo-in">
+                {Math.min(combo, 5)}× chain
+              </div>
+            ) : (
+              <div style={S.scoreCap}>score</div>
+            )}
+          </div>
+          <div style={S.footGroup}>
+            <span style={S.footSpacer} aria-hidden="true" />
+            <button style={S.footBtn} onClick={cycleZoom}>
+              <Magnifier zoomed={view.scale > 1.01} />
+              {view.scale > 1.01 && <span style={S.footNum}>{Math.round(view.scale)}×</span>}
+            </button>
+          </div>
         </div>
 
         {phase === "gameover" && (
@@ -2532,7 +2850,14 @@ export default function ArrowEscapeV3() {
       <div style={S.shellBody}>
         {screen === "home" && (
           <div style={S.home} className="screen-in">
-            <div style={S.streakChip}>🔥 {streak}</div>
+            <div style={S.streakChip}>
+          🔥 {streak}
+          {streak > 0 && (
+            <span style={S.streakGoal}>
+              {streak >= 30 ? " · legend" : ` · ${[3, 7, 14, 30].find((t) => t > streak) - streak} to ${[3, 7, 14, 30].find((t) => t > streak)}`}
+            </span>
+          )}
+        </div>
 
             <div style={S.homeCards}>
               <button style={{ ...S.homeCard, animationDelay: "40ms" }} className="card-in" onClick={() => { startDaily(); setScreen("play"); }}>
@@ -2682,10 +3007,7 @@ export default function ArrowEscapeV3() {
                   return (
                     <div key={f.n} style={{ ...S.foundItem, border: `2px solid ${MEDAL[f.r ?? 1]}` }}>
                       <svg viewBox={`0 0 ${m.cols} ${m.rows}`} style={{ width: 38, height: 38 }}>
-                        {[...m.cells].map((i) => (
-                          <rect key={i} x={(i % m.cols) + 0.14} y={((i / m.cols) | 0) + 0.14}
-                                width={0.72} height={0.72} rx={0.2} fill={C.accent} />
-                        ))}
+                        <path d={maskPath(m, 0.14, 0.72)} fill={C.accent} />
                       </svg>
                       <span style={S.foundName}>{f.n}</span>
                     </div>
@@ -2789,6 +3111,36 @@ export default function ArrowEscapeV3() {
                 }}
               >
                 Buy
+              </button>
+            </div>
+          )}
+          {!adsRemoved && (
+            <div style={S.watchRow}>
+              <div style={S.watchTop}>
+                <span style={S.buyName}>Or watch your way there</span>
+                <span style={S.watchCount}>{Math.min(adWatchCount, AD_REMOVAL_GOAL)} / {AD_REMOVAL_GOAL}</span>
+              </div>
+              <span style={S.buyHint}>Every full view counts. Free, no purchase needed.</span>
+              <div style={S.chapTrack}>
+                <div style={{ ...S.chapFill, width: `${Math.min(100, (adWatchCount / AD_REMOVAL_GOAL) * 100)}%`, background: C.go }} />
+              </div>
+              <button
+                style={{ ...S.buyBtn, width: "100%", marginTop: 10, background: C.go }}
+                onClick={async () => {
+                  const watched = await Ads.rewarded("removeAdsProgress");
+                  if (!watched) { flashNote("No ad available right now."); return; }
+                  const n = adWatchCount + 1;
+                  if (n >= AD_REMOVAL_GOAL) {
+                    setAdsRemoved(true);
+                    persist({ adsRemoved: true, adWatchCount: n });
+                    flashNote("Ads removed — thank you.");
+                  } else {
+                    setAdWatchCount(n);
+                    persist({ adWatchCount: n });
+                  }
+                }}
+              >
+                Watch ad
               </button>
             </div>
           )}
@@ -2943,7 +3295,27 @@ function ShapeStudio({ onPlay, saved, onSave, onDelete }) {
 
   return (
     <div style={S.settings} className="screen-in">
-      <div style={S.colTitle}>Draw a shape</div>
+      <div style={S.colTitle}>Quick shapes</div>
+      <div style={S.quickGrid}>
+        {QUICK_SHAPES.map((key) => {
+          const m = cachedMask(key);
+          return (
+            <button
+              key={key}
+              style={S.quickBtn}
+              onClick={() => onPlay(parseMask(key))}
+              aria-label={`Play ${SHAPES[key].name}`}
+            >
+              <svg viewBox={`0 0 ${m.cols} ${m.rows}`} style={{ width: 34, height: 34 }}>
+                <path d={m.d} fill={C.accent} />
+              </svg>
+              <span style={S.quickName}>{SHAPES[key].name}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={{ ...S.colTitle, marginTop: 16 }}>Draw your own</div>
       <div style={S.studioGrid}>
         {Array.from({ length: N * N }).map((_, i) => (
           <button
@@ -2976,10 +3348,7 @@ function ShapeStudio({ onPlay, saved, onSave, onDelete }) {
                 <div key={code} style={S.savedItem}>
                   <button style={S.savedBtn} onClick={() => onPlay(m)} aria-label="Play saved shape">
                     <svg viewBox={`0 0 ${m.cols} ${m.rows}`} style={{ width: 44, height: 44 }}>
-                      {[...m.cells].map((i) => (
-                        <rect key={i} x={(i % m.cols) + 0.12} y={((i / m.cols) | 0) + 0.12}
-                              width={0.76} height={0.76} rx={0.22} fill={C.accent} />
-                      ))}
+                      <path d={maskPath(m, 0.12, 0.76)} fill={C.accent} />
                     </svg>
                   </button>
                   <button style={S.savedX} onClick={() => onDelete(code)} aria-label="Delete">✕</button>
@@ -3006,6 +3375,8 @@ function ShapeStudio({ onPlay, saved, onSave, onDelete }) {
         Anything you draw becomes a real puzzle — the board is generated inside your
         shape and is always solvable. Send the code to a friend and they play the
         exact same board.
+        <br />
+        Studio boards are built at <b>Pro</b> — the hardest settings in the game.
       </div>
     </div>
   );
@@ -3014,10 +3385,7 @@ function ShapeStudio({ onPlay, saved, onSave, onDelete }) {
 function MaskIcon({ mask, colour, size = 40 }) {
   return (
     <svg viewBox={`0 0 ${mask.cols} ${mask.rows}`} style={{ width: size, height: size, display: "block" }}>
-      {[...mask.cells].map((i) => (
-        <rect key={i} x={(i % mask.cols) + 0.12} y={((i / mask.cols) | 0) + 0.12}
-              width={0.76} height={0.76} rx={0.24} fill={colour} />
-      ))}
+      <path d={maskPath(mask, 0.12, 0.76)} fill={colour} />
     </svg>
   );
 }
@@ -3052,7 +3420,7 @@ function Toggle({ label, hint, on, onChange }) {
         <span style={S.tglHint}>{hint}</span>
       </span>
       <span style={{ ...S.tglTrack, background: on ? C.accent : C.line }}>
-        <span style={{ ...S.tglKnob, transform: `translateX(${on ? 18 : 0}px)` }} />
+        <span style={{ ...S.tglKnob, transform: `translate3d(${on ? 18 : 0}px, 0, 0)` }} />
       </span>
     </button>
   );
@@ -3122,12 +3490,10 @@ const HomeIcon = () => (
   </svg>
 );
 function MiniShape({ shapeKey }) {
-  const m = parseMask(shapeKey);
+  const m = cachedMask(shapeKey);
   return (
     <svg viewBox={`0 0 ${m.cols} ${m.rows}`} style={{ width: "100%", height: "100%" }}>
-      {[...m.cells].map((i) => (
-        <rect key={i} x={(i % m.cols) + 0.14} y={((i / m.cols) | 0) + 0.14} width={0.72} height={0.72} rx={0.24} fill={C.accent} opacity={0.85} />
-      ))}
+      <path d={m.d} fill={C.accent} opacity={0.85} />
     </svg>
   );
 }
@@ -3161,18 +3527,18 @@ const TinyArrow = () => (
 const makeCSS = (C) => `
 @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@600;800;900&family=DM+Mono:wght@500&display=swap');
 svg { shape-rendering: geometricPrecision; }
-@keyframes settleIn{0%{opacity:0;transform:translateY(6px)}100%{opacity:1;transform:translateY(0)}}
-.settle{animation:settleIn 165ms cubic-bezier(.2,.9,.3,1) backwards;animation-delay:var(--d,0ms)}
+@keyframes settleIn{0%{opacity:0;transform:translateY(9px) scale(.94)}62%{transform:translateY(-1px) scale(1.015)}100%{opacity:1;transform:translateY(0) scale(1)}}
+.settle{animation:settleIn 300ms cubic-bezier(.2,1.02,.3,1) backwards;animation-delay:var(--d,0ms);will-change:transform,opacity}
 @keyframes snakeOut{to{stroke-dashoffset:var(--off)}}
-.snake{animation:snakeOut 240ms cubic-bezier(.45,0,.7,.1) forwards;will-change:stroke-dashoffset}
+.snake{animation:snakeOut 340ms cubic-bezier(.5,0,.28,1) forwards;will-change:stroke-dashoffset}
 @keyframes chevOut{to{transform:translate(var(--tx),var(--ty))}}
-.chev-out{animation:chevOut 240ms cubic-bezier(.45,0,.7,.1) forwards;will-change:transform}
+.chev-out{animation:chevOut 340ms cubic-bezier(.5,0,.28,1) forwards;will-change:transform}
 @keyframes depFade{0%,72%{opacity:1}100%{opacity:0}}
-.dep-fade{animation:depFade 240ms linear forwards}
+.dep-fade{animation:depFade 340ms cubic-bezier(.4,0,1,1) forwards}
 @keyframes ringOut{0%{opacity:.5;transform:scale(.35)}100%{opacity:0;transform:scale(1.7)}}
-.ring{animation:ringOut 320ms cubic-bezier(.16,.9,.3,1) forwards;transform-box:fill-box;transform-origin:center;will-change:transform,opacity}
+.ring{animation:ringOut 460ms cubic-bezier(.14,.84,.26,1) forwards;will-change:transform,opacity;transform-box:fill-box;transform-origin:center;will-change:transform,opacity}
 @keyframes nudge{0%,100%{transform:translateX(0)}22%{transform:translateX(-9px)}55%{transform:translateX(9px)}80%{transform:translateX(-4px)}}
-.shake{animation:nudge 340ms ease}
+.shake{animation:nudge 420ms cubic-bezier(.36,.07,.19,.97);will-change:transform}
 @keyframes flashDim{0%,100%{opacity:1}50%{opacity:.3}}
 .flash{animation:flashDim 340ms ease infinite}
 @keyframes hintPulse{0%,100%{opacity:1}50%{opacity:.25}}
@@ -3180,37 +3546,45 @@ svg { shape-rendering: geometricPrecision; }
 @keyframes hbreak{0%{transform:scale(1)}35%{transform:scale(1.4)}100%{transform:scale(1)}}
 .hbreak{animation:hbreak 430ms ease;display:inline-flex}
 @keyframes starpop{0%{transform:scale(0) rotate(-25deg);opacity:0}70%{transform:scale(1.25) rotate(7deg);opacity:1}100%{transform:scale(1) rotate(0);opacity:1}}
-.starpop{animation:starpop 460ms cubic-bezier(.34,1.56,.64,1) backwards}
+@keyframes scoreTick{0%{transform:scale(1)}28%{transform:scale(1.13)}100%{transform:scale(1)}}
+.score-tick{animation:scoreTick 340ms cubic-bezier(.24,1.3,.4,1);will-change:transform}
+@keyframes comboIn{0%{opacity:0;transform:translateY(4px) scale(.86)}55%{transform:translateY(0) scale(1.06)}100%{opacity:1;transform:scale(1)}}
+.combo-in{animation:comboIn 300ms cubic-bezier(.24,1.3,.4,1)}
+@keyframes leftTick{0%{opacity:.35}100%{opacity:1}}
+.left-tick{animation:leftTick 260ms ease-out}
+@keyframes heartLow{0%,100%{transform:scale(1)}50%{transform:scale(1.16)}}
+.heart-low{animation:heartLow 1100ms ease-in-out infinite}
+.starpop{animation:starpop 620ms cubic-bezier(.26,1.42,.42,1) backwards}
 @keyframes badgeIn{0%{transform:scale(.4);opacity:0}100%{transform:scale(1);opacity:1}}
-.badge-in{animation:badgeIn 160ms cubic-bezier(.34,1.56,.64,1)}
+.badge-in{animation:badgeIn 340ms cubic-bezier(.26,1.46,.42,1)}
 @keyframes popUp{0%{transform:translateY(0);opacity:0}20%{transform:translateY(calc(var(--rise,60px) * -0.3));opacity:1}100%{transform:translateY(calc(var(--rise,60px) * -1));opacity:0}}
-.pop{animation:popUp 820ms cubic-bezier(.15,.95,.3,1) forwards;pointer-events:none;will-change:transform,opacity}
+.pop{animation:popUp 1000ms cubic-bezier(.12,.88,.24,1) forwards;pointer-events:none;will-change:transform,opacity}
 @keyframes ovin{from{opacity:0;transform:scale(.97)}to{opacity:1;transform:scale(1)}}
-.ovin{animation:ovin 240ms ease-out}
-.confetti{position:absolute;top:-20px;width:9px;height:15px;border-radius:2px;animation-name:fall;animation-timing-function:linear;animation-iteration-count:infinite}
+.ovin{animation:ovin 340ms cubic-bezier(.16,.86,.26,1)}
+.confetti{position:absolute;top:-20px;width:9px;height:15px;border-radius:2px;animation-name:fall;animation-timing-function:linear;animation-iteration-count:infinite;will-change:transform,opacity}
 @keyframes fall{0%{transform:translateY(0) rotate(0)}100%{transform:translateY(105vh) rotate(540deg)}}
 
 /* every button gives instant physical feedback */
-button { transition: transform 110ms cubic-bezier(.34,1.4,.64,1), background 180ms ease, opacity 180ms ease; }
-button:active:not(:disabled) { transform: scale(.93); }
+button { transition: transform 160ms cubic-bezier(.22,1.2,.36,1), background 200ms cubic-bezier(.4,0,.2,1), opacity 200ms cubic-bezier(.4,0,.2,1), box-shadow 200ms cubic-bezier(.4,0,.2,1); }
+button:active:not(:disabled) { transform: scale(.945); }
 
-@keyframes screenIn { from { opacity: 0; transform: translateY(14px) scale(.985); } to { opacity: 1; transform: none; } }
-.screen-in { animation: screenIn 260ms cubic-bezier(.18,.9,.26,1) both; will-change: transform, opacity; }
+@keyframes screenIn { from { opacity: 0; transform: translateY(18px) scale(.978); } to { opacity: 1; transform: none; } }
+.screen-in { animation: screenIn 380ms cubic-bezier(.16,.84,.24,1) both; will-change: transform, opacity; }
 
-@keyframes boardIn { from { opacity: 0; transform: scale(.9); } to { opacity: 1; transform: scale(1); } }
-.board-in { animation: boardIn 300ms cubic-bezier(.16,.92,.26,1) backwards; transform-origin: center; }
+@keyframes boardIn { from { opacity: 0; transform: scale(.88); } to { opacity: 1; transform: scale(1); } }
+.board-in { animation: boardIn 420ms cubic-bezier(.16,.9,.24,1) backwards; transform-origin: center; will-change: transform, opacity; }
 
-@keyframes hudIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: none; } }
-.hud-in { animation: hudIn 260ms cubic-bezier(.2,.85,.3,1) both; }
+@keyframes hudIn { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: none; } }
+.hud-in { animation: hudIn 360ms cubic-bezier(.16,.86,.26,1) both; }
 
-@keyframes cardIn { from { opacity: 0; transform: translateY(16px) scale(.96); } to { opacity: 1; transform: none; } }
-.card-in { animation: cardIn 300ms cubic-bezier(.2,1.06,.3,1) both; will-change: transform, opacity; }
+@keyframes cardIn { from { opacity: 0; transform: translateY(20px) scale(.955); } to { opacity: 1; transform: none; } }
+.card-in { animation: cardIn 440ms cubic-bezier(.18,1.02,.28,1) both; will-change: transform, opacity; }
 
-@keyframes navPop { 0% { transform: scale(1); } 45% { transform: scale(1.18); } 100% { transform: scale(1); } }
-.nav-on { animation: navPop 280ms cubic-bezier(.34,1.5,.64,1); }
+@keyframes navPop { 0% { transform: scale(1); } 40% { transform: scale(1.22) rotate(-3deg); } 70% { transform: scale(.97) rotate(1deg); } 100% { transform: scale(1) rotate(0); } }
+.nav-on { animation: navPop 420ms cubic-bezier(.28,1.32,.44,1); }
 
 button:focus-visible{outline:3px solid ${C.accent};outline-offset:3px}
-@media (prefers-reduced-motion: reduce){.settle,.snake,.chev-out,.dep-fade,.ring,.shake,.flash,.hint,.hbreak,.starpop,.ovin,.confetti,.badge-in,.pop{animation-duration:1ms!important}}
+@media (prefers-reduced-motion: reduce){.settle,.snake,.chev-out,.dep-fade,.ring,.shake,.flash,.hint,.hbreak,.starpop,.ovin,.confetti,.badge-in,.pop,.score-tick,.combo-in,.heart-low,.left-tick{animation-duration:1ms!important}}
 `;
 
 let CSS = makeCSS(C);
@@ -3223,52 +3597,61 @@ const VIEW_PAD = 0.6;  // just enough margin for the stroke, no wasted screen
 const DOT_PAD = 2;   // just past the viewBox edge; more is invisible and costs a render
 
 const makeStyles = (C) => ({
-  playRoot: { position: "fixed", inset: 0, height: "100dvh", boxSizing: "border-box", paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "env(safe-area-inset-bottom, 0px)", touchAction: "none", overscrollBehavior: "none", background: C.bg, color: C.ink, fontFamily: "'Nunito', system-ui, sans-serif", display: "flex", flexDirection: "column", WebkitTapHighlightColor: "transparent", userSelect: "none", overflow: "hidden" },
+  playRoot: { position: "fixed", inset: 0, height: "100dvh", boxSizing: "border-box", paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "calc(56px + env(safe-area-inset-bottom, 0px))", touchAction: "none", overscrollBehavior: "none", background: C.bg, color: C.ink, fontFamily: "'Nunito', system-ui, sans-serif", display: "flex", flexDirection: "column", WebkitTapHighlightColor: "transparent", userSelect: "none", overflow: "hidden" },
   hud: { display: "flex", alignItems: "center", gap: 8, padding: "12px 14px 8px" },
-  hudBtn: { width: 42, height: 42, borderRadius: "50%", background: C.card, border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 2px 8px rgba(27,36,64,0.08)", flexShrink: 0 },
+  hudBtn: { width: 42, height: 42, borderRadius: "50%", background: C.card, border: `1px solid ${C.edge}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: C.sh1, flexShrink: 0 },
   hudMid: { flex: 1, textAlign: "center" },
   leftCount: { fontWeight: 800, fontSize: 12, color: C.muted },
   diffLabel: { fontWeight: 900, fontSize: 15, letterSpacing: "0.01em" },
   hudHearts: { display: "flex", gap: 4, justifyContent: "center", alignItems: "center", marginTop: 3 },
-  hintPill: { display: "flex", alignItems: "center", gap: 5, background: C.card, border: "none", borderRadius: 999, padding: "10px 14px", cursor: "pointer", boxShadow: "0 2px 8px rgba(27,36,64,0.08)", flexShrink: 0 },
+  hintPill: { display: "flex", alignItems: "center", gap: 5, background: C.card, border: `1px solid ${C.edge}`, borderRadius: 999, padding: "10px 14px", cursor: "pointer", boxShadow: C.sh1, flexShrink: 0, transition: "opacity 260ms cubic-bezier(.4,0,.2,1)" },
   hintTxt: { fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 13, color: C.accent },
-  topTrack: { height: 5, margin: "0 16px 4px", borderRadius: 999, background: C.line, overflow: "hidden" },
-  topFill: { height: "100%", borderRadius: 999, background: C.accent, transition: "width 320ms cubic-bezier(.4,0,.2,1)" },
-  playViewport: { flex: 1, minHeight: 0, width: "100%", overflow: "hidden", touchAction: "none", overscrollBehavior: "contain" },
-  gridToggle: { position: "absolute", right: 18, bottom: 92, width: 50, height: 50, borderRadius: 16, background: C.card, border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 4px 14px rgba(27,36,64,0.12)" },
-  playFoot: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 18px 20px" },
-  footBtn: { position: "relative", display: "flex", alignItems: "center", gap: 5, background: C.card, border: "none", borderRadius: 999, padding: "11px 16px", cursor: "pointer", boxShadow: "0 2px 8px rgba(27,36,64,0.08)" },
+  topTrack: { height: 5, margin: "0 16px 4px", borderRadius: 999, background: C.line, overflow: "hidden", boxShadow: `inset 0 1px 2px ${C.bg}` },
+  topFill: { height: "100%", borderRadius: 999, background: `linear-gradient(90deg, ${C.accent}, ${C.flow})`, transition: "width 420ms cubic-bezier(.22,.9,.26,1)", boxShadow: `0 0 10px ${C.accent}66` },
+  playViewport: { flex: 1, minHeight: 0, width: "100%", overflow: "hidden", touchAction: "none", overscrollBehavior: "contain", background: `radial-gradient(120% 78% at 50% 34%, ${C.card} 0%, ${C.bg} 68%)` },
+  gridToggle: { width: 46, height: 46, borderRadius: 999, background: C.card, border: `1px solid ${C.edge}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: C.sh1, flexShrink: 0 },
+  footGroup: { display: "flex", alignItems: "center", gap: 8 },
+  footSpacer: { display: "block", width: 46, flexShrink: 0 },
+  playFoot: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "12px 16px 20px", borderTop: `1px solid ${C.edge}` },
+  footBtn: { position: "relative", display: "flex", alignItems: "center", gap: 5, background: C.card, border: `1px solid ${C.edge}`, borderRadius: 999, padding: "11px 16px", cursor: "pointer", boxShadow: C.sh1, transition: "opacity 260ms cubic-bezier(.4,0,.2,1)" },
   footNum: { fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 12, color: C.accent },
-  scorePill: { fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 19, color: C.ink },
+  scoreWrap: { display: "flex", flexDirection: "column", alignItems: "center", gap: 1, flexShrink: 0, minWidth: 92 },
+  scorePill: { fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 30, lineHeight: 1, letterSpacing: "-0.035em", color: C.ink, fontVariantNumeric: "tabular-nums", textAlign: "center" },
+  comboCap: { fontSize: 10, fontWeight: 900, letterSpacing: "0.1em", textTransform: "uppercase", color: C.flow },
+  scoreCap: { fontSize: 9.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: C.muted },
 
-  shellBody: { flex: 1, minHeight: 0, width: BOARD_W, overflowY: "auto", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch", paddingBottom: 8 },
+  shellBody: { flex: 1, minHeight: 0, width: BOARD_W, overflowY: "auto", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch", scrollBehavior: "smooth", paddingBottom: 8 },
   home: { display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 6 },
-  streakChip: { background: C.card, borderRadius: 999, padding: "7px 16px", fontWeight: 900, fontSize: 14, boxShadow: "0 2px 8px rgba(27,36,64,0.07)", marginBottom: 16 },
+  streakGoal: { fontWeight: 800, fontSize: 12, color: C.muted, letterSpacing: 0 },
+  streakChip: { background: C.card, border: `1px solid ${C.edge}`, borderRadius: 999, padding: "7px 16px", fontWeight: 900, fontSize: 14, boxShadow: C.sh1, marginBottom: 16, letterSpacing: "0.01em" },
   homeCards: { display: "flex", gap: 12, width: "100%" },
-  homeCard: { flex: 1, background: C.card, border: "none", borderRadius: 20, padding: "14px 12px 12px", cursor: "pointer", boxShadow: "0 4px 16px rgba(27,36,64,0.08)", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontFamily: "'Nunito',sans-serif" },
-  homeCardTitle: { fontWeight: 900, fontSize: 17, color: C.ink },
+  homeCard: { flex: 1, background: `linear-gradient(180deg, ${C.card} 0%, ${C.card} 62%, ${C.bg} 190%)`, border: `1px solid ${C.edge}`, borderRadius: 20, padding: "14px 12px 12px", cursor: "pointer", boxShadow: C.sh2, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontFamily: "'Nunito',sans-serif" },
+  homeCardTitle: { fontWeight: 900, fontSize: 17, letterSpacing: "-0.01em", color: C.ink },
   homeCardSub: { fontSize: 11, fontWeight: 700, color: C.muted },
   homeCardArt: { width: 74, height: 62, margin: "8px 0" },
   homeCardBtn: { width: "100%", background: C.accent, color: "#fff", borderRadius: 999, padding: "9px 0", fontWeight: 900, fontSize: 13 },
   brandWrap: { textAlign: "center", margin: "auto 0", padding: "34px 0" },
-  brand: { fontWeight: 900, fontSize: 33, letterSpacing: "-0.03em", color: C.ink },
-  homeLevel: { fontWeight: 900, fontSize: 21, color: C.accent, marginTop: 8 },
+  brand: { fontWeight: 900, fontSize: 34, letterSpacing: "-0.035em", color: C.ink, lineHeight: 1.05 },
+  homeLevel: { fontWeight: 900, fontSize: 26, letterSpacing: "-0.03em", color: C.accent, marginTop: 8, lineHeight: 1.1 },
   homeDiff: { fontWeight: 900, fontSize: 15, marginTop: 2 },
-  continueBtn: { width: "100%", background: C.accent, color: "#fff", border: "none", borderRadius: 999, padding: "17px 0", fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 17, cursor: "pointer", boxShadow: "0 8px 22px rgba(47,123,246,0.3)" },
+  continueBtn: { width: "100%", background: C.accent, color: "#fff", border: "none", borderRadius: 999, padding: "17px 0", fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 17, cursor: "pointer", boxShadow: `0 10px 26px ${C.accent}4d` },
   homeFoot: { fontSize: 12, fontWeight: 700, color: C.muted, marginTop: 12 },
 
-  nav: { width: BOARD_W, display: "flex", gap: 4, background: C.card, borderRadius: 22, padding: 6, marginTop: 8, boxShadow: "0 4px 16px rgba(27,36,64,0.09)" },
-  navBtn: { flex: 1, background: "transparent", border: "none", borderRadius: 16, padding: "9px 1px", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, cursor: "pointer", fontFamily: "'Nunito',sans-serif" },
+  nav: { width: BOARD_W, display: "flex", gap: 4, background: C.card, border: `1px solid ${C.edge}`, borderRadius: 22, padding: 6, marginTop: 8, boxShadow: C.sh2 },
+  navBtn: { flex: 1, background: "transparent", border: "none", borderRadius: 16, padding: "9px 1px", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, cursor: "pointer", fontFamily: "'Nunito',sans-serif", transition: "background 260ms cubic-bezier(.4,0,.2,1)" },
   navOn: { background: C.bg },
   navLabel: { fontSize: 8.5, fontWeight: 800, color: C.muted },
-  page: { height: "100dvh", boxSizing: "border-box", overflow: "hidden", background: C.bg, color: C.ink, fontFamily: "'Nunito', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", padding: "calc(10px + env(safe-area-inset-top, 0px)) 14px calc(10px + env(safe-area-inset-bottom, 0px))", WebkitTapHighlightColor: "transparent", userSelect: "none", touchAction: "manipulation" },
-  settings: { width: BOARD_W, background: C.card, borderRadius: 18, padding: 14, marginBottom: 12, boxShadow: "0 8px 26px rgba(27,36,64,0.12)" },
+  page: { height: "100dvh", boxSizing: "border-box", overflow: "hidden", background: C.bg, color: C.ink, fontFamily: "'Nunito', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", padding: "calc(10px + env(safe-area-inset-top, 0px)) 14px calc(66px + env(safe-area-inset-bottom, 0px))", WebkitTapHighlightColor: "transparent", userSelect: "none", touchAction: "manipulation" },
+  settings: { width: BOARD_W, background: `linear-gradient(180deg, ${C.card} 0%, ${C.card} 78%, ${C.bg} 240%)`, border: `1px solid ${C.edge}`, borderRadius: 18, padding: 14, marginBottom: 12, boxShadow: C.sh2 },
   tglRow: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: "transparent", border: "none", padding: "9px 2px", cursor: "pointer", textAlign: "left" },
   tglLabel: { display: "block", fontWeight: 800, fontSize: 13.5, color: C.ink },
   tglHint: { display: "block", fontSize: 11, color: C.muted, fontWeight: 600, marginTop: 1 },
-  tglTrack: { width: 40, height: 22, borderRadius: 999, padding: 2, flexShrink: 0, transition: "background 200ms ease" },
-  tglKnob: { display: "block", width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "transform 200ms cubic-bezier(.34,1.4,.64,1)", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" },
+  tglTrack: { width: 40, height: 22, borderRadius: 999, padding: 2, flexShrink: 0, transition: "background 260ms cubic-bezier(.4,0,.2,1)" },
+  tglKnob: { display: "block", width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "transform 260ms cubic-bezier(.26,1.36,.4,1)", boxShadow: "0 1px 4px rgba(0,0,0,0.28)", willChange: "transform" },
   tip: { marginTop: 8, padding: "10px 12px", background: C.bg, borderRadius: 12, fontSize: 12, fontWeight: 600, color: C.muted, lineHeight: 1.5 },
+  quickGrid: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 4 },
+  quickBtn: { display: "flex", flexDirection: "column", alignItems: "center", gap: 4, background: C.bg, border: `1px solid ${C.edge}`, borderRadius: 14, padding: "10px 4px", cursor: "pointer", transition: "opacity 200ms ease" },
+  quickName: { fontSize: 10, fontWeight: 800, color: C.muted, fontFamily: "'Nunito',sans-serif" },
   studioGrid: { display: "grid", gridTemplateColumns: "repeat(11, 1fr)", gap: 3, touchAction: "none", marginBottom: 12 },
   studioCell: { aspectRatio: "1 / 1", border: "none", borderRadius: 4, padding: 0, cursor: "pointer" },
   studioRow: { display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" },
@@ -3286,14 +3669,14 @@ const makeStyles = (C) => ({
   swatch: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 2, padding: 4, borderRadius: 10, border: "2px solid transparent", background: C.bg, cursor: "pointer" },
   swatchDot: { width: 8, height: 8, borderRadius: 2 },
   colTitle: { fontWeight: 900, fontSize: 14, marginBottom: 10, padding: "0 2px" },
-  chapterCard: { width: "100%", background: C.card, borderRadius: 18, padding: 14, boxShadow: "0 4px 16px rgba(27,36,64,0.08)", marginTop: 14 },
+  chapterCard: { width: "100%", background: `linear-gradient(180deg, ${C.card} 0%, ${C.card} 70%, ${C.bg} 200%)`, border: `1px solid ${C.edge}`, borderRadius: 18, padding: 14, boxShadow: C.sh2, marginTop: 14 },
   chapRow: { display: "flex", alignItems: "center", gap: 11 },
   chapBadge: { width: 34, height: 34, borderRadius: 12, color: "#fff", fontWeight: 900, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
   chapName: { fontWeight: 900, fontSize: 15, color: C.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
   chapSub: { fontSize: 11, fontWeight: 700, color: C.muted, marginTop: 1 },
   chapSticker: { flexShrink: 0 },
   chapTrack: { height: 6, borderRadius: 999, background: C.bg, overflow: "hidden", marginTop: 11 },
-  chapFill: { height: "100%", borderRadius: 999, transition: "width 400ms cubic-bezier(.4,0,.2,1)" },
+  chapFill: { height: "100%", borderRadius: 999, transition: "width 520ms cubic-bezier(.22,.9,.26,1)" },
   chapHint: { fontSize: 10.5, fontWeight: 700, color: C.muted, marginTop: 7, textAlign: "center" },
   emptyNote: { fontSize: 12, fontWeight: 600, color: C.muted, background: C.bg, borderRadius: 12, padding: "12px 14px", lineHeight: 1.5 },
   stickerGrid: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 },
@@ -3321,6 +3704,9 @@ const makeStyles = (C) => ({
   adBtn: { width: "100%", background: C.go, color: "#fff", border: "none", borderRadius: 999, padding: "14px 0", fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 14, cursor: "pointer", marginBottom: 9, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 },
   adPlay: { fontSize: 11 },
   adNote: { fontSize: 11.5, fontWeight: 700, color: C.muted, textAlign: "center", marginTop: 8 },
+  watchRow: { background: C.bg, borderRadius: 14, padding: "12px 14px", marginBottom: 8 },
+  watchTop: { display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 },
+  watchCount: { fontWeight: 900, fontSize: 13, color: C.go, fontVariantNumeric: "tabular-nums", flexShrink: 0 },
   buyRow: { display: "flex", alignItems: "center", gap: 12, background: C.bg, borderRadius: 14, padding: "12px 14px", marginBottom: 8 },
   buyName: { display: "block", fontWeight: 900, fontSize: 14, color: C.ink },
   buyHint: { display: "block", fontSize: 11, fontWeight: 600, color: C.muted, marginTop: 2, lineHeight: 1.4 },
@@ -3336,10 +3722,10 @@ const makeStyles = (C) => ({
   lvCell: { background: C.bg, border: "2px solid", borderRadius: 12, padding: "9px 2px 7px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, fontFamily: "'Nunito',sans-serif" },
   lvNum: { fontWeight: 900, fontSize: 13, color: C.ink },
   lvStars: { fontSize: 8.5, color: C.gold, letterSpacing: "-0.5px", minHeight: 11 },
-  tutBar: { display: "flex", alignItems: "center", gap: 10, width: "calc(100% - 28px)", alignSelf: "center", background: C.accent, borderRadius: 14, padding: "11px 13px", marginBottom: 8 },
-  tutStep: { fontWeight: 900, fontSize: 11, color: "#fff", background: "rgba(255,255,255,0.22)", borderRadius: 999, padding: "3px 8px", flexShrink: 0 },
-  tutText: { flex: 1, fontSize: 12.5, fontWeight: 700, color: "#fff", lineHeight: 1.35 },
-  tutSkip: { background: "rgba(255,255,255,0.2)", border: "none", borderRadius: 999, padding: "6px 11px", fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 11, color: "#fff", cursor: "pointer", flexShrink: 0 },
+  tutBar: { display: "inline-flex", alignItems: "center", gap: 8, maxWidth: "calc(100% - 40px)", alignSelf: "center", background: C.card, border: `1.5px solid ${C.accent}44`, borderRadius: 999, padding: "7px 8px 7px 10px", marginBottom: 8, boxShadow: `0 6px 18px ${C.accent}1f` },
+  tutStep: { fontWeight: 900, fontSize: 10, color: "#fff", background: C.accent, borderRadius: 999, padding: "2px 7px", flexShrink: 0, letterSpacing: 0.2 },
+  tutText: { fontSize: 11.5, fontWeight: 700, color: C.ink, lineHeight: 1.3 },
+  tutSkip: { background: "transparent", border: "none", borderRadius: 999, padding: "4px 7px", fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 10.5, color: C.muted, cursor: "pointer", flexShrink: 0 },
   coach: { width: "calc(100% - 28px)", alignSelf: "center", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, background: C.coachBg, border: "none", borderRadius: 12, padding: "8px 12px", marginBottom: 8, cursor: "pointer", textAlign: "left" },
   coachText: { fontSize: 12, fontWeight: 600, color: C.ink, fontFamily: "'Nunito',sans-serif" },
   coachX: { fontSize: 12, color: C.muted, fontWeight: 800 },
@@ -3351,16 +3737,16 @@ const makeStyles = (C) => ({
   ovCard: { textAlign: "center", padding: 24, width: "100%", maxWidth: 280 },
   ovTitle: { fontWeight: 900, fontSize: 21, marginBottom: 6 },
   ovSub: { fontSize: 13, color: C.muted, marginBottom: 20, fontWeight: 600, lineHeight: 1.45 },
-  primary: { display: "block", width: "100%", background: C.accent, color: "#fff", border: "none", borderRadius: 999, padding: "14px 30px", fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 15, cursor: "pointer", boxShadow: "0 6px 18px rgba(47,123,246,0.32)" },
+  primary: { display: "block", width: "100%", background: C.accent, color: "#fff", border: "none", borderRadius: 999, padding: "14px 30px", fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 15, cursor: "pointer", boxShadow: `0 8px 22px ${C.accent}52` },
   ghost: { display: "block", width: "100%", marginTop: 8, background: "transparent", color: C.muted, border: "none", padding: 10, fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 13, cursor: "pointer" },
-  winWrap: { position: "fixed", inset: 0, background: "linear-gradient(180deg,#1E8BFF 0%,#3AA0FF 55%,#5FB6FF 100%)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", zIndex: 40, padding: 20 },
+  winWrap: { position: "fixed", inset: 0, background: "radial-gradient(90% 60% at 50% 22%, #58B4FF 0%, #2E96FF 42%, #1668D8 100%)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", zIndex: 40, padding: 20 },
   winInner: { position: "relative", textAlign: "center", width: "100%", maxWidth: 320 },
   winKicker: { color: "rgba(255,255,255,0.92)", fontWeight: 800, fontSize: 15 },
   winTitle: { color: "#fff", fontWeight: 900, fontSize: 27, letterSpacing: "-0.02em", margin: "6px 0 18px" },
-  winCard: { background: C.card, borderRadius: 22, padding: 20, boxShadow: "0 14px 40px rgba(0,40,90,0.28)" },
+  winCard: { background: C.card, borderRadius: 22, padding: 20, boxShadow: "0 18px 48px rgba(0,20,60,0.34)" },
   winStars: { display: "flex", gap: 10, justifyContent: "center", margin: "18px 0 6px" },
   winMeta: { color: "rgba(255,255,255,0.92)", fontSize: 13, fontWeight: 700, marginBottom: 18 },
-  winBtn: { display: "block", width: "100%", background: "#fff", color: C.accent, border: "none", borderRadius: 999, padding: "14px 30px", fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 15, cursor: "pointer", boxShadow: "0 6px 20px rgba(0,40,90,0.22)" },
+  winBtn: { display: "block", width: "100%", background: "#fff", color: C.accent, border: "none", borderRadius: 999, padding: "14px 30px", fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 15, cursor: "pointer", boxShadow: "0 8px 24px rgba(0,20,60,0.28)" },
   winGhost: { display: "block", width: "100%", marginTop: 10, background: "transparent", color: "#fff", border: "none", padding: 10, fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 14, cursor: "pointer" },
 });
 
