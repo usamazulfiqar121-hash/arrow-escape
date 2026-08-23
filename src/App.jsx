@@ -1063,6 +1063,7 @@ const Store = (() => {
        ready: true,                                  // a rewarded ad is loaded
        showRewarded:      (kind) => Promise<boolean>, // true = watched fully
        showInterstitial:  ()     => Promise<void>,
+       hideBanner:        ()     => Promise<void>,    // called once ads are removed
        purchaseRemoveAds: ()     => Promise<boolean>,
        restorePurchases:  ()     => Promise<boolean>,
      };
@@ -1099,6 +1100,11 @@ const Ads = {
       if (Ads.provider?.restorePurchases) return !!(await Ads.provider.restorePurchases());
     } catch {}
     return false;
+  },
+  async hideBanner() {
+    try {
+      if (Ads.provider?.hideBanner) await Ads.provider.hideBanner();
+    } catch {}
   },
 };
 
@@ -1919,20 +1925,45 @@ export default function ArrowEscapeV3() {
     setTimeout(() => setAdNote(""), 2600);
   }, []);
 
+  /* Every reward goes through here. The native layer coalesces rapid taps into
+     a single ad, so without one shared gate three taps on "watch for a hint"
+     would collect three hints from one view. Returns null when a watch is
+     already running — the extra tap is simply ignored. */
+  /* Removing ads has to remove the banner too, not just the interstitials —
+     otherwise the one thing a paying player still sees is an ad. Runs on load
+     as well, so a restored purchase is honoured on the next launch. */
+  useEffect(() => {
+    if (adsRemoved) Ads.hideBanner();
+  }, [adsRemoved]);
+
+  const claimRewarded = useCallback(async (kind) => {
+    if (adBusy.current) return null;
+    adBusy.current = true;
+    setWatchingAd(true);
+    try {
+      return await Ads.rewarded(kind);
+    } finally {
+      adBusy.current = false;
+      setWatchingAd(false);
+    }
+  }, []);
+
   /* A life back, on the same board — the one reward players actually want. */
   const watchForLife = useCallback(async () => {
-    const ok = await Ads.rewarded("life");
+    const ok = await claimRewarded("life");
+    if (ok === null) return;
     if (!ok) return flashNote("No ad available right now.");
     setHearts(1);
     setPhase("playing");
     Snd.shieldUp();
-  }, [flashNote]);
+  }, [flashNote, claimRewarded]);
 
   const watchForHint = useCallback(async () => {
-    const ok = await Ads.rewarded("hint");
+    const ok = await claimRewarded("hint");
+    if (ok === null) return;
     if (!ok) return flashNote("No ad available right now.");
     setHintsLeft((n) => n + 1);
-  }, [flashNote]);
+  }, [flashNote, claimRewarded]);
 
   const maybeInterstitial = useCallback(async () => {
     if (adsRemoved) return;
@@ -2574,7 +2605,7 @@ export default function ArrowEscapeV3() {
   /* ═══════════  PLAY SCREEN — full bleed, like a real puzzle app  ═══════════ */
   if (screen === "play") {
     return (
-      <div style={S.playRoot}>
+      <div style={adsRemoved ? { ...S.playRoot, paddingBottom: "env(safe-area-inset-bottom, 0px)" } : S.playRoot}>
         <style>{CSS}</style>
 
         <div style={S.hud} className="hud-in">
@@ -2870,7 +2901,7 @@ export default function ArrowEscapeV3() {
 
   /* ═══════════  SHELL SCREENS  ═══════════ */
   return (
-    <div style={S.page}>
+    <div style={adsRemoved ? { ...S.page, padding: "calc(10px + env(safe-area-inset-top, 0px)) 14px calc(10px + env(safe-area-inset-bottom, 0px))" } : S.page}>
       <style>{CSS}</style>
 
       <div style={S.shellBody}>
@@ -3126,7 +3157,7 @@ export default function ArrowEscapeV3() {
             <div style={S.buyRow}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <span style={S.buyName}>Remove ads</span>
-                <span style={S.buyHint}>No ads between levels. Reward videos stay available.</span>
+                <span style={S.buyHint}>No banner, no ads between levels. Reward videos stay available.</span>
               </div>
               <button
                 style={S.buyBtn}
@@ -3154,28 +3185,18 @@ export default function ArrowEscapeV3() {
                 style={{ ...S.buyBtn, width: "100%", marginTop: 10, background: C.go, opacity: watchingAd ? 0.6 : 1 }}
                 disabled={watchingAd}
                 onClick={async () => {
-                  // repeated taps used to start several ads at once and then
-                  // credit only one of them — serialise, and count from a ref
-                  // so no view is lost to a stale render.
-                  if (adBusy.current) return;
-                  adBusy.current = true;
-                  setWatchingAd(true);
-                  try {
-                    const watched = await Ads.rewarded("removeAdsProgress");
-                    if (!watched) { flashNote("No ad available right now."); return; }
-                    const n = adWatchRef.current + 1;
-                    adWatchRef.current = n;
-                    setAdWatchCount(n);
-                    if (n >= AD_REMOVAL_GOAL) {
-                      setAdsRemoved(true);
-                      persist({ adsRemoved: true, adWatchCount: n });
-                      flashNote("Ads removed — thank you.");
-                    } else {
-                      persist({ adWatchCount: n });
-                    }
-                  } finally {
-                    adBusy.current = false;
-                    setWatchingAd(false);
+                  const watched = await claimRewarded("removeAdsProgress");
+                  if (watched === null) return;
+                  if (!watched) { flashNote("No ad available right now."); return; }
+                  const n = adWatchRef.current + 1;
+                  adWatchRef.current = n;
+                  setAdWatchCount(n);
+                  if (n >= AD_REMOVAL_GOAL) {
+                    setAdsRemoved(true);
+                    persist({ adsRemoved: true, adWatchCount: n });
+                    flashNote("Ads removed — thank you.");
+                  } else {
+                    persist({ adWatchCount: n });
                   }
                 }}
               >

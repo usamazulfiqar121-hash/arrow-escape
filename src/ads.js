@@ -43,6 +43,10 @@ function debugError(label, e) {
   if (DEBUG_ALERT) { try { window.alert(msg); } catch {} }
 }
 
+// Once the player removes ads we must never put the banner back — including
+// the startup one, which may still be in flight when hideBanner() is called.
+let bannerSuppressed = false;
+
 const initPromise = (async () => {
   try {
     await AdMob.initialize();
@@ -51,6 +55,7 @@ const initPromise = (async () => {
     debugError("[ads] initialize FAILED", e);
   }
   try {
+    if (bannerSuppressed) return;
     // A persistent bottom banner, shown once at startup.
     await AdMob.showBanner({
       adId: IDS.banner,
@@ -58,7 +63,8 @@ const initPromise = (async () => {
       position: BannerAdPosition.BOTTOM_CENTER,
       isTesting: TESTING,
     });
-    debugLog("[ads] banner OK");
+    if (bannerSuppressed) { try { await AdMob.hideBanner(); } catch {} }
+    else debugLog("[ads] banner OK");
   } catch (e) {
     debugError("[ads] banner FAILED", e);
   }
@@ -155,10 +161,14 @@ window.ArrowAds = {
   // Exposed in case you want the game to hide/show the banner around
   // specific screens later (e.g. hide during play). Not wired to anything
   // yet — showBanner() above already displays it once at startup.
+  // Called by the game once ads are removed. Permanent for this session:
+  // the startup banner cannot race back in after it.
   async hideBanner() {
+    bannerSuppressed = true;
     try { await AdMob.hideBanner(); } catch (e) { console.error("[ads] hideBanner failed", e); }
   },
   async showBannerAgain() {
+    bannerSuppressed = false;
     try {
       await initPromise;
       await AdMob.showBanner({
