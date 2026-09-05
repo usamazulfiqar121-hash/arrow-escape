@@ -1906,15 +1906,26 @@ export default function ArrowEscapeV3() {
     []
   );
 
-  const persist = useCallback(async (patch) => {
-    try {
-      let cur = {};
+  // A level win can fire several of these back to back (badges+stats, then
+  // level/best, then levelStars) with no await between them. Each one used to
+  // read the save file, merge its own patch, and write — so calls fired in
+  // the same tick all read the SAME stale file, and only the last write
+  // survived, silently dropping every earlier patch (including level/best).
+  // Chaining every call onto one shared queue forces each read-modify-write
+  // to fully finish before the next one starts, so nothing gets clobbered.
+  const persistQueue = useRef(Promise.resolve());
+  const persist = useCallback((patch) => {
+    persistQueue.current = persistQueue.current.then(async () => {
       try {
-        const raw = await Store.get(SAVE_KEY);
-        if (raw) cur = JSON.parse(raw);
+        let cur = {};
+        try {
+          const raw = await Store.get(SAVE_KEY);
+          if (raw) cur = JSON.parse(raw);
+        } catch {}
+        await Store.set(SAVE_KEY, JSON.stringify({ ...cur, ...patch }));
       } catch {}
-      await Store.set(SAVE_KEY, JSON.stringify({ ...cur, ...patch }));
-    } catch {}
+    });
+    return persistQueue.current;
   }, []);
 
   const persistRef = useRef(() => {});
@@ -3586,6 +3597,22 @@ const TinyArrow = () => (
 
 const makeCSS = (C) => `
 @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@600;800;900&family=DM+Mono:wght@500&display=swap');
+
+/* The React root only paints its own box. Anything outside it — the strip
+   behind a rubber-band scroll, a rounding gap at a screen edge — falls back
+   to the browser's white, which reads as a flash against the dark theme.
+   Colouring the document itself keeps the app one solid surface. */
+html,body,#root{background:${C.bg};margin:0}
+/* Android's WebView silently inflates text it judges too small, which pushes
+   carefully sized labels out of their pills. Opt out and keep the tuned sizes. */
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+/* Long-pressing an arrow is a game gesture, not a request for the system
+   text/copy menu. */
+body{-webkit-touch-callout:none;-webkit-font-smoothing:antialiased}
+/* Scrollbars belong to documents, not to a game screen. */
+::-webkit-scrollbar{width:0;height:0;display:none}
+*{scrollbar-width:none}
+
 svg { shape-rendering: geometricPrecision; }
 @keyframes settleIn{0%{opacity:0;transform:translateY(9px) scale(.94)}62%{transform:translateY(-1px) scale(1.015)}100%{opacity:1;transform:translateY(0) scale(1)}}
 .settle{animation:settleIn 300ms cubic-bezier(.2,1.02,.3,1) backwards;animation-delay:var(--d,0ms);will-change:transform,opacity}
@@ -3596,7 +3623,7 @@ svg { shape-rendering: geometricPrecision; }
 @keyframes depFade{0%,72%{opacity:1}100%{opacity:0}}
 .dep-fade{animation:depFade 340ms cubic-bezier(.4,0,1,1) forwards}
 @keyframes ringOut{0%{opacity:.5;transform:scale(.35)}100%{opacity:0;transform:scale(1.7)}}
-.ring{animation:ringOut 460ms cubic-bezier(.14,.84,.26,1) forwards;will-change:transform,opacity;transform-box:fill-box;transform-origin:center;will-change:transform,opacity}
+.ring{animation:ringOut 460ms cubic-bezier(.14,.84,.26,1) forwards;transform-box:fill-box;transform-origin:center;will-change:transform,opacity}
 @keyframes nudge{0%,100%{transform:translateX(0)}22%{transform:translateX(-9px)}55%{transform:translateX(9px)}80%{transform:translateX(-4px)}}
 .shake{animation:nudge 420ms cubic-bezier(.36,.07,.19,.97);will-change:transform}
 @keyframes flashDim{0%,100%{opacity:1}50%{opacity:.3}}
@@ -3644,7 +3671,13 @@ button:active:not(:disabled) { transform: scale(.945); }
 .nav-on { animation: navPop 420ms cubic-bezier(.28,1.32,.44,1); }
 
 button:focus-visible{outline:3px solid ${C.accent};outline-offset:3px}
-@media (prefers-reduced-motion: reduce){.settle,.snake,.chev-out,.dep-fade,.ring,.shake,.flash,.hint,.hbreak,.starpop,.ovin,.confetti,.badge-in,.pop,.score-tick,.combo-in,.heart-low,.left-tick{animation-duration:1ms!important}}
+@media (prefers-reduced-motion: reduce){
+.settle,.snake,.chev-out,.dep-fade,.ring,.shake,.flash,.hint,.hbreak,.starpop,.ovin,.confetti,.badge-in,.pop,.score-tick,.combo-in,.heart-low,.left-tick,
+.screen-in,.board-in,.hud-in,.card-in,.nav-on{animation-duration:1ms!important;animation-iteration-count:1!important}
+button{transition-duration:1ms!important}
+button:active:not(:disabled){transform:none}
+*{scroll-behavior:auto!important}
+}
 `;
 
 let CSS = makeCSS(C);
