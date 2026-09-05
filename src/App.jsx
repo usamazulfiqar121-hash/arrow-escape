@@ -1,5 +1,14 @@
 import React, { useState, useCallback, useMemo, useRef, useEffect } from "react";
 
+/* Fonts are bundled, not fetched. Loading them from Google meant the game
+   opened in the system font on a cold or offline start and then visibly
+   swapped once the download landed. Vite inlines these into the build, so
+   the typography is identical on every launch, with or without a network. */
+import "@fontsource/nunito/600.css";
+import "@fontsource/nunito/800.css";
+import "@fontsource/nunito/900.css";
+import "@fontsource/dm-mono/500.css";
+
 /* ═══════════  tokens  ═══════════ */
 
 const LIGHT = {
@@ -3596,8 +3605,6 @@ const TinyArrow = () => (
 /* ═══════════  css  ═══════════ */
 
 const makeCSS = (C) => `
-@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@600;800;900&family=DM+Mono:wght@500&display=swap');
-
 /* The React root only paints its own box. Anything outside it — the strip
    behind a rubber-band scroll, a rounding gap at a screen edge — falls back
    to the browser's white, which reads as a flash against the dark theme.
