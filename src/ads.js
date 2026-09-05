@@ -146,9 +146,19 @@ window.ArrowAds = {
     if (interstitialInFlight) return interstitialInFlight;
     interstitialInFlight = (async () => {
       try {
-        await initPromise;
-        await AdMob.prepareInterstitial({ adId: IDS.interstitial, isTesting: TESTING });
-        await AdMob.showInterstitial();
+        // Race against a timeout so a hung prepare/show call can never freeze
+        // the "next level" tap forever — same bug class as the rewarded-ad
+        // freeze, fixed the same way: give up and let the game continue.
+        // Interstitials are short and this blocks the player meanwhile, so
+        // the grace period is much shorter than the rewarded ad's 60s.
+        await Promise.race([
+          (async () => {
+            await initPromise;
+            await AdMob.prepareInterstitial({ adId: IDS.interstitial, isTesting: TESTING });
+            await AdMob.showInterstitial();
+          })(),
+          new Promise((resolve) => setTimeout(resolve, 15000)),
+        ]);
       } catch (e) {
         console.error("[ads] interstitial failed", e);
       } finally {
