@@ -5,7 +5,7 @@ import { AdMob, BannerAdSize, BannerAdPosition, RewardAdPluginEvents } from '@ca
 //          on every device — use this to prove the whole pipeline works.
 // false -> your real created ad units. These only fill once Google has
 //          approved the app and there's real install traffic.
-const TESTING = true;
+const TESTING = false;
 
 // Google's published sample ad units — safe to ship, meant to be used exactly
 // like this during development. https://developers.google.com/admob/android/test-ads
