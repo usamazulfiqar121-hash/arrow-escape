@@ -1,13 +1,9 @@
 import React, { useState, useCallback, useMemo, useRef, useEffect } from "react";
 
-/* Fonts are bundled, not fetched. Loading them from Google meant the game
-   opened in the system font on a cold or offline start and then visibly
-   swapped once the download landed. Vite inlines these into the build, so
-   the typography is identical on every launch, with or without a network. */
-import "@fontsource/nunito/600.css";
-import "@fontsource/nunito/800.css";
-import "@fontsource/nunito/900.css";
-import "@fontsource/dm-mono/500.css";
+/* Fonts come from Google at runtime, via an @import at the top of the CSS
+   block below. Nothing to install and nothing to add to the entry file, so
+   this component still opens in a plain React preview. The cost is that a
+   cold or offline start shows the system font until the download lands. */
 
 /* ═══════════  tokens  ═══════════ */
 
@@ -60,12 +56,26 @@ const DARK = {
 const C = { ...LIGHT, __dark: false };
 
 const DIRS = {
-  right: { dx: 1, dy: 0, angle: 0 },
-  left: { dx: -1, dy: 0, angle: 180 },
-  up: { dx: 0, dy: -1, angle: -90 },
-  down: { dx: 0, dy: 1, angle: 90 },
+  right: { dx: 1, dy: 0, angle: 0, nx: 1, ny: 0 },
+  left: { dx: -1, dy: 0, angle: 180, nx: -1, ny: 0 },
+  up: { dx: 0, dy: -1, angle: -90, nx: 0, ny: -1 },
+  down: { dx: 0, dy: 1, angle: 90, nx: 0, ny: 1 },
+  /* Diagonals. Every board used to be an orthogonal grid of lanes, so each one
+     read as the same circuit board no matter which shape it sat in. nx/ny are
+     the unit vector, used for drawing so a diagonal tip is not 1.41x longer
+     than a straight one. */
+  upRight: { dx: 1, dy: -1, angle: -45, nx: 0.7071, ny: -0.7071 },
+  downRight: { dx: 1, dy: 1, angle: 45, nx: 0.7071, ny: 0.7071 },
+  downLeft: { dx: -1, dy: 1, angle: 135, nx: -0.7071, ny: 0.7071 },
+  upLeft: { dx: -1, dy: -1, angle: -135, nx: -0.7071, ny: -0.7071 },
 };
 const DIR_NAMES = Object.keys(DIRS);
+/* Piece bodies only ever bend orthogonally. Two diagonal body segments can
+   cross at a shared corner without sharing a cell, which draws as an X of
+   overlapping strokes — so bodies stay on the square grid and only the
+   direction a piece flies out in can be diagonal. */
+const ORTHO_NAMES = ["right", "left", "up", "down"];
+const DIAG_NAMES = ["upRight", "downRight", "downLeft", "upLeft"];
 const U = 100;
 
 let HAPTICS = true;
@@ -88,12 +98,19 @@ const Snd = (() => {
   let musicOn = true;
   let timer = null;
   let step = 0;
+  /* Set while the app is in the background. Without it, ensure() below quietly
+     resumes the context on the very next sound — and every effect calls
+     ensure() — so a single stray tap or timer in a backgrounded WebView undoes
+     the suspend and the music comes straight back over whatever the player
+     switched to. */
+  let asleep = false;
 
   function ensure() {
     if (ctx) {
-      if (ctx.state === "suspended") ctx.resume().catch(() => {});
+      if (ctx.state === "suspended" && !asleep) ctx.resume().catch(() => {});
       return ctx;
     }
+    if (asleep) return null;
     try {
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) return null;
@@ -240,6 +257,10 @@ const Snd = (() => {
   }
 
   function startMusic() {
+    // ensure() returns the existing context even while asleep, so this needs
+    // its own guard — otherwise a stray call in the background restarts the
+    // sequencer even though the clock is suspended.
+    if (asleep) return;
     const c = ensure();
     if (!c || timer) return;
     musicBus.gain.cancelScheduledValues(c.currentTime);
@@ -272,10 +293,22 @@ const Snd = (() => {
       else stopMusic();
     },
     suspend: () => {
+      /* Stop the sequencer as well as the clock. ctx.suspend() pauses the audio
+         clock, but the setInterval driving the chords keeps running in the
+         background and keeps queueing notes, so anything that resumes the
+         context finds the music already going. */
+      asleep = true;
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
       if (ctx && ctx.state === "running") ctx.suspend().catch(() => {});
     },
     resume: () => {
+      asleep = false;
       if (ctx && ctx.state === "suspended" && (sfxOn || musicOn)) ctx.resume().catch(() => {});
+      // the sequencer was cleared on suspend, so bring it back if music is on
+      if (musicOn && ctx && !timer) startMusic();
     },
     depart,
     blocked,
@@ -331,11 +364,27 @@ function mulberry32(a) {
 
 function ArtCanvas(size, ss) {
   const S = size * ss;
-  return { n: size, ss, S, buf: new Uint8Array(S * S) };
+  /* Nothing narrower than about one grid cell can survive the harvest. Drawn
+     as a fill it speckles; carved out it chews a hole through the very thing
+     it was meant to detail — two eyes on a fourteen-cell head turned the head
+     into three stripes. Features below this width are skipped instead. */
+  return { n: size, ss, S, buf: new Uint8Array(S * S), minFeat: (100 / size) * 1.15 };
 }
 function aToS(c, v) { return (v / 100) * c.S; }
+/* A carved hole needs more room than a drawn shape. A fill one cell wide still
+   reads as a line; a hole one cell wide needs solid on BOTH sides to read as a
+   hole at all, and when it does not it just slices the shape into stripes —
+   which is what two eyes did to a narrow bear's head. So holes are held to a
+   wider bar, and simply skipped on shapes too small to carry them. Detail then
+   appears on the roomy shapes that can show it and stays off the ones that
+   cannot, with no per-subject special-casing. */
+function aTooFine(c, w, h, val) {
+  const bar = val === 0 ? c.minFeat * 1.7 : c.minFeat;
+  return Math.min(Math.abs(w), Math.abs(h)) < bar;
+}
 
 function aEll(c, x0, y0, x1, y1, val) {
+  if (aTooFine(c, x1 - x0, y1 - y0, val)) return;
   const cx = aToS(c, (x0 + x1) / 2), cy = aToS(c, (y0 + y1) / 2);
   const rx = Math.max(aToS(c, (x1 - x0) / 2), 0.5), ry = Math.max(aToS(c, (y1 - y0) / 2), 0.5);
   const a = Math.max(0, Math.floor(cx - rx)), b = Math.min(c.S - 1, Math.ceil(cx + rx));
@@ -347,6 +396,7 @@ function aEll(c, x0, y0, x1, y1, val) {
 }
 
 function aRect(c, x0, y0, x1, y1, val) {
+  if (aTooFine(c, x1 - x0, y1 - y0, val)) return;
   const a = Math.max(0, Math.floor(aToS(c, x0))), b = Math.min(c.S - 1, Math.ceil(aToS(c, x1)));
   const p = Math.max(0, Math.floor(aToS(c, y0))), q = Math.min(c.S - 1, Math.ceil(aToS(c, y1)));
   for (let y = p; y <= q; y++) for (let x = a; x <= b; x++) c.buf[y * c.S + x] = val;
@@ -384,6 +434,52 @@ function aHarvest(c, thresh) {
     rows.push(line);
   }
   return rows;
+}
+
+/* Mirror the left half onto the right. Rasterising a symmetric drawing gives
+   a nearly-symmetric grid, and "nearly" is worse than either: the eye catches
+   a wheel one cell wider than its twin instantly and reads the whole shape as
+   broken. Only for subjects that really are symmetric — forcing it on a
+   side-on fish or car would destroy them. */
+function aMirror(rows) {
+  const w = rows[0].length;
+  const half = Math.floor(w / 2);
+  return rows.map((r) => {
+    const a = [...r];
+    for (let x = 0; x < half; x++) a[w - 1 - x] = a[x];
+    return a.join("");
+  });
+}
+
+/* Smooth the outline. The harvest leaves single-cell spikes and single-cell
+   bites that no one drew — they are threshold noise, and they are most of what
+   makes a generated shape look ragged next to a hand-drawn one. Fill a hollow
+   that is surrounded on three sides, shave a bump that clings on by one. */
+function aSmooth(rows, passes = 1) {
+  let cur = rows;
+  const h = cur.length, w = cur[0].length;
+  const at = (g, x, y) => (x < 0 || y < 0 || x >= w || y >= h ? "." : g[y][x]);
+  for (let p = 0; p < passes; p++) {
+    const next = [];
+    for (let y = 0; y < h; y++) {
+      let line = "";
+      for (let x = 0; x < w; x++) {
+        let n = 0;
+        if (at(cur, x - 1, y) === "#") n++;
+        if (at(cur, x + 1, y) === "#") n++;
+        if (at(cur, x, y - 1) === "#") n++;
+        if (at(cur, x, y + 1) === "#") n++;
+        const on = cur[y][x] === "#";
+        // Fill only a hole boxed in on all four sides — that is unambiguous
+        // threshold noise. Filling at three closed the gaps between a train's
+        // wheels and merged them into one bar.
+        line += on ? (n <= 1 ? "." : "#") : n === 4 ? "#" : ".";
+      }
+      next.push(line);
+    }
+    cur = next;
+  }
+  return cur;
 }
 
 function aTidy(rows) {
@@ -535,18 +631,725 @@ const ART_FAMILIES = [
     aRect(c, 70, 50, 79, 50 + 14 + r() * 10, 1);
     aRect(c, 85, 50, 93, 50 + 10 + r() * 10, 1);
   }],
+
+  /* ── Everything below was added to end the repetition past level 200.
+     The generated pool had only twelve subjects, so an "endless" run showed
+     the same twelve over and over — less variety than the 73 hand-drawn
+     boards before it. Each family varies structurally (parts present or
+     absent, counts, poses), not just in scale, and each was checked to
+     survive the rasteriser without losing its distinguishing pieces. ── */
+
+  ["Rabbit", (c, r) => {
+    const earLean = r() < 0.5 ? 1 : -1, earH = 28 + r() * 14, earW = 10 + r() * 5;
+    // Ears reach well into the head; thin ears used to break off in the
+    // rasteriser and get culled, leaving an earless blob.
+    aEll(c, 36 - earLean * 4, 4, 36 + earW - earLean * 4, 4 + earH, 1);
+    aEll(c, 56 + earLean * 4, 4, 56 + earW + earLean * 4, 4 + earH, 1);
+    aEll(c, 32, 4 + earH - 8, 70, 64, 1);
+    const bw = 17 + r() * 8;
+    aEll(c, 50 - bw, 56, 50 + bw, 96, 1);
+    if (r() < 0.6) aEll(c, 62 + r() * 8, 74, 84 + r() * 8, 92, 1);
+    aEll(c, 39, 38, 47, 48, 0); aEll(c, 55, 38, 63, 48, 0);
+    if (r() < 0.6) aEll(c, 47, 50, 55, 57, 0);
+  }],
+
+  ["Owl", (c, r) => {
+    const tuft = r() < 0.65;
+    if (tuft) {
+      aPoly(c, [[26, 26], [32, 6], [42, 24]], 1);
+      aPoly(c, [[74, 26], [68, 6], [58, 24]], 1);
+    }
+    aEll(c, 20, 14, 80, 60, 1);
+    const bw = 20 + r() * 8;
+    aEll(c, 50 - bw, 46, 50 + bw, 92, 1);
+    if (r() < 0.7) { aEll(c, 50 - bw - 8, 54, 50 - bw + 6, 84, 1); aEll(c, 50 + bw - 6, 54, 50 + bw + 8, 84, 1); }
+    aRect(c, 40, 90, 46, 98, 1); aRect(c, 54, 90, 60, 98, 1);
+    aEll(c, 30, 26, 44, 42, 0); aEll(c, 56, 26, 70, 42, 0);
+    aPoly(c, [[46, 42], [54, 42], [50, 54]], 0);
+  }],
+
+  ["Bear", (c, r) => {
+    const er = 8 + r() * 5;
+    aEll(c, 26 - er, 10, 26 + er, 10 + er * 2, 1);
+    aEll(c, 74 - er, 10, 74 + er, 10 + er * 2, 1);
+    aEll(c, 28, 14, 72, 56, 1);
+    const bw = 22 + r() * 8;
+    aEll(c, 50 - bw, 48, 50 + bw, 96, 1);
+    if (r() < 0.55) { aEll(c, 50 - bw - 9, 58, 50 - bw + 5, 86, 1); aEll(c, 50 + bw - 5, 58, 50 + bw + 9, 86, 1); }
+    aEll(c, 37, 26, 45, 35, 0); aEll(c, 55, 26, 63, 35, 0);
+    aEll(c, 45, 40, 55, 50, 0);
+  }],
+
+  ["Fox", (c, r) => {
+    aPoly(c, [[28, 34], [22, 6], [46, 24]], 1);
+    aPoly(c, [[72, 34], [78, 6], [54, 24]], 1);
+    aEll(c, 28, 20, 72, 56, 1);
+    aPoly(c, [[42, 46], [58, 46], [50, 66]], 1);
+    const bw = 15 + r() * 8;
+    aEll(c, 50 - bw, 54, 50 + bw, 92, 1);
+    const tail = r() < 0.8;
+    if (tail) aEll(c, 62 + r() * 6, 62, 96, 90, 1);
+    aEll(c, 37, 30, 45, 39, 0); aEll(c, 55, 30, 63, 39, 0);
+  }],
+
+  ["Whale", (c, r) => {
+    const bh = 18 + r() * 10;
+    aEll(c, 6, 44 - bh, 74, 44 + bh, 1);
+    aPoly(c, [[66, 44], [98, 44 - bh - 10], [88, 44], [98, 44 + bh + 10]], 1);
+    if (r() < 0.7) aPoly(c, [[30, 44 + bh - 4], [40, 44 + bh + 16], [54, 44 + bh - 4]], 1);
+    const spout = r() < 0.6;
+    if (spout) { aRect(c, 26, 44 - bh - 18, 32, 44 - bh + 2, 1); aEll(c, 18, 6, 40, 22, 1); }
+    aEll(c, 16, 36, 25, 45, 0);
+  }],
+
+  ["Turtle", (c, r) => {
+    const sw = 26 + r() * 10;
+    aEll(c, 50 - sw, 24, 50 + sw, 78, 1);
+    aEll(c, 76, 34, 98, 56, 1);
+    const legs = r() < 0.5 ? 4 : 2;
+    aEll(c, 22, 62, 44, 88, 1);
+    aEll(c, 56, 62, 78, 88, 1);
+    if (legs === 4) { aEll(c, 20, 20, 40, 42, 1); aEll(c, 60, 20, 80, 42, 1); }
+    if (r() < 0.5) aRect(c, 8, 44, 26, 52, 1);
+    const pl = 2 + ((r() * 2) | 0);
+    for (let i = 0; i < pl; i++) { const x = 40 + i * 12; aEll(c, x - 6, 38, x + 6, 52, 0); }
+    aEll(c, 44, 58, 56, 70, 0);
+  }],
+
+  ["Crab", (c, r) => {
+    const bw = 24 + r() * 10;
+    aEll(c, 50 - bw, 34, 50 + bw, 74, 1);
+    // Arms first, so the claws are always joined to the body.
+    aRect(c, 22, 30, 50 - bw + 4, 40, 1);
+    aRect(c, 50 + bw - 4, 30, 78, 40, 1);
+    aEll(c, 6, 14, 32, 44, 1);
+    aEll(c, 68, 14, 94, 44, 1);
+    const legs = 2 + ((r() * 3) | 0);
+    for (let i = 0; i < legs; i++) {
+      const y = 52 + i * (30 / Math.max(legs, 1));
+      aRect(c, 4, y, 50 - bw + 6, y + 6, 1);
+      aRect(c, 50 + bw - 6, y, 96, y + 6, 1);
+    }
+    if (r() < 0.6) { aRect(c, 38, 24, 44, 36, 1); aRect(c, 56, 24, 62, 36, 1); }
+    aEll(c, 40, 44, 48, 53, 0); aEll(c, 54, 44, 62, 53, 0);
+  }],
+
+  ["Penguin", (c, r) => {
+    aEll(c, 32, 6, 68, 42, 1);
+    const bw = 20 + r() * 8;
+    aEll(c, 50 - bw, 32, 50 + bw, 88, 1);
+    if (r() < 0.8) { aEll(c, 50 - bw - 10, 42, 50 - bw + 4, 78, 1); aEll(c, 50 + bw - 4, 42, 50 + bw + 10, 78, 1); }
+    aPoly(c, [[30, 96], [46, 86], [46, 96]], 1);
+    aPoly(c, [[70, 96], [54, 86], [54, 96]], 1);
+    if (r() < 0.5) aPoly(c, [[44, 22], [30, 28], [44, 32]], 1);
+    aEll(c, 40, 18, 47, 26, 0); aEll(c, 55, 18, 62, 26, 0);
+    if (r() < 0.6) aEll(c, 42, 48, 58, 76, 0);
+  }],
+
+  ["Elephant", (c, r) => {
+    const earR = 16 + r() * 8;
+    aEll(c, 14, 16, 14 + earR * 2, 16 + earR * 2.4, 1);
+    aEll(c, 86 - earR * 2, 16, 86, 16 + earR * 2.4, 1);
+    aEll(c, 30, 12, 70, 58, 1);
+    const trunkX = 44 + r() * 12;
+    aRect(c, trunkX, 50, trunkX + 10, 92, 1);
+    if (r() < 0.6) aEll(c, trunkX - 6, 84, trunkX + 12, 96, 1);
+    aRect(c, 26, 56, 40, 92, 1);
+    aRect(c, 60, 56, 74, 92, 1);
+    aEll(c, 36, 26, 44, 35, 0); aEll(c, 58, 26, 66, 35, 0);
+  }],
+
+  ["Frog", (c, r) => {
+    aEll(c, 22, 10, 44, 32, 1);
+    aEll(c, 56, 10, 78, 32, 1);
+    const bw = 26 + r() * 10;
+    aEll(c, 50 - bw, 22, 50 + bw, 78, 1);
+    aEll(c, 6, 54, 34, 92, 1);
+    aEll(c, 66, 54, 94, 92, 1);
+    if (r() < 0.6) { aRect(c, 22, 84, 40, 92, 1); aRect(c, 60, 84, 78, 92, 1); }
+    aEll(c, 28, 16, 38, 27, 0); aEll(c, 62, 16, 72, 27, 0);
+  }],
+
+  ["Snail", (c, r) => {
+    const turns = 2 + ((r() * 2) | 0);
+    for (let i = 0; i < turns + 1; i++) {
+      const rad = 30 - i * (24 / (turns + 1));
+      aEll(c, 46 - rad, 40 - rad, 46 + rad, 40 + rad, 1);
+    }
+    aEll(c, 40, 56, 96, 84, 1);
+    aRect(c, 82, 32, 88, 62, 1);
+    if (r() < 0.6) aEll(c, 78, 22, 92, 36, 1);
+    aEll(c, 34, 28, 46, 40, 0);
+    if (r() < 0.7) aEll(c, 52, 40, 62, 50, 0);
+  }],
+
+  ["Bee", (c, r) => {
+    const bands = 3 + ((r() * 2) | 0);
+    const bw = 20 + r() * 8;
+    aEll(c, 50 - bw, 34, 50 + bw, 92, 1);
+    aEll(c, 34, 12, 66, 42, 1);
+    for (let i = 0; i < 2; i++) {
+      const s = i ? 1 : -1;
+      aEll(c, 50 + s * bw - 4, 26, 50 + s * (bw + 26), 56, 1);
+    }
+    if (r() < 0.6) { aRect(c, 40, 4, 44, 16, 1); aRect(c, 56, 4, 60, 16, 1); }
+    void bands;
+    const st = 2 + ((r() * 2) | 0);
+    for (let i = 0; i < st; i++) { const y = 52 + i * 14; aRect(c, 50 - bw + 5, y, 50 + bw - 5, y + 6, 0); }
+    aEll(c, 40, 20, 47, 28, 0); aEll(c, 54, 20, 61, 28, 0);
+  }],
+
+  ["Ladybug", (c, r) => {
+    const w = 28 + r() * 10;
+    aEll(c, 50 - w, 22, 50 + w, 94, 1);
+    aEll(c, 36, 6, 64, 32, 1);
+    if (r() < 0.7) { aRect(c, 34, 6, 40, 16, 1); aRect(c, 60, 6, 66, 16, 1); }
+    const legs = r() < 0.5 ? 3 : 2;
+    for (let i = 0; i < legs; i++) {
+      const y = 40 + i * (36 / Math.max(legs, 1));
+      aRect(c, 8, y, 50 - w + 4, y + 5, 1);
+      aRect(c, 50 + w - 4, y, 92, y + 5, 1);
+    }
+    const sp = 2 + ((r() * 3) | 0);
+    for (let i = 0; i < sp; i++) { const x = 50 + (i % 2 ? 1 : -1) * (12 + (i >> 1) * 6), y = 40 + i * 13; aEll(c, x - 5, y, x + 5, y + 10, 0); }
+  }],
+
+  ["Spider", (c, r) => {
+    const br = 16 + r() * 8;
+    aEll(c, 50 - br, 40 - br, 50 + br, 40 + br, 1);
+    aEll(c, 50 - br * 1.3, 52, 50 + br * 1.3, 52 + br * 2, 1);
+    const pairs = 3 + ((r() * 2) | 0);
+    for (let i = 0; i < pairs; i++) {
+      const y = 30 + i * (44 / pairs);
+      aPoly(c, [[50 - br, y], [6, y - 8], [6, y], [50 - br, y + 6]], 1);
+      aPoly(c, [[50 + br, y], [94, y - 8], [94, y], [50 + br, y + 6]], 1);
+    }
+    aEll(c, 42, 32, 49, 40, 0); aEll(c, 52, 32, 59, 40, 0);
+  }],
+
+  ["Octopus", (c, r) => {
+    const hr = 24 + r() * 8;
+    aEll(c, 50 - hr, 6, 50 + hr, 6 + hr * 1.8, 1);
+    // Thin, unevenly long arms with real gaps between them. Fat arms at close
+    // spacing merged into one slab and the octopus lost its tentacles.
+    const arms = 3 + ((r() * 3) | 0);
+    const span = hr * 1.05;
+    for (let i = 0; i < arms; i++) {
+      const x = 50 - span + ((span * 2) / Math.max(arms - 1, 1)) * i;
+      const len = 20 + r() * 26;
+      const top = 6 + hr * 1.3;
+      aRect(c, x - 3.5, top, x + 3.5, top + len, 1);
+      if (r() < 0.55) aEll(c, x - 6, top + len - 6, x + 6, top + len + 6, 1);
+    }
+    aEll(c, 39, 28, 47, 38, 0); aEll(c, 54, 28, 62, 38, 0);
+  }],
+
+  ["House", (c, r) => {
+    const bw = 26 + r() * 10;
+    aPoly(c, [[50 - bw - 8, 44], [50, 8], [50 + bw + 8, 44]], 1);
+    aRect(c, 50 - bw, 42, 50 + bw, 94, 1);
+    if (r() < 0.6) aRect(c, 50 + bw - 22, 14, 50 + bw - 12, 34, 1);
+    if (r() < 0.7) aRect(c, 44, 66, 58, 94, 1);
+    aRect(c, 50 - bw + 5, 52, 50 - bw + 18, 66, 0);
+    aRect(c, 50 + bw - 18, 52, 50 + bw - 5, 66, 0);
+    if (r() < 0.6) aEll(c, 42, 20, 58, 36, 0);
+  }],
+
+  ["Castle", (c, r) => {
+    const towers = 2 + ((r() * 2) | 0);
+    const gap = 78 / Math.max(towers - 1, 1);
+    for (let i = 0; i < towers; i++) {
+      const x = 11 + gap * i;
+      aRect(c, x - 9, 20 + r() * 10, x + 9, 94, 1);
+      if (r() < 0.6) aPoly(c, [[x - 11, 22], [x, 6], [x + 11, 22]], 1);
+    }
+    aRect(c, 14, 52, 86, 94, 1);
+    if (r() < 0.7) aRect(c, 42, 70, 58, 94, 1);
+    for (let i = 0; i < towers; i++) { const x = 11 + gap * i; aRect(c, x - 4, 40, x + 4, 52, 0); }
+    aRect(c, 24, 60, 34, 72, 0); aRect(c, 66, 60, 76, 72, 0);
+  }],
+
+  ["Lighthouse", (c, r) => {
+    const tw = 12 + r() * 6;
+    aPoly(c, [[50 - tw, 32], [50 + tw, 32], [50 + tw + 10, 94], [50 - tw - 10, 94]], 1);
+    aRect(c, 50 - tw - 4, 22, 50 + tw + 4, 34, 1);
+    aRect(c, 50 - tw + 2, 10, 50 + tw - 2, 24, 1);
+    if (r() < 0.6) aPoly(c, [[50 - tw, 12], [50, 2], [50 + tw, 12]], 1);
+    if (r() < 0.5) aRect(c, 24, 88, 76, 96, 1);
+    aRect(c, 50 - tw + 3, 12, 50 + tw - 3, 22, 0);
+    aRect(c, 50 - 5, 48, 50 + 5, 60, 0);
+  }],
+
+  ["Windmill", (c, r) => {
+    const tw = 11 + r() * 6;
+    aPoly(c, [[50 - tw, 34], [50 + tw, 34], [50 + tw + 9, 96], [50 - tw - 9, 96]], 1);
+    const blades = 3 + ((r() * 2) | 0);
+    for (let i = 0; i < blades; i++) {
+      const a = (i / blades) * Math.PI * 2 + r() * 0.4;
+      const ex = 50 + Math.cos(a) * 40, ey = 30 + Math.sin(a) * 26;
+      aPoly(c, [[50, 26], [ex, ey], [ex + 6, ey + 8], [50, 34]], 1);
+    }
+    aEll(c, 42, 22, 58, 38, 1);
+  }],
+
+  ["Car", (c, r) => {
+    const cabin = r() < 0.6;
+    aRect(c, 8, 48, 92, 76, 1);
+    if (cabin) aPoly(c, [[26, 48], [36, 24], [66, 24], [76, 48]], 1);
+    else aRect(c, 30, 28, 72, 50, 1);
+    aEll(c, 16, 66, 38, 92, 1);
+    aEll(c, 62, 66, 84, 92, 1);
+    if (cabin) aPoly(c, [[32, 46], [39, 30], [61, 30], [68, 46]], 0);
+    else aRect(c, 35, 32, 67, 46, 0);
+    aEll(c, 22, 72, 32, 86, 0); aEll(c, 68, 72, 78, 86, 0);
+  }],
+
+  ["Train", (c, r) => {
+    aRect(c, 10, 40, 78, 76, 1);
+    aRect(c, 56, 18, 78, 44, 1);
+    const funnel = r() < 0.7;
+    if (funnel) { aRect(c, 20, 20, 32, 44, 1); aEll(c, 16, 12, 36, 26, 1); }
+    const wheels = 2 + ((r() * 2) | 0);
+    for (let i = 0; i < wheels; i++) {
+      const x = 16 + (60 / Math.max(wheels - 1, 1)) * i;
+      aEll(c, x - 11, 70, x + 11, 94, 1);
+    }
+    if (r() < 0.5) aRect(c, 80, 46, 94, 70, 1);
+    aRect(c, 61, 24, 73, 38, 0);
+    aRect(c, 18, 48, 32, 62, 0); aRect(c, 38, 48, 52, 62, 0);
+  }],
+
+  ["Plane", (c, r) => {
+    const sweep = r() < 0.5 ? 1 : 0.6;
+    aEll(c, 42, 6, 58, 88, 1);
+    aPoly(c, [[46, 34], [4, 52 * sweep + 26], [6, 62 * sweep + 26], [46, 54]], 1);
+    aPoly(c, [[54, 34], [96, 52 * sweep + 26], [94, 62 * sweep + 26], [54, 54]], 1);
+    aPoly(c, [[46, 74], [26, 88], [26, 94], [46, 88]], 1);
+    aPoly(c, [[54, 74], [74, 88], [74, 94], [54, 88]], 1);
+    if (r() < 0.5) aEll(c, 44, 2, 56, 18, 1);
+    aEll(c, 45, 20, 55, 32, 0);
+  }],
+
+  ["Sailboat", (c, r) => {
+    const sails = r() < 0.5 ? 2 : 1;
+    aPoly(c, [[8, 72], [92, 72], [78, 94], [22, 94]], 1);
+    aRect(c, 47, 10, 53, 74, 1);
+    aPoly(c, [[50, 12], [50, 68], [16, 68]], 1);
+    if (sails === 2) aPoly(c, [[52, 22], [52, 68], [86, 68]], 1);
+    if (r() < 0.4) aRect(c, 20, 66, 80, 74, 1);
+  }],
+
+  ["Balloon", (c, r) => {
+    const w = 26 + r() * 10;
+    aEll(c, 50 - w, 4, 50 + w, 4 + w * 2.2, 1);
+    aPoly(c, [[50 - w * 0.6, 4 + w * 1.9], [50 + w * 0.6, 4 + w * 1.9], [50 + 10, 78], [50 - 10, 78]], 1);
+    if (r() < 0.8) { aRect(c, 50 - 12, 76, 50 + 12, 94, 1); }
+    else { aRect(c, 46, 76, 54, 94, 1); }
+    for (let i = 0; i < 2; i++) aEll(c, 50 - w + 6 + i * (w - 4), 14, 50 - w + 16 + i * (w - 4), 4 + w * 1.7, 0);
+  }],
+
+  ["Anchor", (c, r) => {
+    const ring = 10 + r() * 5;
+    aEll(c, 50 - ring, 2, 50 + ring, 2 + ring * 2, 1);
+    aEll(c, 50 - ring + 4, 6, 50 + ring - 4, 2 + ring * 2 - 4, 0);
+    aRect(c, 44, 12, 56, 84, 1);
+    aRect(c, 24, 26, 76, 36, 1);
+    const flukeW = 28 + r() * 10;
+    aPoly(c, [[50 - flukeW, 52], [50 - flukeW + 10, 84], [50, 94], [50 - 10, 72]], 1);
+    aPoly(c, [[50 + flukeW, 52], [50 + flukeW - 10, 84], [50, 94], [50 + 10, 72]], 1);
+  }],
+
+  ["Umbrella", (c, r) => {
+    const scallops = 3 + ((r() * 3) | 0);
+    aEll(c, 6, 12, 94, 62, 1);
+    aRect(c, 0, 44, 100, 70, 0);
+    for (let i = 0; i < scallops; i++) {
+      const cx = 10 + (80 / Math.max(scallops - 1, 1)) * i;
+      aEll(c, cx - 12, 34, cx + 12, 56, 1);
+    }
+    aRect(c, 47, 44, 53, 90, 1);
+    if (r() < 0.7) aEll(c, 36, 82, 54, 96, 1);
+    aEll(c, 44, 84, 52, 94, 0);
+  }],
+
+  ["Lamp", (c, r) => {
+    const shadeW = 28 + r() * 10;
+    aPoly(c, [[50 - shadeW * 0.55, 10], [50 + shadeW * 0.55, 10], [50 + shadeW, 46], [50 - shadeW, 46]], 1);
+    aRect(c, 46, 44, 54, 82, 1);
+    const base = r() < 0.5;
+    if (base) aEll(c, 28, 76, 72, 96, 1);
+    else aPoly(c, [[30, 96], [70, 96], [60, 78], [40, 78]], 1);
+    aRect(c, 50 - shadeW * 0.7, 26, 50 + shadeW * 0.7, 36, 0);
+  }],
+
+  ["Teapot", (c, r) => {
+    const bw = 24 + r() * 10;
+    aEll(c, 50 - bw, 34, 50 + bw, 86, 1);
+    aPoly(c, [[50 + bw - 4, 44], [94, 30], [96, 40], [50 + bw - 2, 62]], 1);
+    aEll(c, 50 - bw - 18, 46, 50 - bw + 6, 74, 1);
+    aEll(c, 50 - bw - 10, 54, 50 - bw + 2, 66, 0);
+    aRect(c, 36, 26, 64, 38, 1);
+    if (r() < 0.7) aEll(c, 44, 16, 56, 30, 1);
+  }],
+
+  ["Cupcake", (c, r) => {
+    const swirls = 2 + ((r() * 2) | 0);
+    for (let i = 0; i < swirls; i++) {
+      const w = 30 - i * 7;
+      aEll(c, 50 - w, 10 + i * 14, 50 + w, 40 + i * 12, 1);
+    }
+    aPoly(c, [[24, 52], [76, 52], [66, 94], [34, 94]], 1);
+    if (r() < 0.5) aEll(c, 45, 2, 55, 14, 1);
+    for (let i = 0; i < 3; i++) aRect(c, 32 + i * 13, 58, 36 + i * 13, 88, 0);
+  }],
+
+  ["Donut", (c, r) => {
+    const outer = 34 + r() * 10, inner = 10 + r() * 7;
+    aEll(c, 50 - outer, 50 - outer, 50 + outer, 50 + outer, 1);
+    aEll(c, 50 - inner, 50 - inner, 50 + inner, 50 + inner, 0);
+    if (r() < 0.5) aEll(c, 50 - outer, 50 - outer, 50 + outer, 26, 1);
+  }],
+
+  ["Ice Cream", (c, r) => {
+    const scoops = 1 + ((r() * 3) | 0);
+    for (let i = 0; i < scoops; i++) {
+      const w = 24 - i * 3;
+      aEll(c, 50 - w, 6 + i * 16, 50 + w, 6 + i * 16 + w * 1.8, 1);
+    }
+    const coneTop = 12 + scoops * 18;
+    aPoly(c, [[50 - 22, coneTop], [50 + 22, coneTop], [50, 96]], 1);
+    for (let i = 0; i < 2; i++) aRect(c, 38 + i * 14, coneTop + 10, 44 + i * 14, coneTop + 26, 0);
+  }],
+
+  ["Apple", (c, r) => {
+    const w = 28 + r() * 10;
+    aEll(c, 50 - w, 22, 50 - 2, 92, 1);
+    aEll(c, 50 + 2, 22, 50 + w, 92, 1);
+    aEll(c, 50 - w * 0.8, 26, 50 + w * 0.8, 90, 1);
+    aRect(c, 47, 6, 53, 28, 1);
+    if (r() < 0.7) aEll(c, 52, 8, 78, 26, 1);
+    if (r() < 0.5) aEll(c, 50 + w - 12, 40, 50 + w + 6, 62, 0);
+  }],
+
+  ["Cactus", (c, r) => {
+    const tw = 11 + r() * 6;
+    aRect(c, 50 - tw, 12, 50 + tw, 96, 1);
+    const left = r() < 0.75, right = r() < 0.75;
+    if (left) { aRect(c, 18, 40, 50, 52, 1); aRect(c, 18, 24, 30, 48, 1); }
+    if (right) { aRect(c, 50, 54, 82, 66, 1); aRect(c, 70, 34, 82, 62, 1); }
+    if (!left && !right) { aRect(c, 22, 46, 50, 58, 1); aRect(c, 22, 30, 34, 54, 1); }
+    aRect(c, 50 - 3, 30, 50 + 3, 86, 0);
+  }],
+
+  ["Mountain", (c, r) => {
+    const peaks = 2 + ((r() * 2) | 0);
+    for (let i = 0; i < peaks; i++) {
+      const cx = 22 + (56 / Math.max(peaks - 1, 1)) * i;
+      const h = 14 + r() * 24;
+      aPoly(c, [[cx - 34, 94], [cx, h], [cx + 34, 94]], 1);
+    }
+    if (r() < 0.5) aRect(c, 4, 88, 96, 96, 1);
+  }],
+
+  ["Cloud", (c, r) => {
+    const lobes = 3 + ((r() * 3) | 0);
+    const base = 66;
+    for (let i = 0; i < lobes; i++) {
+      const cx = 14 + (72 / Math.max(lobes - 1, 1)) * i;
+      // Wide radius spread is what gives the top its bumps; uniform lobes
+      // merged into a straight edge.
+      const rad = 10 + r() * 22;
+      aEll(c, cx - rad, base - rad * 1.9, cx + rad, base + rad * 0.25, 1);
+    }
+    aRect(c, 18, base - 12, 82, base + 5, 1);
+  }],
+
+  ["Star", (c, r) => {
+    const pts = 5 + ((r() * 2) | 0) * 2;
+    const R = 46, ir = R * (0.36 + r() * 0.14);
+    const poly = [];
+    for (let i = 0; i < pts * 2; i++) {
+      const a = (i / (pts * 2)) * Math.PI * 2 - Math.PI / 2;
+      const rad = i % 2 ? ir : R;
+      poly.push([50 + Math.cos(a) * rad, 50 + Math.sin(a) * rad]);
+    }
+    aPoly(c, poly, 1);
+  }],
+
+  ["Heart", (c, r) => {
+    const w = 24 + r() * 8;
+    aEll(c, 50 - w * 2, 12, 50, 12 + w * 2, 1);
+    aEll(c, 50, 12, 50 + w * 2, 12 + w * 2, 1);
+    aPoly(c, [[50 - w * 2, 34], [50 + w * 2, 34], [50, 94]], 1);
+  }],
+
+  ["Moon", (c, r) => {
+    const R = 44, bite = 22 + r() * 12;
+    aEll(c, 50 - R, 50 - R, 50 + R, 50 + R, 1);
+    aEll(c, 50 - R + bite, 50 - R - 5, 50 + R + bite, 50 + R + 5, 0);
+  }],
+
+  ["Bell", (c, r) => {
+    const w = 26 + r() * 10;
+    aEll(c, 50 - w, 16, 50 + w, 82, 1);
+    aRect(c, 50 - w, 50, 50 + w, 80, 1);
+    aRect(c, 50 - w - 8, 76, 50 + w + 8, 88, 1);
+    if (r() < 0.7) aEll(c, 44, 88, 56, 98, 1);
+    if (r() < 0.6) aRect(c, 46, 6, 54, 20, 1);
+    aRect(c, 50 - w + 6, 60, 50 + w - 6, 70, 0);
+  }],
+
+  ["Gift", (c, r) => {
+    aRect(c, 12, 34, 88, 94, 1);
+    aRect(c, 8, 24, 92, 38, 1);
+    // Ribbon read as a hairline at this grid size, so the box looked like a
+    // plain slab. Notches are now wide enough to survive the rasteriser, and
+    // stop short of the base so the two halves stay joined.
+    aRect(c, 42, 20, 58, 33, 0);
+    aRect(c, 40, 44, 60, 60, 0);
+    aRect(c, 4, 44, 22, 58, 0);
+    aRect(c, 78, 44, 96, 58, 0);
+    const bow = 13 + r() * 8;
+    aEll(c, 50 - bow * 2, 22 - bow, 50 - 2, 27 + bow * 0.4, 1);
+    aEll(c, 50 + 2, 22 - bow, 50 + bow * 2, 27 + bow * 0.4, 1);
+  }],
+
+  ["Camera", (c, r) => {
+    aRect(c, 10, 32, 90, 84, 1);
+    aRect(c, 32, 20, 60, 34, 1);
+    // Corners cut away and the lens always hollow — a plain filled rectangle
+    // is indistinguishable from every other boxy subject.
+    aPoly(c, [[10, 32], [22, 32], [10, 44]], 0);
+    aPoly(c, [[90, 32], [78, 32], [90, 44]], 0);
+    aPoly(c, [[10, 84], [22, 84], [10, 72]], 0);
+    aPoly(c, [[90, 84], [78, 84], [90, 72]], 0);
+    const lens = 15 + r() * 7;
+    aEll(c, 50 - lens, 58 - lens, 50 + lens, 58 + lens, 1);
+    aEll(c, 50 - lens * 0.6, 58 - lens * 0.6, 50 + lens * 0.6, 58 + lens * 0.6, 0);
+    if (r() < 0.6) aRect(c, 68, 38, 84, 48, 0);
+  }],
+
+  ["Guitar", (c, r) => {
+    const lower = 26 + r() * 8, upper = lower * (0.66 + r() * 0.16);
+    aEll(c, 50 - lower, 52, 50 + lower, 96, 1);
+    aEll(c, 50 - upper, 26, 50 + upper, 66, 1);
+    aRect(c, 45, 4, 55, 40, 1);
+    if (r() < 0.7) aRect(c, 41, 0, 59, 12, 1);
+    if (r() < 0.6) aEll(c, 42, 58, 58, 74, 0);
+    aEll(c, 41, 56, 59, 74, 0);
+    aRect(c, 46, 14, 54, 22, 0);
+  }],
+
+  ["Book", (c, r) => {
+    aRect(c, 10, 12, 90, 82, 1);
+    aRect(c, 45, 10, 55, 78, 0);
+    aRect(c, 8, 78, 92, 94, 1);
+    // Page marks bite in from the outer edges only, so they can never cut a
+    // cover in half.
+    const pages = 2 + ((r() * 3) | 0);
+    for (let i = 0; i < pages; i++) {
+      const y = 26 + i * (44 / pages);
+      aRect(c, 4, y, 20, y + 5, 0);
+      aRect(c, 80, y, 96, y + 5, 0);
+    }
+  }],
+
+  ["Clock", (c, r) => {
+    const R = 36 + r() * 8;
+    aEll(c, 50 - R, 50 - R, 50 + R, 50 + R, 1);
+    aEll(c, 50 - R + 9, 50 - R + 9, 50 + R - 9, 50 + R - 9, 0);
+    // The hands must reach into the rim, otherwise they are a separate island
+    // and the largest-island cull deletes them.
+    aRect(c, 46, 50 - R + 4, 54, 54, 1);
+    aRect(c, 50, 46, 50 + R - 4, 54, 1);
+    if (r() < 0.6) { aRect(c, 28, 50 - R - 8, 40, 50 - R + 4, 1); aRect(c, 60, 50 - R - 8, 72, 50 - R + 4, 1); }
+    if (r() < 0.4) { aRect(c, 30, 50 + R - 4, 40, 50 + R + 8, 1); aRect(c, 60, 50 + R - 4, 70, 50 + R + 8, 1); }
+  }],
+
+  ["Hourglass", (c, r) => {
+    const w = 26 + r() * 10;
+    aRect(c, 50 - w - 6, 6, 50 + w + 6, 18, 1);
+    aRect(c, 50 - w - 6, 82, 50 + w + 6, 94, 1);
+    aPoly(c, [[50 - w, 16], [50 + w, 16], [50 + 5, 50], [50 - 5, 50]], 1);
+    aPoly(c, [[50 - w, 84], [50 + w, 84], [50 + 5, 50], [50 - 5, 50]], 1);
+    aPoly(c, [[50 - w + 5, 22], [50 + w - 5, 22], [50 + 3, 44], [50 - 3, 44]], 0);
+  }],
+
+  ["Robot", (c, r) => {
+    const hw = 18 + r() * 8;
+    aRect(c, 50 - hw, 14, 50 + hw, 42, 1);
+    const bw = 24 + r() * 8;
+    aRect(c, 50 - bw, 42, 50 + bw, 78, 1);
+    aRect(c, 50 - bw - 12, 46, 50 - bw, 72, 1);
+    aRect(c, 50 + bw, 46, 50 + bw + 12, 72, 1);
+    aRect(c, 50 - bw + 4, 78, 50 - 6, 96, 1);
+    aRect(c, 50 + 6, 78, 50 + bw - 4, 96, 1);
+    if (r() < 0.6) aRect(c, 47, 4, 53, 16, 1);
+    aEll(c, 50 - hw + 5, 20, 50 - 3, 32, 0); aEll(c, 50 + 3, 20, 50 + hw - 5, 32, 0);
+    aRect(c, 50 - bw + 7, 50, 50 + bw - 7, 66, 0);
+  }],
+
+  ["Ghost", (c, r) => {
+    const w = 28 + r() * 8;
+    aEll(c, 50 - w, 6, 50 + w, 6 + w * 1.8, 1);
+    aRect(c, 50 - w, 6 + w, 50 + w, 86, 1);
+    // Deep notches cut up from the bottom edge give the scalloped hem. Shallow
+    // ones vanished at this grid size and left a plain slab.
+    const waves = 2 + ((r() * 3) | 0);
+    const step = (w * 2) / waves;
+    for (let i = 1; i <= waves - 1; i++) {
+      const cx = 50 - w + step * i;
+      aPoly(c, [[cx - step * 0.34, 100], [cx, 52], [cx + step * 0.34, 100]], 0);
+    }
+    aEll(c, 50 - w * 0.62, 24, 50 - w * 0.14, 48, 0);
+    aEll(c, 50 + w * 0.14, 24, 50 + w * 0.62, 48, 0);
+  }],
+
+  ["Dino", (c, r) => {
+    const bw = 24 + r() * 8;
+    aEll(c, 50 - bw, 40, 50 + bw, 82, 1);
+    aEll(c, 8, 14, 44, 44, 1);
+    aRect(c, 20, 30, 40, 54, 1);
+    aPoly(c, [[50 + bw - 6, 50], [96, 74], [96, 84], [50 + bw - 6, 72]], 1);
+    aRect(c, 34, 74, 46, 96, 1);
+    aRect(c, 56, 74, 68, 96, 1);
+    if (r() < 0.6) for (let i = 0; i < 3; i++) aPoly(c, [[42 + i * 14, 42], [48 + i * 14, 26], [54 + i * 14, 42]], 1);
+    aEll(c, 16, 22, 25, 31, 0);
+  }],
+
+  ["Kite", (c, r) => {
+    const w = 30 + r() * 10;
+    aPoly(c, [[50, 4], [50 + w, 40], [50, 78], [50 - w, 40]], 1);
+    const tail = 2 + ((r() * 3) | 0);
+    for (let i = 0; i < tail; i++) {
+      const y = 78 + i * 7;
+      aEll(c, 46 - i * 2, y, 56 + i * 2, y + 8, 1);
+    }
+    aEll(c, 50 - 7, 30, 50 + 7, 46, 0);
+  }],
+
+  ["Pencil", (c, r) => {
+    const w = 17 + r() * 8;
+    aPoly(c, [[50 - w, 26], [50 + w, 26], [50, 2]], 1);
+    aRect(c, 50 - w, 24, 50 + w, 78, 1);
+    // Ferrule notches and a wider eraser keep it from reading as a bare bar.
+    aRect(c, 50 - w - 3, 76, 50 + w + 3, 96, 1);
+    aRect(c, 50 - w - 3, 74, 50 - w + 3, 82, 0);
+    aRect(c, 50 + w - 3, 74, 50 + w + 3, 82, 0);
+    if (r() < 0.6) { aPoly(c, [[50 - w, 20], [50 - w + 7, 20], [50 - w + 3, 10]], 0); aPoly(c, [[50 + w, 20], [50 + w - 7, 20], [50 + w - 3, 10]], 0); }
+  }],
+
+  ["Trophy", (c, r) => {
+    const w = 24 + r() * 8;
+    aEll(c, 50 - w, 8, 50 + w, 56, 1);
+    aRect(c, 50 - w, 8, 50 + w, 32, 1);
+    if (r() < 0.8) {
+      aEll(c, 50 - w - 18, 16, 50 - w + 4, 46, 1);
+      aEll(c, 50 - w - 10, 24, 50 - w + 2, 38, 0);
+      aEll(c, 50 + w - 4, 16, 50 + w + 18, 46, 1);
+      aEll(c, 50 + w - 2, 24, 50 + w + 10, 38, 0);
+    }
+    aRect(c, 44, 54, 56, 76, 1);
+    aRect(c, 28, 74, 72, 84, 1);
+    aRect(c, 20, 84, 80, 96, 1);
+    aRect(c, 50 - w + 6, 16, 50 + w - 6, 26, 0);
+  }],
+
+  ["Lantern", (c, r) => {
+    const w = 22 + r() * 8;
+    aRect(c, 50 - w - 7, 16, 50 + w + 7, 26, 1);
+    aRect(c, 50 - w, 24, 50 + w, 80, 1);
+    aRect(c, 50 - w - 7, 78, 50 + w + 7, 90, 1);
+    // Panes always cut out; the side posts keep top and base joined.
+    const panes = 1 + ((r() * 2) | 0);
+    for (let i = 0; i < panes; i++) {
+      const y0 = 32 + i * (44 / panes), y1 = y0 + 44 / panes - 6;
+      aRect(c, 50 - w + 6, y0, 50 + w - 6, y1, 0);
+    }
+    if (r() < 0.7) aEll(c, 50 - 11, 2, 50 + 11, 20, 1);
+  }],
+
+  ["Pyramid", (c, r) => {
+    const steps = 3 + ((r() * 3) | 0);
+    for (let i = 0; i < steps; i++) {
+      const w = 10 + (38 * (i + 1)) / steps;
+      const y0 = 90 - ((i + 1) * 78) / steps, y1 = 92 - (i * 78) / steps;
+      aRect(c, 50 - w, y0, 50 + w, y1, 1);
+    }
+    aRect(c, 44, 62, 56, 92, 0);
+  }],
+
+  ["Bicycle", (c, r) => {
+    const R = 22 + r() * 6;
+    aEll(c, 4, 68 - R, 4 + R * 2, 68 + R, 1);
+    aEll(c, 96 - R * 2, 68 - R, 96, 68 + R, 1);
+    aEll(c, 12, 68 - R + 8, 4 + R * 2 - 8, 68 + R - 8, 0);
+    aEll(c, 96 - R * 2 + 8, 68 - R + 8, 88, 68 + R - 8, 0);
+    // Bottom bar joins the two wheels. Without it the frame sometimes missed a
+    // wheel and half the bicycle was culled away.
+    aRect(c, 4 + R, 64, 96 - R, 72, 1);
+    aPoly(c, [[4 + R, 62], [48, 32], [58, 38], [4 + R + 10, 70]], 1);
+    aPoly(c, [[96 - R, 62], [48, 32], [58, 38], [96 - R - 10, 70]], 1);
+    if (r() < 0.6) aRect(c, 38, 26, 62, 34, 1);
+  }],
+
+  ["Dolphin", (c, r) => {
+    const bh = 16 + r() * 8;
+    aEll(c, 8, 44 - bh, 76, 44 + bh, 1);
+    aPoly(c, [[40, 44 - bh + 4], [54, 44 - bh - 22], [64, 44 - bh + 4]], 1);
+    aPoly(c, [[68, 44], [98, 26], [88, 44], [98, 66]], 1);
+    aPoly(c, [[26, 44 + bh - 4], [34, 44 + bh + 18], [48, 44 + bh - 2]], 1);
+    if (r() < 0.6) aEll(c, 2, 40, 20, 54, 1);
+    aEll(c, 16, 38, 25, 47, 0);
+  }],
 ];
 
-const ART_ADJ = ["Little", "Broad", "Tall", "Round", "Slim", "Wide", "Bold", "Fine", "Grand", "Neat"];
+/* Subjects seen head-on, where the two halves really do match. Everything not
+   listed is drawn side-on (fish, car, train, guitar, crescent moon) and is
+   left exactly as rasterised. */
+const SYMMETRIC = new Set([
+  "Cat", "Dog", "Tree", "Flower", "Vessel", "Crown", "Rocket", "Mushroom",
+  "Butterfly", "Owl", "Bear", "Fox", "Frog", "Bee", "Ladybug", "Spider",
+  "Octopus", "Penguin", "Elephant", "Turtle", "Crab", "Rabbit", "House",
+  "Castle", "Lighthouse", "Balloon", "Umbrella", "Lamp", "Cupcake", "Donut",
+  "Ice Cream", "Apple", "Cactus", "Cloud", "Star", "Heart", "Bell", "Gift",
+  "Robot", "Ghost", "Kite", "Trophy", "Lantern", "Pyramid", "Hourglass",
+  "Clock", "Camera", "Book", "Plane", "Anchor", "Pencil",
+]);
+
+const ART_ADJ = ["Little", "Broad", "Tall", "Round", "Slim", "Wide", "Bold", "Fine", "Grand", "Neat",
+                 "Quiet", "Bright", "Old", "Young", "Proud", "Soft", "Sharp", "Deep", "Pale", "Warm"];
+
+/* Picking a family at random let the same subject land on back-to-back levels
+   and left others unseen for ages. Walk a shuffled rotation instead: every
+   subject appears once before any repeats, and the order changes each lap. */
+function familyOrder(lap) {
+  const order = ART_FAMILIES.map((_, i) => i);
+  const r = mulberry32(lap * 6367 + 41);
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = (r() * (i + 1)) | 0;
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  return order;
+}
 
 function artMask(seed) {
+  const n = ART_FAMILIES.length;
+  const pos = ((seed % n) + n) % n;
+  const lap = Math.floor(seed / n);
   for (let attempt = 0; attempt < 12; attempt++) {
     const r = mulberry32(seed * 2654435761 + attempt * 97);
-    const [name, draw] = ART_FAMILIES[(r() * ART_FAMILIES.length) | 0];
+    // Attempt 0 takes the rotation's turn. Retries step BACKWARDS, into
+    // subjects already used, because stepping forwards borrowed the next
+    // level's turn and that was the cause of almost every repeat in a row.
+    const [name, draw] = ART_FAMILIES[familyOrder(lap)[((pos - attempt) % n + n) % n]];
     const size = 18 + ((r() * 9) | 0);
     const c = ArtCanvas(size, 3);
     draw(c, r);
-    const m = aTidy(aHarvest(c, 0.42));
+    let grid = aHarvest(c, 0.42);
+    if (SYMMETRIC.has(name)) grid = aMirror(grid);
+    grid = aSmooth(grid);
+    const m = aTidy(grid);
     if (!m) continue;
     if (m.cells.size < 90 || m.cells.size > 430) continue;
     if (m.cols < 9 || m.rows < 9) continue;
@@ -566,24 +1369,109 @@ function step(idx, dx, dy, cols, rows) {
   return r * cols + c;
 }
 
-function exitLine(head, d, cols, rows) {
-  const D = DIRS[d];
+/* An exit lane. With deflectors on the board a lane is no longer a straight
+   ray: it turns 90° at each one, so reading a board becomes tracing a path
+   rather than sighting down a line.
+
+   A deflector reflects the direction vector — "/" sends (dx,dy) to (-dy,-dx),
+   "\" sends it to (dy,dx). That one rule covers all eight directions: a
+   diagonal running parallel to the mirror passes straight through, and a
+   perpendicular one is turned back.
+
+   Turning back can loop forever between two mirrors, so the walk remembers
+   every cell-and-direction it has been in. Revisiting one means the arrow can
+   never leave, and the caller gets null. */
+function exitLine(head, d, cols, rows, mirrors) {
   const out = [];
   let cur = head;
+  let dir = d;
+  const seen = mirrors && mirrors.size ? new Set() : null;
   for (;;) {
+    const D = DIRS[dir];
     cur = step(cur, D.dx, D.dy, cols, rows);
-    if (cur === null) return out;
+    if (cur === null) return out;          // off the board — escaped
     out.push(cur);
+    if (!seen) continue;
+    const m = mirrors.get(cur);
+    if (m) {
+      const key = cur * 8 + DIR_NAMES.indexOf(dir);
+      if (seen.has(key)) return null;      // caught in a loop, never escapes
+      seen.add(key);
+      const D2 = DIRS[dir];
+      dir = dirFromVec(m === "/" ? -D2.dy : D2.dy, m === "/" ? -D2.dx : D2.dx);
+      if (!dir) return null;
+    }
   }
 }
 
-function buildBoard(mask, { maxLen, coverage, tightness, pieces: target }) {
+const VEC_TO_DIR = (() => {
+  const m = new Map();
+  for (const n of DIR_NAMES) m.set(DIRS[n].dx * 3 + DIRS[n].dy, n);
+  return m;
+})();
+function dirFromVec(dx, dy) {
+  return VEC_TO_DIR.get(dx * 3 + dy) || null;
+}
+
+/* Where a piece's body would start, growing backwards from its head. Bodies are
+   always orthogonal, so a diagonal exit reports whichever of its two orthogonal
+   components is open. */
+function orthoBack(head, D, cols, rows) {
+  if (!(D.dx && D.dy)) return step(head, -D.dx, -D.dy, cols, rows);
+  return step(head, -D.dx, 0, cols, rows) ?? step(head, 0, -D.dy, cols, rows);
+}
+
+/* Three mechanics turn up long after the four-step tutorial has finished and
+   none of them announced itself: diagonals just pointed a new way, sealed
+   arrows just faded out, deflectors just bent a path. Each gets one line,
+   once, on the first board it appears on. Listed in the order the player
+   meets them — diagonals around level 15, seals around 21, deflectors 29. */
+const MECHANIC_TIPS = [
+  { key: "diag", text: "Arrows can travel diagonally now. Hold one to trace where it will go." },
+  { key: "seal", text: "Faded arrows are sealed shut. One opens only after the arrow it waits on has gone." },
+  { key: "mirror", text: "A bar turns an arrow ninety degrees. Its way out bends — hold it to follow the path." },
+];
+
+const EMPTY_MIRRORS = new Map();
+
+/* Scatter deflectors across the shape. They sit on cells that hold no arrow,
+   spaced apart so a board reads as a few landmarks rather than confetti. */
+function placeMirrors(mask, count) {
+  const out = new Map();
+  if (!count) return out;
+  const { cols, rows, cells } = mask;
+  const pool = [...cells].filter((c) => {
+    const x = c % cols, y = Math.floor(c / cols);
+    return x > 0 && y > 0 && x < cols - 1 && y < rows - 1;
+  });
+  let guard = 0;
+  while (out.size < count && pool.length && guard++ < 400) {
+    const c = pool[(RND() * pool.length) | 0];
+    if (out.has(c)) continue;
+    const x = c % cols, y = Math.floor(c / cols);
+    let tooClose = false;
+    for (const o of out.keys()) {
+      if (Math.abs((o % cols) - x) + Math.abs(Math.floor(o / cols) - y) < 4) { tooClose = true; break; }
+    }
+    if (tooClose) continue;
+    out.set(c, RND() < 0.5 ? "/" : "\\");
+  }
+  return out;
+}
+
+function buildBoard(mask, { maxLen, coverage, tightness, pieces: target, diag }, mirrors) {
+  const MIR = mirrors && mirrors.size ? mirrors : null;
+  // Diagonals arrive gradually: `diag` is how many of the four are in play at
+  // this tier, so early boards stay purely orthogonal and later ones open up.
+  const EXITS = ORTHO_NAMES.concat(DIAG_NAMES.slice(0, Math.max(0, Math.min(4, diag | 0))));
   const { cols, rows, cells } = mask;
   const occupied = new Map();
   const laneLoad = new Map(); // cell -> how many placed arrows must pass through it
   const pieces = [];
-  const all = [...cells];
-  const fillTarget = Math.round(cells.size * coverage);
+  // Deflector cells are part of the shape but hold no arrow.
+  const all = MIR ? [...cells].filter((c) => !MIR.has(c)) : [...cells];
+  const free0 = all.length;
+  const fillTarget = Math.round(free0 * coverage);
   const BANDS = [[0.6, 0.9], [0.9, 1.2], [1.2, 1.6], [1.6, 2.2]];
   // average snake length needed to cover the shape in `target` arrows
   const avgLen = Math.min(maxLen, Math.max(3.2, (fillTarget / Math.max(target || 40, 6)) * 1.45));
@@ -616,12 +1504,27 @@ function buildBoard(mask, { maxLen, coverage, tightness, pieces: target }) {
       }
     }
     let options = [];
-    for (const d of DIR_NAMES) {
-      const lane = exitLine(head, d, cols, rows);
+    for (const d of EXITS) {
+      const lane = exitLine(head, d, cols, rows, MIR);
+      if (lane === null) continue;              // bends into a loop, never escapes
+      // A deflected lane can curve back onto the cell it started from. The
+      // arrow would then be blocked by its own head for ever, which no amount
+      // of play can clear.
+      if (MIR && lane.includes(head)) continue;
       if (lane.some((c) => occupied.has(c))) continue;
       const D0 = DIRS[d];
-      const back = step(head, -D0.dx, -D0.dy, cols, rows);
-      options.push({ d, len: lane.length, grow: back !== null && cells.has(back) && !occupied.has(back) });
+      // A diagonal cell spans 1.41x the distance of an orthogonal one, so a
+      // 5-cell diagonal lane crosses as much board as a 7-cell straight one.
+      // Comparing raw cell counts made diagonals lose every sort.
+      const span = lane.length * (D0.dx && D0.dy ? Math.SQRT2 : 1);
+      // How far the lane runs inside the shape before leaving it. Favouring
+      // this makes lanes follow the subject's own limbs, so a rocket fills
+      // with vertical runs and a fish with horizontal ones — the silhouette
+      // finally shapes the puzzle instead of just framing it.
+      let inShape = 0;
+      for (const c of lane) { if (!cells.has(c)) break; inShape++; }
+      const back = orthoBack(head, D0, cols, rows);
+      options.push({ d, len: span + inShape * 0.9, grow: back !== null && cells.has(back) && !occupied.has(back) });
     }
     if (!options.length) {
       fails++;
@@ -632,7 +1535,7 @@ function buildBoard(mask, { maxLen, coverage, tightness, pieces: target }) {
     options.sort((a, b) => b.len - a.len);
     const chosen = RND() < tightness ? options[0] : options[(RND() * options.length) | 0];
     const D = DIRS[chosen.d];
-    const chosenLane = exitLine(head, chosen.d, cols, rows);
+    const chosenLane = exitLine(head, chosen.d, cols, rows, MIR);
     const ownLane = new Set(chosenLane);
 
     const body = [head];
@@ -646,26 +1549,40 @@ function buildBoard(mask, { maxLen, coverage, tightness, pieces: target }) {
     const want = Math.max(1, Math.min(maxLen,
       Math.round(avgLen * squeeze * (band[0] + RND() * (band[1] - band[0])))));
 
-    const back0 = step(head, -D.dx, -D.dy, cols, rows);
-    const canGrow = back0 !== null && cells.has(back0) && !occupied.has(back0) && !ownLane.has(back0);
+    /* The body grows backwards from the head. For an orthogonal exit that is
+       simply the opposite direction; for a diagonal one, straight back would
+       be a diagonal body segment, so take either of the two orthogonal
+       components instead. */
+    const backOpts = (D.dx && D.dy)
+      ? [{ dx: -D.dx, dy: 0 }, { dx: 0, dy: -D.dy }]
+      : [{ dx: -D.dx, dy: -D.dy }];
+    const okBack = (b) => {
+      const t = step(head, b.dx, b.dy, cols, rows);
+      if (t === null || !cells.has(t) || occupied.has(t) || ownLane.has(t)) return null;
+      return MIR && MIR.has(t) ? null : t;
+    };
+    const viable = backOpts.filter((b) => okBack(b) !== null);
+    const canGrow = viable.length > 0;
     // a dot-sized arrow wastes a cell; hold out while there is still room
     if (want > 1 && !canGrow && fails < 200) {
       fails++;
       continue;
     }
-    if (want > 1) {
-      const back = step(head, -D.dx, -D.dy, cols, rows);
-      if (back !== null && cells.has(back) && !occupied.has(back) && !ownLane.has(back)) {
+    if (want > 1 && canGrow) {
+      const b = viable[(RND() * viable.length) | 0];
+      const back = okBack(b);
+      {
         body.push(back);
         used.add(back);
         let cur = back;
-        let run = { dx: -D.dx, dy: -D.dy };   // direction the body is travelling
+        let run = { dx: b.dx, dy: b.dy };   // direction the body is travelling
         while (body.length < want) {
           const open = [];
-          for (const nm of DIR_NAMES) {
+          for (const nm of ORTHO_NAMES) {
             const d = DIRS[nm];
             const nx = step(cur, d.dx, d.dy, cols, rows);
             if (nx === null || !cells.has(nx) || occupied.has(nx) || used.has(nx) || ownLane.has(nx)) continue;
+            if (MIR && MIR.has(nx)) continue;
             open.push({ nx, d });
           }
           if (!open.length) break;
@@ -679,6 +1596,12 @@ function buildBoard(mask, { maxLen, coverage, tightness, pieces: target }) {
         }
       }
     }
+    // Same hazard for the body: a bent lane crossing its own tail would block
+    // the arrow permanently. Cheap to check, and a rejected piece just retries.
+    if (MIR && body.some((c) => ownLane.has(c))) {
+      fails++;
+      continue;
+    }
     const id = pieces.length;
     body.forEach((c) => occupied.set(c, id));
     for (const c of chosenLane) laneLoad.set(c, (laneLoad.get(c) || 0) + 1);
@@ -689,9 +1612,9 @@ function buildBoard(mask, { maxLen, coverage, tightness, pieces: target }) {
   return pieces;
 }
 
-function measureBoard(pieces, cols, rows) {
+function measureBoard(pieces, cols, rows, mirrors) {
   if (!pieces.length) return { freedom: 1, forced: 0 };
-  const lanes = pieces.map((p) => exitLine(p.cells[0], p.dir, cols, rows));
+  const lanes = pieces.map((p) => exitLine(p.cells[0], p.dir, cols, rows, mirrors) || []);
   const owner = new Map();
   pieces.forEach((p) => p.cells.forEach((c) => owner.set(c, p.id)));
   const alive = new Set(pieces.map((p) => p.id));
@@ -786,23 +1709,25 @@ function makeLevelFromMask(rawMask, tierIdx = 7) {
   const room = norm.cells.size ? Math.sqrt(tier.maxCells / norm.cells.size) : 1;
   const mask = fitMask(scaleMask(norm, Math.max(1, Math.min(4, Math.floor(room)))), tier.maxCells);
   const chessWeight = idx >= HARD_TIER ? 0.9 : 0;
+  const weave = texturedTier(tier, maskSeed(norm));
+  const mirrors = placeMirrors(mask, weave.mirrors || 0);
   let best = null;
   for (let i = 0; i < (mask.cells.size > 240 ? 3 : 6); i++) {
-    const pieces = buildBoard(mask, tier);
+    const pieces = buildBoard(mask, weave, mirrors);
     if (pieces.length < 3) continue;
-    const mb = measureBoard(pieces, mask.cols, mask.rows);
+    const mb = measureBoard(pieces, mask.cols, mask.rows, mirrors);
     const fill = pieces.reduce((a, p) => a + p.cells.length, 0) / mask.cells.size;
     // prefer the target openness, reward boards with more forced moments, and
     // heavily punish a board that leaves the shape half empty
     const gap = Math.abs(mb.freedom - tier.freedom) - mb.forced * 0.35 + Math.max(0, tier.coverage - 0.06 - fill) * 4
-      - (chessWeight ? chessScore(pieces, mask.cols, mask.rows) * chessWeight : 0);
+      - (chessWeight ? chessScore(pieces, mask.cols, mask.rows, mirrors) * chessWeight : 0);
     if (!best || gap < best.gap) best = { pieces, gap };
   }
-  if (!best) best = { pieces: buildBoard(mask, tier), gap: 1 };
-  assignLocks(best.pieces, mask.cols, mask.rows, lockRatio(idx));
+  if (!best) best = { pieces: buildBoard(mask, weave, mirrors), gap: 1 };
+  assignLocks(best.pieces, mask.cols, mask.rows, lockRatio(idx), mirrors);
   RND = Math.random;
   return {
-    mask, pieces: best.pieces, tier, tierIndex: idx, stepInTier: 1,
+    mask, pieces: best.pieces, tier, tierIndex: idx, stepInTier: 1, mirrors,
     hearts: tier.hearts, hints: tier.hints, undos: tier.undos,
   };
 }
@@ -816,9 +1741,9 @@ function makeLevelFromMask(rawMask, tierIdx = 7) {
 // Some arrows are sealed shut until a particular other arrow has left. Locks are
 // handed out along a real solve order — a sealed arrow always depends on one that
 // comes before it — so a board with locks stays solvable by construction.
-function assignLocks(pieces, cols, rows, ratio) {
+function assignLocks(pieces, cols, rows, ratio, mirrors) {
   if (ratio <= 0 || pieces.length < 8) return;
-  const lanes = pieces.map((p) => exitLine(p.cells[0], p.dir, cols, rows));
+  const lanes = pieces.map((p) => exitLine(p.cells[0], p.dir, cols, rows, mirrors) || []);
   const owner = new Map();
   pieces.forEach((p) => p.cells.forEach((c) => owner.set(c, p.id)));
   const alive = new Set(pieces.map((p) => p.id));
@@ -851,9 +1776,9 @@ function assignLocks(pieces, cols, rows, ratio) {
   }
 }
 
-function chessScore(pieces, cols, rows) {
+function chessScore(pieces, cols, rows, mirrors) {
   if (pieces.length < 6) return 0;
-  const lanes = pieces.map((p) => exitLine(p.cells[0], p.dir, cols, rows));
+  const lanes = pieces.map((p) => exitLine(p.cells[0], p.dir, cols, rows, mirrors) || []);
   const owner = new Map();
   pieces.forEach((p) => p.cells.forEach((c) => owner.set(c, p.id)));
 
@@ -918,34 +1843,66 @@ function makeLevel(level, seed) {
     seed === undefined && level > CURATED_UNTIL
       ? artMask(level) || proceduralMask(level)
       : parseMask(curatedKey(seed !== undefined ? (seed % 9973) + 1 : level));
-  const mask = fitMask(raw, tier.maxCells);
+  /* fitMask only ever shrinks. A compact shape therefore built a board a
+     fraction of the usual size — the plain geometric ones came out at eight
+     arrows where the levels either side had forty, which reads as a broken
+     level rather than an easy one. Scale a small shape up to the tier's budget
+     first, the same way a hand-drawn board from Studio is scaled. */
+  const room = raw.cells.size ? Math.sqrt(tier.maxCells / raw.cells.size) : 1;
+  const mask = fitMask(scaleMask(raw, Math.max(1, Math.min(4, Math.floor(room)))), tier.maxCells);
   // Hard and above are judged like chess positions, and get extra candidate
   // boards to choose from — the generator plays out more lines before deciding
   const chessWeight = index >= HARD_TIER ? 0.9 : 0;
   let tries = mask.cells.size > 240 ? 2 : mask.cells.size > 90 ? 4 : 7;
   if (chessWeight && mask.cells.size <= 420) tries += 2;
 
+  const weave = texturedTier(tier, seed !== undefined ? seed : level);
+  const mirrors = placeMirrors(mask, weave.mirrors || 0);
   let best = null;
   for (let i = 0; i < tries; i++) {
-    const pieces = buildBoard(mask, tier);
+    const pieces = buildBoard(mask, weave, mirrors);
     if (pieces.length < 3) continue;
-    const mb = measureBoard(pieces, mask.cols, mask.rows);
+    const mb = measureBoard(pieces, mask.cols, mask.rows, mirrors);
     const fill = pieces.reduce((a, p) => a + p.cells.length, 0) / mask.cells.size;
     // prefer the target openness, reward boards with more forced moments, and
     // heavily punish a board that leaves the shape half empty
     const gap = Math.abs(mb.freedom - tier.freedom) - mb.forced * 0.35 + Math.max(0, tier.coverage - 0.06 - fill) * 4
-      - (chessWeight ? chessScore(pieces, mask.cols, mask.rows) * chessWeight : 0);
+      - (chessWeight ? chessScore(pieces, mask.cols, mask.rows, mirrors) * chessWeight : 0);
     if (!best || gap < best.gap) best = { pieces, gap };
   }
-  if (!best) best = { pieces: buildBoard(mask, tier), gap: 1 };
-  assignLocks(best.pieces, mask.cols, mask.rows, lockRatio(index));
+  if (!best) best = { pieces: buildBoard(mask, weave, mirrors), gap: 1 };
+  assignLocks(best.pieces, mask.cols, mask.rows, lockRatio(index), mirrors);
   RND = Math.random;
 
-  return { mask, pieces: best.pieces, tier, tierIndex: index, stepInTier, hearts: tier.hearts, hints: tier.hints, undos: tier.undos };
+  return { mask, pieces: best.pieces, tier, tierIndex: index, stepInTier, mirrors, hearts: tier.hearts, hints: tier.hints, undos: tier.undos };
+}
+
+/* Every board was woven the same way — same coverage, same snake-length spread,
+   same tightness — so two levels of the same tier played identically even in
+   different shapes. A seeded texture varies the weave while the tier keeps
+   owning difficulty, and the board-selection loop below still scores every
+   candidate against the tier's freedom target. */
+const TEXTURES = [
+  { name: "dense",    coverage: +0.00, lenMul: 1.00, tightness: +0.00 },
+  { name: "open",     coverage: -0.07, lenMul: 0.95, tightness: -0.06 },
+  { name: "long",     coverage: +0.00, lenMul: 1.45, tightness: +0.03 },
+  { name: "swarm",    coverage: -0.02, lenMul: 0.60, tightness: -0.03 },
+  { name: "tangled",  coverage: -0.03, lenMul: 1.15, tightness: -0.10 },
+];
+
+function texturedTier(tier, seed) {
+  const t = TEXTURES[Math.abs(seed * 2654435761 + 17) % TEXTURES.length];
+  return {
+    ...tier,
+    coverage: Math.max(0.72, Math.min(0.99, tier.coverage + t.coverage)),
+    tightness: Math.max(0.45, Math.min(0.97, tier.tightness + t.tightness)),
+    maxLen: Math.max(3, Math.round(tier.maxLen * t.lenMul)),
+    texture: t.name,
+  };
 }
 
 /* how many arrows a removal sets free — the heart of chain scoring */
-function countFreed(pieces, aliveSet, removedId, cols, rows) {
+function countFreed(pieces, aliveSet, removedId, cols, rows, mirrors) {
   const occBefore = new Map();
   const occAfter = new Map();
   pieces.forEach((p) => {
@@ -956,7 +1913,7 @@ function countFreed(pieces, aliveSet, removedId, cols, rows) {
     });
   });
   const blocked = (p, occ) => {
-    for (const c of exitLine(p.cells[0], p.dir, cols, rows)) {
+    for (const c of exitLine(p.cells[0], p.dir, cols, rows, mirrors) || []) {
       const o = occ.get(c);
       if (o !== undefined && o !== p.id) return true;
     }
@@ -1276,7 +2233,13 @@ const THUMB = { "Cat": "catArt", "Dog": "dogArt", "Elephant": "elephantArt", "Bu
 /* Every hand-drawn shape, walked in a seeded order so nothing repeats until
    the whole set has been played. The old per-tier pools held 3-4 masks each,
    which meant the same silhouette returned every few levels. */
+/* Every name in COLLECTABLE has to be reachable, or its slot in the Collection
+   sits locked for ever and the player hunts something that cannot appear.
+   Grid, Diamond, Heart and Cross were listed as collectable and given
+   thumbnails, but their shapes were never in this pool, so no level ever used
+   them — four of the seventy-seven slots were unwinnable. */
 const ART_POOL = [
+  "square5", "diamond7", "heart9", "cross7",
   "catArt", "dogArt", "elephantArt", "butterflyArt", "umbrellaArt", "anchorArt",
   "trophyArt", "crownArt", "treeArt", "fishArt", "birdArt", "guitarArt",
   "hourglassArt", "keyArt", "mushroomArt", "rocketArt", "owlArt", "whaleArt",
@@ -1322,23 +2285,31 @@ function curatedKey(level) {
   return order[(level - 1) % n];
 }
 
+/* freedom is the difficulty target the board selector aims for: it builds
+   several candidate boards and keeps the one whose measured freedom is closest
+   to this. The original numbers all sat far BELOW anything a board could
+   actually reach, so "closest to target" collapsed into "as constrained as
+   possible" — an optimiser with no ceiling. Every new mechanic that allowed a
+   tighter board then ratcheted difficulty up on its own, unasked.
+   These values are what the original game measurably played at, tier by tier,
+   so the curve stays where it was and the target does real work from now on. */
 const TIERS = [
-  { name: "Warm Up", span: 2,     maxLen: 10, hearts: 3, hints: 3, undos: 3, coverage: 0.94, tightness: 0.80, freedom: 0.105, pieces: 32, maxCells: 150 },
-  { name: "Little Easy", span: 3,     maxLen: 11, hearts: 3, hints: 3, undos: 3, coverage: 0.95, tightness: 0.83, freedom: 0.095, pieces: 38, maxCells: 185 },
-  { name: "Easy", span: 4,     maxLen: 12, hearts: 3, hints: 3, undos: 2, coverage: 0.95, tightness: 0.85, freedom: 0.086, pieces: 44, maxCells: 220 },
-  { name: "Easy Plus", span: 5,     maxLen: 13, hearts: 3, hints: 2, undos: 2, coverage: 0.96, tightness: 0.87, freedom: 0.078, pieces: 49, maxCells: 255 },
-  { name: "Little Medium", span: 6,     maxLen: 14, hearts: 3, hints: 2, undos: 2, coverage: 0.96, tightness: 0.88, freedom: 0.071, pieces: 55, maxCells: 290 },
-  { name: "Medium", span: 8,     maxLen: 15, hearts: 3, hints: 2, undos: 2, coverage: 0.97, tightness: 0.90, freedom: 0.064, pieces: 62, maxCells: 325 },
-  { name: "Medium Plus", span: 10,     maxLen: 16, hearts: 3, hints: 2, undos: 2, coverage: 0.97, tightness: 0.91, freedom: 0.058, pieces: 70, maxCells: 360 },
-  { name: "Tricky", span: 12,     maxLen: 17, hearts: 3, hints: 2, undos: 1, coverage: 0.98, tightness: 0.92, freedom: 0.052, pieces: 77, maxCells: 395 },
-  { name: "Tough", span: 14,     maxLen: 18, hearts: 3, hints: 2, undos: 1, coverage: 0.98, tightness: 0.93, freedom: 0.047, pieces: 84, maxCells: 430 },
-  { name: "Hard", span: 17,     maxLen: 19, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.94, freedom: 0.042, pieces: 91, maxCells: 470 },
-  { name: "Very Hard", span: 20,     maxLen: 20, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.95, freedom: 0.038, pieces: 100, maxCells: 510 },
-  { name: "Super Hard", span: 24,     maxLen: 21, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.96, freedom: 0.034, pieces: 109, maxCells: 555 },
-  { name: "Expert", span: 30,     maxLen: 22, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.97, freedom: 0.031, pieces: 117, maxCells: 600 },
-  { name: "Elite", span: 36,     maxLen: 23, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.98, freedom: 0.028, pieces: 128, maxCells: 645 },
-  { name: "Master", span: 45,     maxLen: 24, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.99, freedom: 0.025, pieces: 138, maxCells: 690 },
-  { name: "Pro", span: Infinity,     maxLen: 26, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 1.0, freedom: 0.022, pieces: 148, maxCells: 740 },
+  { name: "Warm Up", span: 2,     maxLen: 10, hearts: 3, hints: 3, undos: 3, coverage: 0.94, tightness: 0.80, freedom: 0.494, pieces: 32, maxCells: 150 , diag: 0 , mirrors: 0 },
+  { name: "Little Easy", span: 3,     maxLen: 11, hearts: 3, hints: 3, undos: 3, coverage: 0.95, tightness: 0.83, freedom: 0.426, pieces: 38, maxCells: 185 , diag: 0 , mirrors: 0 },
+  { name: "Easy", span: 4,     maxLen: 12, hearts: 3, hints: 3, undos: 2, coverage: 0.95, tightness: 0.85, freedom: 0.360, pieces: 44, maxCells: 220 , diag: 0 , mirrors: 0 },
+  { name: "Easy Plus", span: 5,     maxLen: 13, hearts: 3, hints: 2, undos: 2, coverage: 0.96, tightness: 0.87, freedom: 0.390, pieces: 49, maxCells: 255 , diag: 0 , mirrors: 0 },
+  { name: "Little Medium", span: 6,     maxLen: 14, hearts: 3, hints: 2, undos: 2, coverage: 0.96, tightness: 0.88, freedom: 0.438, pieces: 55, maxCells: 290 , diag: 1 , mirrors: 0 },
+  { name: "Medium", span: 8,     maxLen: 15, hearts: 3, hints: 2, undos: 2, coverage: 0.97, tightness: 0.90, freedom: 0.322, pieces: 62, maxCells: 325 , diag: 1 , mirrors: 0 },
+  { name: "Medium Plus", span: 10,     maxLen: 16, hearts: 3, hints: 2, undos: 2, coverage: 0.97, tightness: 0.91, freedom: 0.372, pieces: 70, maxCells: 360 , diag: 2 , mirrors: 1 },
+  { name: "Tricky", span: 12,     maxLen: 17, hearts: 3, hints: 2, undos: 1, coverage: 0.98, tightness: 0.92, freedom: 0.363, pieces: 77, maxCells: 395 , diag: 2 , mirrors: 1 },
+  { name: "Tough", span: 14,     maxLen: 18, hearts: 3, hints: 2, undos: 1, coverage: 0.98, tightness: 0.93, freedom: 0.369, pieces: 84, maxCells: 430 , diag: 2 , mirrors: 1 },
+  { name: "Hard", span: 17,     maxLen: 19, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.94, freedom: 0.319, pieces: 91, maxCells: 470 , diag: 3 , mirrors: 2 },
+  { name: "Very Hard", span: 20,     maxLen: 20, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.95, freedom: 0.315, pieces: 100, maxCells: 510 , diag: 3 , mirrors: 2 },
+  { name: "Super Hard", span: 24,     maxLen: 21, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.96, freedom: 0.287, pieces: 109, maxCells: 555 , diag: 3 , mirrors: 2 },
+  { name: "Expert", span: 30,     maxLen: 22, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.97, freedom: 0.315, pieces: 117, maxCells: 600 , diag: 4 , mirrors: 3 },
+  { name: "Elite", span: 36,     maxLen: 23, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.98, freedom: 0.294, pieces: 128, maxCells: 645 , diag: 4 , mirrors: 3 },
+  { name: "Master", span: 45,     maxLen: 24, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.99, freedom: 0.284, pieces: 138, maxCells: 690 , diag: 4 , mirrors: 3 },
+  { name: "Pro", span: Infinity,     maxLen: 26, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 1.0, freedom: 0.267, pieces: 148, maxCells: 740 , diag: 4 , mirrors: 3 },
 ];
 const MEDAL = { 1: "#CD7F32", 2: "#AEB6C4", 3: "#FFC24B" };
 const TIER_HUE = ["#5FCB8A", "#4CC79B", "#3FBFD6", "#3EA8EE", "#3E9BF0", "#5580F2", "#6C7BF0", "#8470F2", "#9A6BF0", "#C07AD8", "#F0A93E", "#F2891B", "#F2761B", "#FF6A4A", "#FF3D9A", "#B14BFF"];
@@ -1346,9 +2317,12 @@ const TIER_HUE = ["#5FCB8A", "#4CC79B", "#3FBFD6", "#3EA8EE", "#3E9BF0", "#5580F
 /* arrow palettes — competitors are all monochrome navy, this is free differentiation */
 const PALETTES = {
   ink: { name: "Ink", base: "#1B2440" },
-  candy: { name: "Candy", right: "#2F7BF6", left: "#FF4D6A", up: "#8B5CF6", down: "#F59E0B" },
-  forest: { name: "Forest", right: "#0E9F6E", left: "#0EA5E9", up: "#65A30D", down: "#EAB308" },
-  sunset: { name: "Sunset", right: "#F2761B", left: "#E11D74", up: "#7C3AED", down: "#FBBF24" },
+  candy: { name: "Candy", right: "#2F7BF6", left: "#FF4D6A", up: "#8B5CF6", down: "#F59E0B",
+           upRight: "#06B6D4", downRight: "#EC4899", downLeft: "#F97316", upLeft: "#22C55E" },
+  forest: { name: "Forest", right: "#0E9F6E", left: "#0EA5E9", up: "#65A30D", down: "#EAB308",
+            upRight: "#14B8A6", downRight: "#3B82F6", downLeft: "#A3A635", upLeft: "#84CC16" },
+  sunset: { name: "Sunset", right: "#F2761B", left: "#E11D74", up: "#7C3AED", down: "#FBBF24",
+            upRight: "#F43F5E", downRight: "#A855F7", downLeft: "#FB923C", upLeft: "#D946EF" },
 };
 const PALETTE_KEYS = Object.keys(PALETTES);
 const toneFor = (dir, theme) => {
@@ -1562,8 +2536,10 @@ function piecePath(piece, cols) {
   const D = DIRS[piece.dir];
   const pts = [...piece.cells].reverse().map((i) => ({ x: cx(i, cols), y: cy(i, cols) }));
   const head = pts[pts.length - 1];
-  if (pts.length === 1) pts.unshift({ x: head.x - D.dx * 34, y: head.y - D.dy * 34 });
-  const tip = { x: head.x + D.dx * 7, y: head.y + D.dy * 7 };
+  // nx/ny rather than dx/dy: on a diagonal, dx and dy are both 1, so scaling by
+  // them would push the stub and the tip 1.41x too far.
+  if (pts.length === 1) pts.unshift({ x: head.x - D.nx * 34, y: head.y - D.ny * 34 });
+  const tip = { x: head.x + D.nx * 7, y: head.y + D.ny * 7 };
   return `M ${pts[0].x} ${pts[0].y} ` + pts.slice(1).map((p) => `L ${p.x} ${p.y}`).join(" ") + ` L ${tip.x} ${tip.y}`;
 }
 
@@ -1590,11 +2566,11 @@ function Piece({ piece, cols, tone, width, className, style, hit, onDown }) {
 
 /* The head always exits straight, but the body should follow the bends behind
    it — so we draw one long path (body + exit lane) and slide a dash along it. */
-function departGeom(piece, cols, rows) {
+function departGeom(piece, cols, rows, mirrors) {
   const D = DIRS[piece.dir];
   const pts = [...piece.cells].reverse().map((i) => ({ x: cx(i, cols), y: cy(i, cols) }));
   const head = pts[pts.length - 1];
-  if (pts.length === 1) pts.unshift({ x: head.x - D.dx * 34, y: head.y - D.dy * 34 });
+  if (pts.length === 1) pts.unshift({ x: head.x - D.nx * 34, y: head.y - D.ny * 34 });
 
   let bodyLen = 0;
   for (let i = 1; i < pts.length; i++) {
@@ -1602,18 +2578,59 @@ function departGeom(piece, cols, rows) {
   }
   bodyLen += 7; // out to the chevron base
 
-  const lanes = exitLine(piece.cells[0], piece.dir, cols, rows).length;
-  const travel = (lanes + 1.5) * U + bodyLen;
-  const end = { x: head.x + D.dx * travel, y: head.y + D.dy * travel };
+  /* With deflectors the flight is no longer a straight run: walk the actual
+     lane cells so the arrow visibly turns where the lane turns, then carry on
+     past the last one to leave the board. */
+  const lane = exitLine(piece.cells[0], piece.dir, cols, rows, mirrors) || [];
+  const via = lane.map((i) => ({ x: cx(i, cols), y: cy(i, cols) }));
+  let travel = 0;
+  let prev = head;
+  for (const q of via) {
+    travel += Math.hypot(q.x - prev.x, q.y - prev.y);
+    prev = q;
+  }
+  // direction of the final leg, so the exit continues the way the lane ended
+  const lastD = via.length >= 2
+    ? (() => {
+        const a = via[via.length - 2], b = via[via.length - 1];
+        const L = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+        return { nx: (b.x - a.x) / L, ny: (b.y - a.y) / L };
+      })()
+    : { nx: D.nx, ny: D.ny };
+  const tailRun = 1.5 * U + bodyLen;
+  travel += tailRun;
+  const end = { x: prev.x + lastD.nx * tailRun, y: prev.y + lastD.ny * tailRun };
   const d =
     `M ${pts[0].x} ${pts[0].y} ` +
     pts.slice(1).map((q) => `L ${q.x} ${q.y}`).join(" ") +
+    via.map((q) => `L ${q.x} ${q.y}`).join(" ") +
     ` L ${end.x} ${end.y}`;
-  return { d, bodyLen, travel, D };
+  return { d, bodyLen, travel, D, lastD };
 }
 
-function DepartingPiece({ piece, cols, rows, tone }) {
-  const g = departGeom(piece, cols, rows);
+/* The guide line a player sights along. It used to be a straight ray, which is
+   wrong the moment a lane bends at a deflector — the arrow would fly somewhere
+   the guide never pointed. */
+function lanePath(head, dir, cols, rows, mirrors) {
+  const lane = exitLine(head, dir, cols, rows, mirrors) || [];
+  const far = (cols + rows + DOT_PAD * 2) * U;
+  let d = `M ${cx(head, cols)} ${cy(head, cols)}`;
+  let last = { x: cx(head, cols), y: cy(head, cols) };
+  let prev = last;
+  for (const i of lane) {
+    const q = { x: cx(i, cols), y: cy(i, cols) };
+    d += ` L ${q.x} ${q.y}`;
+    prev = last; last = q;
+  }
+  // carry on past the final cell so the guide runs off the board
+  const dx = last.x - prev.x, dy = last.y - prev.y;
+  const L = Math.hypot(dx, dy) || 1;
+  d += ` L ${last.x + (dx / L) * far} ${last.y + (dy / L) * far}`;
+  return d;
+}
+
+function DepartingPiece({ piece, cols, rows, tone, mirrors }) {
+  const g = departGeom(piece, cols, rows, mirrors);
   const chev = headChevron(piece, cols);
   return (
     <g className="dep-fade">
@@ -1630,7 +2647,7 @@ function DepartingPiece({ piece, cols, rows, tone }) {
           "--off": `-${g.travel}px`,
         }}
       />
-      <g className="chev-out" style={{ "--tx": `${g.D.dx * g.travel}px`, "--ty": `${g.D.dy * g.travel}px` }}>
+      <g className="chev-out" style={{ "--tx": `${g.lastD.nx * g.travel}px`, "--ty": `${g.lastD.ny * g.travel}px` }}>
         <path
           d={chev.d}
           transform={chev.rot}
@@ -1711,7 +2728,13 @@ export default function ArrowEscapeV3() {
   const [pops, setPops] = useState([]);
   const [ring, setRing] = useState(null);
   const [booted, setBooted] = useState(false); // first paint waits for saved settings
-  const [phase, setPhase] = useState("playing");
+  const [phase, setPhase] = useState("playing"); // playing | reveal | cleared | gameover
+  // The rank this clear earned (0 none, 1 bronze, 2 silver, 3 gold). Held in
+  // state so the reveal and the win card can both show it — until now it was
+  // computed inside the clear handler and thrown away, which is why the player
+  // was never told what they had earned.
+  const [earnedRank, setEarnedRank] = useState(0);
+  const revealTimer = useRef(null);
   const [heartPop, setHeartPop] = useState(false);
   const [screen, setScreen] = useState("home"); // home | play | studio | collection | settings
   const [grid, setGrid] = useState(false);
@@ -1723,6 +2746,7 @@ export default function ArrowEscapeV3() {
   const [theme, setTheme] = useState("ink");
   const [dark, setDark] = useState(true);
   const [coachSeen, setCoachSeen] = useState(true);
+  const [seenTips, setSeenTips] = useState({});
   const [ranks, setRanks] = useState({}); // shape name -> 1 bronze | 2 silver | 3 gold
   const [customs, setCustoms] = useState([]);
   const [found, setFound] = useState([]);
@@ -1753,6 +2777,8 @@ export default function ArrowEscapeV3() {
   if (C.__dark !== dark) applyTheme(dark); // keep S and CSS in step with the theme
 
   const { mask, pieces, tier, tierIndex, stepInTier } = setup;
+  // Saved boards from before deflectors existed have no mirrors field.
+  const mirrors = setup.mirrors instanceof Map ? setup.mirrors : EMPTY_MIRRORS;
   const { cols, rows } = mask;
   const maxHearts = setup.hearts;
 
@@ -1809,6 +2835,26 @@ export default function ArrowEscapeV3() {
     };
   }, []);
 
+  /* Which mechanic on this board the player has not been shown yet. Only one
+     at a time — a board can introduce a diagonal and a deflector at once, and
+     two banners at once teaches neither. */
+  const activeTip = useMemo(() => {
+    if (mode !== "journey" || tut < 9) return null;
+    const present = {
+      seal: pieces.some((p) => p.needs !== undefined),
+      diag: pieces.some((p) => DIAG_NAMES.includes(p.dir)),
+      mirror: mirrors.size > 0,
+    };
+    return MECHANIC_TIPS.find((t) => present[t.key] && !seenTips[t.key]) || null;
+  }, [mode, tut, pieces, mirrors, seenTips]);
+
+  const dismissTip = useCallback(() => {
+    if (!activeTip) return;
+    const next = { ...seenTips, [activeTip.key]: true };
+    setSeenTips(next);
+    persistRef.current({ seenTips: next });
+  }, [activeTip, seenTips]);
+
   const occupancy = useMemo(() => {
     const m = new Map();
     pieces.forEach((p) => alive.has(p.id) && p.cells.forEach((c) => m.set(c, p.id)));
@@ -1819,13 +2865,13 @@ export default function ArrowEscapeV3() {
     (piece) => {
       // sealed: the arrow it waits on is still on the board
       if (piece.needs !== undefined && alive.has(piece.needs)) return piece.needs;
-      for (const c of exitLine(piece.cells[0], piece.dir, cols, rows)) {
+      for (const c of exitLine(piece.cells[0], piece.dir, cols, rows, mirrors) || []) {
         const o = occupancy.get(c);
         if (o !== undefined && o !== piece.id) return o;
       }
       return null;
     },
-    [occupancy, alive, cols, rows]
+    [occupancy, alive, cols, rows, mirrors]
   );
 
   // the dot grid never changes while a board is in play — rebuilding its few
@@ -1851,6 +2897,11 @@ export default function ArrowEscapeV3() {
     [cols, rows, mask, dark]
   );
 
+  /* One solid silhouette of the level's shape. maskPath's defaults leave a gap
+     around each cell for the thumbnail look; at full size we want the cells to
+     meet so the picture reads as one figure rather than a mosaic. */
+  const revealPath = useMemo(() => maskPath(mask, 0, 1), [mask]);
+
   const progress = pieces.length ? ((pieces.length - alive.size) / pieces.length) * 100 : 0;
 
   /* ── persistence ── */
@@ -1873,6 +2924,7 @@ export default function ArrowEscapeV3() {
         setTheme(p.theme || "ink");
         setDark(p.dark !== false);
         setCoachSeen(!!p.coachSeen);
+        setSeenTips(p.seenTips ?? {});
         setTut(p.tut ?? 0);
         // migrate the old flat list into bronze ranks
         setRanks(p.ranks ?? Object.fromEntries((p.collected ?? []).map((n) => [n, 1])));
@@ -2075,14 +3127,26 @@ export default function ArrowEscapeV3() {
     applySetup(makeLevel(lvl, hashStr(todayKey())));
   }, [applySetup, level]);
 
-  // prebuild the next board during the celebration — no hitch on Next Level
+  // prebuild the next board during the celebration — no hitch on Next Level.
+  // Starting at "reveal" rather than "cleared" buys the extra second.
   useEffect(() => {
-    if (phase !== "cleared" || mode === "daily") return;
+    if ((phase !== "reveal" && phase !== "cleared") || mode === "daily") return;
     const t = setTimeout(() => {
       nextRef.current = { lvl: level + 1, setup: makeLevel(level + 1) };
     }, 80);
     return () => clearTimeout(t);
   }, [phase, mode, level]);
+
+  // A replaying player should not have to sit through the reveal every time.
+  const skipReveal = useCallback(() => {
+    if (revealTimer.current) {
+      clearTimeout(revealTimer.current);
+      revealTimer.current = null;
+    }
+    setPhase("cleared");
+  }, []);
+
+  useEffect(() => () => { if (revealTimer.current) clearTimeout(revealTimer.current); }, []);
 
   const restart = useCallback(() => {
     if (mode === "daily") startDaily();
@@ -2202,7 +3266,7 @@ export default function ArrowEscapeV3() {
       buzz(10);
       lastMiss.current = { id: -1, t: 0 };
 
-      const freed = countFreed(pieces, alive, piece.id, cols, rows);
+      const freed = countFreed(pieces, alive, piece.id, cols, rows, mirrors);
       const nextCombo = combo + 1;
       const gain = (10 + freed * 15) * Math.min(nextCombo, 5);
       setCombo(nextCombo);
@@ -2242,8 +3306,12 @@ export default function ArrowEscapeV3() {
 
       if (willClear) {
         setTimeout(() => {
-          setPhase("cleared");
+          setPhase("reveal");
           Snd.win();
+          /* The board is shaped like a picture, but until now the picture was
+             never shown — the board just emptied. Hold the filled silhouette
+             for a beat before the win card so the shape means something. */
+          revealTimer.current = setTimeout(() => setPhase("cleared"), 1000);
           /* Bronze = cleared. Silver = no mistakes. Gold = flawless (no
              mistakes and no undo) on Hard or above. Gold is meant to
              be genuinely hard to earn. */
@@ -2274,13 +3342,27 @@ export default function ArrowEscapeV3() {
           setStats(nextStats);
           setStickers(nextStickers);
 
+          /* Rank rules, rewritten.
+
+             Gold used to also require tierIndex >= 9, which starts at level 65
+             — so for the entire first 64 levels a perfect, undo-free clear
+             still capped at silver, and nothing told the player why. Gold is
+             now earnable anywhere: play it perfectly.
+
+             Bronze used to be granted for finishing at all, which made the
+             collection a record of attendance rather than of skill. It now
+             asks for a near-clean run; 0 means the shape is not collected and
+             the player can come back for it. */
           const earned =
-            mistakes === 0 && undosLeft === setup.undos && tierIndex >= 9
+            mistakes === 0 && undosLeft === setup.undos
               ? 3
               : mistakes === 0
               ? 2
-              : 1;
-          if (mask.procedural) {
+              : mistakes <= 1
+              ? 1
+              : 0;
+          setEarnedRank(earned);
+          if (earned > 0 && mask.procedural) {
             const at = found.findIndex((f) => f.n === mask.name);
             let nf = found;
             if (at >= 0) {
@@ -2293,7 +3375,7 @@ export default function ArrowEscapeV3() {
               persist({ found: nf });
             }
             if (earned === 3) won.add("gold");
-          } else if (COLLECTABLE.includes(mask.name)) {
+          } else if (earned > 0 && COLLECTABLE.includes(mask.name)) {
             if (earned === 3) won.add("gold");
             if ((ranks[mask.name] ?? 0) < earned) {
               const nr = { ...ranks, [mask.name]: earned };
@@ -2589,7 +3671,7 @@ export default function ArrowEscapeV3() {
     let bestFreed = -1;
     for (const x of pieces) {
       if (!alive.has(x.id) || blockerOf(x) !== null) continue;
-      const f = countFreed(pieces, alive, x.id, cols, rows);
+      const f = countFreed(pieces, alive, x.id, cols, rows, mirrors);
       if (f > bestFreed) { bestFreed = f; p = x; }
     }
     if (!p) return;
@@ -2638,7 +3720,10 @@ export default function ArrowEscapeV3() {
 
           <div style={S.hudMid}>
             <div style={{ ...S.diffLabel, color: mode === "journey" ? TIER_HUE[tierIndex] ?? C.accent : C.accent }}>
-              {mode === "custom" ? "Your board" : mode === "daily" ? "Daily" : tier.name}
+              {/* The shape's name used to live only in an aria-label, so a
+                  sighted player never learned what they were clearing and the
+                  Collection filled up with names they had never seen. */}
+              {mode === "custom" ? "Your board" : mask.name}
               <span key={alive.size} style={S.leftCount} className="left-tick"> · {alive.size} left</span>
             </div>
             <div style={S.hudHearts}>
@@ -2699,6 +3784,13 @@ export default function ArrowEscapeV3() {
           </button>
         )}
 
+        {tut >= 9 && coachSeen && activeTip && (
+          <button style={S.coach} className="ovin" onClick={dismissTip}>
+            <span style={S.coachText}>{activeTip.text}</span>
+            <span style={S.coachX}>✕</span>
+          </button>
+        )}
+
         <div style={S.topTrack}>
           <div style={{ ...S.topFill, width: `${progress}%` }} />
         </div>
@@ -2725,17 +3817,13 @@ export default function ArrowEscapeV3() {
                 pieces.map((p) => {
                   if (!alive.has(p.id)) return null;
                   const h = p.cells[0];
-                  const D = DIRS[p.dir];
-                  const far = (cols + rows + DOT_PAD * 2) * U;
                   return (
-                    <line
+                    <path
                       key={`ln${p.id}`}
-                      x1={cx(h, cols)}
-                      y1={cy(h, cols)}
-                      x2={cx(h, cols) + D.dx * far}
-                      y2={cy(h, cols) + D.dy * far}
+                      d={lanePath(h, p.dir, cols, rows, mirrors)}
                       stroke={toneFor(p.dir, theme)}
                       strokeWidth={4.5}
+                      fill="none"
                       opacity={0.3}
                     />
                   );
@@ -2744,18 +3832,37 @@ export default function ArrowEscapeV3() {
               {/* dot field across the whole surface, not just the shape */}
               {dotLayer}
 
+              {/* Deflectors. Drawn under the arrows so a piece passing over one
+                  still reads clearly, and as a bar on the diagonal the lane
+                  actually reflects around. */}
+              {mirrors.size > 0 &&
+                [...mirrors.entries()].map(([cell, kind]) => {
+                  const mx = cx(cell, cols), my = cy(cell, cols);
+                  const r = U * 0.33;
+                  const sx = kind === "/" ? r : -r;
+                  return (
+                    <g key={`mir${cell}`}>
+                      <rect
+                        x={mx - U * 0.44} y={my - U * 0.44}
+                        width={U * 0.88} height={U * 0.88} rx={U * 0.22}
+                        fill={C.card} stroke={C.edge} strokeWidth={3}
+                      />
+                      <path
+                        d={`M ${mx - sx} ${my + r} L ${mx + sx} ${my - r}`}
+                        stroke={C.muted} strokeWidth={9} strokeLinecap="round"
+                      />
+                    </g>
+                  );
+                })}
+
 
               {holdId !== null && alive.has(holdId) && pieces[holdId] && (() => {
                 const hp = pieces[holdId];
                 const h = hp.cells[0];
-                const D = DIRS[hp.dir];
-                const far = (cols + rows + DOT_PAD * 2) * U;
                 return (
-                  <line
-                    x1={cx(h, cols)}
-                    y1={cy(h, cols)}
-                    x2={cx(h, cols) + D.dx * far}
-                    y2={cy(h, cols) + D.dy * far}
+                  <path
+                    d={lanePath(h, hp.dir, cols, rows, mirrors)}
+                    fill="none"
                     stroke={toneFor(hp.dir, theme)}
                     strokeWidth={16}
                     strokeLinecap="round"
@@ -2788,9 +3895,15 @@ export default function ArrowEscapeV3() {
                 );
               })}
 
+              {(phase === "reveal" || phase === "cleared") && (
+                <g transform={`scale(${U})`} className="reveal-fill">
+                  <path d={revealPath} fill={TIER_HUE[tierIndex] ?? C.accent} />
+                </g>
+              )}
+
               {[...flying.entries()].map(([id, key]) =>
                 pieces[id] ? (
-                  <DepartingPiece key={`f${key}`} piece={pieces[id]} cols={cols} rows={rows} tone={C.accent} />
+                  <DepartingPiece key={`f${key}`} piece={pieces[id]} cols={cols} rows={rows} tone={C.accent} mirrors={mirrors} />
                 ) : null
               )}
 
@@ -2857,6 +3970,14 @@ export default function ArrowEscapeV3() {
           </div>
         </div>
 
+        {phase === "reveal" && (
+          <div
+            style={{ position: "absolute", inset: 0, zIndex: 5 }}
+            onClick={skipReveal}
+            aria-hidden="true"
+          />
+        )}
+
         {phase === "gameover" && (
           <div style={S.overlay} className="ovin">
             <div style={S.ovCard}>
@@ -2888,11 +4009,26 @@ export default function ArrowEscapeV3() {
             <div style={S.winTitle}>{clean ? "Flawless!" : "Level Completed!"}</div>
 
             <div style={S.winCard}>
-              <svg viewBox={`0 0 ${cols * U} ${rows * U}`} style={{ width: "100%", height: "auto" }}>
-                {pieces.map((p) => (
-                  <Piece key={p.id} piece={p} cols={cols} tone={toneFor(p.dir, theme)} width={W_MINI} />
-                ))}
+              {/* This card used to redraw the arrows the player had just spent
+                  the level removing. It now shows what they actually revealed. */}
+              <svg viewBox={`0 0 ${mask.cols} ${mask.rows}`} style={{ width: "100%", height: "auto", maxHeight: 190 }}>
+                <path d={revealPath} fill={TIER_HUE[tierIndex] ?? C.accent} />
               </svg>
+              <div style={S.winShapeName}>{mode === "custom" ? "Your board" : mask.name}</div>
+              {mode !== "custom" && (
+                <div style={{ ...S.winRank, color: earnedRank ? MEDAL[earnedRank] : C.muted }}>
+                  {earnedRank === 3 ? "GOLD" : earnedRank === 2 ? "SILVER" : earnedRank === 1 ? "BRONZE" : "NOT COLLECTED"}
+                </div>
+              )}
+              {mode !== "custom" && earnedRank < 3 && (
+                <div style={S.winNext}>
+                  {earnedRank === 2
+                    ? "Clear it without an undo for Gold"
+                    : earnedRank === 1
+                    ? "Clear it without a mistake for Silver"
+                    : "Clear it with at most one mistake to collect it"}
+                </div>
+              )}
             </div>
 
             <div style={S.winStars}>
@@ -3605,6 +4741,8 @@ const TinyArrow = () => (
 /* ═══════════  css  ═══════════ */
 
 const makeCSS = (C) => `
+@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@600;800;900&family=DM+Mono:wght@500&display=swap');
+
 /* The React root only paints its own box. Anything outside it — the strip
    behind a rubber-band scroll, a rounding gap at a screen edge — falls back
    to the browser's white, which reads as a flash against the dark theme.
@@ -3678,9 +4816,12 @@ button:active:not(:disabled) { transform: scale(.945); }
 .nav-on { animation: navPop 420ms cubic-bezier(.28,1.32,.44,1); }
 
 button:focus-visible{outline:3px solid ${C.accent};outline-offset:3px}
+@keyframes revealIn{0%{opacity:0;transform:scale(.93)}62%{transform:scale(1.02)}100%{opacity:1;transform:scale(1)}}
+.reveal-fill{animation:revealIn 520ms cubic-bezier(.22,1.05,.32,1) backwards;transform-box:fill-box;transform-origin:center;will-change:transform,opacity}
+
 @media (prefers-reduced-motion: reduce){
 .settle,.snake,.chev-out,.dep-fade,.ring,.shake,.flash,.hint,.hbreak,.starpop,.ovin,.confetti,.badge-in,.pop,.score-tick,.combo-in,.heart-low,.left-tick,
-.screen-in,.board-in,.hud-in,.card-in,.nav-on{animation-duration:1ms!important;animation-iteration-count:1!important}
+.screen-in,.board-in,.hud-in,.card-in,.nav-on,.reveal-fill{animation-duration:1ms!important;animation-iteration-count:1!important}
 button{transition-duration:1ms!important}
 button:active:not(:disabled){transform:none}
 *{scroll-behavior:auto!important}
@@ -3844,6 +4985,9 @@ const makeStyles = (C) => ({
   winKicker: { color: "rgba(255,255,255,0.92)", fontWeight: 800, fontSize: 15 },
   winTitle: { color: "#fff", fontWeight: 900, fontSize: 27, letterSpacing: "-0.02em", margin: "6px 0 18px" },
   winCard: { background: C.card, borderRadius: 22, padding: 20, boxShadow: "0 18px 48px rgba(0,20,60,0.34)" },
+  winShapeName: { textAlign: "center", fontWeight: 900, fontSize: 18, color: C.ink, marginTop: 10, letterSpacing: "-0.01em" },
+  winRank: { textAlign: "center", fontWeight: 900, fontSize: 11, letterSpacing: "0.12em", marginTop: 4 },
+  winNext: { textAlign: "center", fontWeight: 700, fontSize: 11.5, color: C.muted, marginTop: 8, lineHeight: 1.35 },
   winStars: { display: "flex", gap: 10, justifyContent: "center", margin: "18px 0 6px" },
   winMeta: { color: "rgba(255,255,255,0.92)", fontSize: 13, fontWeight: 700, marginBottom: 18 },
   winBtn: { display: "block", width: "100%", background: "#fff", color: C.accent, border: "none", borderRadius: 999, padding: "14px 30px", fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 15, cursor: "pointer", boxShadow: "0 8px 24px rgba(0,20,60,0.28)" },
