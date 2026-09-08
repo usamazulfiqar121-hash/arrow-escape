@@ -77,6 +77,10 @@ const DIR_NAMES = Object.keys(DIRS);
 const ORTHO_NAMES = ["right", "left", "up", "down"];
 const DIAG_NAMES = ["upRight", "downRight", "downLeft", "upLeft"];
 const U = 100;
+const VIEW_PAD = 0.6;  // just enough margin around the board for the stroke
+const DOT_PAD = 2;     // how far a lane guide runs past the board edge
+
+
 
 let HAPTICS = true;
 const buzz = (ms) => {
@@ -1343,7 +1347,14 @@ function artMask(seed) {
     // subjects already used, because stepping forwards borrowed the next
     // level's turn and that was the cause of almost every repeat in a row.
     const [name, draw] = ART_FAMILIES[familyOrder(lap)[((pos - attempt) % n + n) % n]];
-    const size = 18 + ((r() * 9) | 0);
+    /* Drawn bigger than before. Detail is limited by how many cells a feature
+       spans, so an eye that could not read at 18 cells reads fine at 26 — and
+       the tiers allow up to 740 cells, so 430 was leaving room unused. More
+       resolution is the only thing that actually buys finer shapes. */
+    /* Drawn at the resolution the board now uses. Detail is a function of how
+       many cells a feature spans, so this is the only thing that actually buys
+       a finer shape — an eye that cannot read at 18 cells reads easily at 40. */
+    const size = 30 + ((r() * 13) | 0);
     const c = ArtCanvas(size, 3);
     draw(c, r);
     let grid = aHarvest(c, 0.42);
@@ -1351,7 +1362,7 @@ function artMask(seed) {
     grid = aSmooth(grid);
     const m = aTidy(grid);
     if (!m) continue;
-    if (m.cells.size < 90 || m.cells.size > 430) continue;
+    if (m.cells.size < 200 || m.cells.size > 900) continue;
     if (m.cols < 9 || m.rows < 9) continue;
     return { ...m, name: `${ART_ADJ[(seed * 7) % ART_ADJ.length]} ${name}`, procedural: true };
   }
@@ -1421,15 +1432,31 @@ function orthoBack(head, D, cols, rows) {
   return step(head, -D.dx, 0, cols, rows) ?? step(head, 0, -D.dy, cols, rows);
 }
 
-/* Three mechanics turn up long after the four-step tutorial has finished and
-   none of them announced itself: diagonals just pointed a new way, sealed
-   arrows just faded out, deflectors just bent a path. Each gets one line,
-   once, on the first board it appears on. Listed in the order the player
-   meets them — diagonals around level 15, seals around 21, deflectors 29. */
+/* Everything the four-step tutorial does not cover. Each one turned up with no
+   announcement at all: the shield simply appeared in the corner, diagonals
+   just pointed a new way, sealed arrows faded out, deflectors bent a path.
+   Each gets one line, once, the first time the player meets it.
+
+   `when` is checked against the live board and run state, so a tip can be
+   triggered by something happening (a shield being earned) as well as by
+   something being present on the board. Listed roughly in the order they come
+   up in a normal run. */
 const MECHANIC_TIPS = [
-  { key: "diag", text: "Arrows can travel diagonally now. Hold one to trace where it will go." },
-  { key: "seal", text: "Faded arrows are sealed shut. One opens only after the arrow it waits on has gone." },
-  { key: "mirror", text: "A bar turns an arrow ninety degrees. Its way out bends — hold it to follow the path." },
+  { key: "combo",
+    when: (c) => c.combo >= 3,
+    text: "Clearing arrows without a mistake builds a combo — each one in a row is worth more." },
+  { key: "shield",
+    when: (c) => c.shield,
+    text: "You earned a shield. It takes the hit for your next mistake instead of a life." },
+  { key: "diag",
+    when: (c) => c.pieces.some((p) => DIAG_NAMES.includes(p.dir)),
+    text: "Arrows can travel diagonally now. Hold one to trace where it will go." },
+  { key: "seal",
+    when: (c) => c.pieces.some((p) => p.needs !== undefined),
+    text: "Faded arrows are sealed shut. One opens only after the arrow it waits on has gone." },
+  { key: "mirror",
+    when: (c) => c.mirrors.size > 0,
+    text: "A bar turns an arrow ninety degrees. Its way out bends — hold it to follow the path." },
 ];
 
 const EMPTY_MIRRORS = new Map();
@@ -1640,8 +1667,17 @@ function measureBoard(pieces, cols, rows, mirrors) {
 
 /* Big artwork on an easy level would mean 150+ arrows. Resample the mask down
    to the tier's budget instead — the same subject, drawn with less detail. */
+/* No board may be wider or taller than this. What decides whether an arrow can
+   be tapped is not how many cells a board has but how many fit across the
+   screen: at 40 cells a phone gives each one about 9px, at 72 it gives 5px and
+   the arrows become untappable hairlines. Raising the cell budget let the
+   biggest shapes reach 76 cells across, so the budget alone is not enough —
+   the dimension has to be capped directly. */
+const MAX_DIM = 40;
+
 function fitMask(mask, maxCells) {
-  if (!maxCells || mask.cells.size <= maxCells) return mask;
+  const overDim = mask.cols > MAX_DIM || mask.rows > MAX_DIM;
+  if (!overDim && (!maxCells || mask.cells.size <= maxCells)) return mask;
 
   const sample = (k) => {
     const c2 = Math.max(5, Math.round(mask.cols * k));
@@ -1661,13 +1697,21 @@ function fitMask(mask, maxCells) {
 
   // downsampling thickens edges, so one pass usually lands over budget.
   // correct against the measured result instead of trusting the estimate.
-  let k = Math.sqrt(maxCells / mask.cells.size);
+  // start from whichever constraint bites harder — the cell budget or the
+  // dimension cap
+  let k = Math.min(
+    maxCells ? Math.sqrt(maxCells / mask.cells.size) : 1,
+    MAX_DIM / Math.max(mask.cols, mask.rows)
+  );
   let best = null;
-  for (let pass = 0; pass < 5; pass++) {
+  for (let pass = 0; pass < 6; pass++) {
     const r = sample(k);
+    const fits = (!maxCells || r.out.size <= maxCells) && r.c2 <= MAX_DIM && r.r2 <= MAX_DIM;
     if (r.out.size >= 18) best = r;
-    if (r.out.size <= maxCells || r.out.size < 18) break;
-    k *= Math.sqrt((maxCells / r.out.size) * 0.97);
+    if (fits || r.out.size < 18) break;
+    const byCells = maxCells ? Math.sqrt((maxCells / r.out.size) * 0.97) : 1;
+    const byDim = MAX_DIM / Math.max(r.c2, r.r2);
+    k *= Math.min(byCells, byDim) * 0.99;
   }
   if (!best || best.out.size < 18) return mask;
   const t = cropMask(best.out, best.c2, best.r2);
@@ -1843,13 +1887,23 @@ function makeLevel(level, seed) {
     seed === undefined && level > CURATED_UNTIL
       ? artMask(level) || proceduralMask(level)
       : parseMask(curatedKey(seed !== undefined ? (seed % 9973) + 1 : level));
-  /* fitMask only ever shrinks. A compact shape therefore built a board a
-     fraction of the usual size — the plain geometric ones came out at eight
-     arrows where the levels either side had forty, which reads as a broken
-     level rather than an easy one. Scale a small shape up to the tier's budget
-     first, the same way a hand-drawn board from Studio is scaled. */
-  const room = raw.cells.size ? Math.sqrt(tier.maxCells / raw.cells.size) : 1;
-  const mask = fitMask(scaleMask(raw, Math.max(1, Math.min(4, Math.floor(room)))), tier.maxCells);
+  /* fitMask only ever shrinks, so a very compact shape built a board a fraction
+     of the usual size — the plain geometric ones came out at eight arrows where
+     their neighbours had forty. Scale those up.
+
+     The test is an absolute floor, not a share of the tier budget: sizing
+     against the budget also caught perfectly ordinary shapes and grew the
+     average board by nearly half, which is more cells, more arrows and more to
+     draw on every frame. Only shapes below the floor are touched. */
+  /* Scale the shape up until it fills most of the tier's budget. This is what
+     separates a chunky board from a clean one: the silhouette is the same, but
+     drawn across four times as many cells it is traced by long thin arrows
+     rather than a handful of stubby ones. Arrow COUNT barely moves — the
+     generator divides the cells among roughly the same number of arrows, so
+     each one simply gets longer. */
+  let up = 1;
+  while (raw.cells.size * (up + 1) * (up + 1) <= tier.maxCells && up < 4) up++;
+  const mask = fitMask(up > 1 ? scaleMask(raw, up) : raw, tier.maxCells);
   // Hard and above are judged like chess positions, and get extra candidate
   // boards to choose from — the generator plays out more lines before deciding
   const chessWeight = index >= HARD_TIER ? 0.9 : 0;
@@ -2294,22 +2348,22 @@ function curatedKey(level) {
    These values are what the original game measurably played at, tier by tier,
    so the curve stays where it was and the target does real work from now on. */
 const TIERS = [
-  { name: "Warm Up", span: 2,     maxLen: 10, hearts: 3, hints: 3, undos: 3, coverage: 0.94, tightness: 0.80, freedom: 0.494, pieces: 32, maxCells: 150 , diag: 0 , mirrors: 0 },
-  { name: "Little Easy", span: 3,     maxLen: 11, hearts: 3, hints: 3, undos: 3, coverage: 0.95, tightness: 0.83, freedom: 0.426, pieces: 38, maxCells: 185 , diag: 0 , mirrors: 0 },
-  { name: "Easy", span: 4,     maxLen: 12, hearts: 3, hints: 3, undos: 2, coverage: 0.95, tightness: 0.85, freedom: 0.360, pieces: 44, maxCells: 220 , diag: 0 , mirrors: 0 },
-  { name: "Easy Plus", span: 5,     maxLen: 13, hearts: 3, hints: 2, undos: 2, coverage: 0.96, tightness: 0.87, freedom: 0.390, pieces: 49, maxCells: 255 , diag: 0 , mirrors: 0 },
-  { name: "Little Medium", span: 6,     maxLen: 14, hearts: 3, hints: 2, undos: 2, coverage: 0.96, tightness: 0.88, freedom: 0.438, pieces: 55, maxCells: 290 , diag: 1 , mirrors: 0 },
-  { name: "Medium", span: 8,     maxLen: 15, hearts: 3, hints: 2, undos: 2, coverage: 0.97, tightness: 0.90, freedom: 0.322, pieces: 62, maxCells: 325 , diag: 1 , mirrors: 0 },
-  { name: "Medium Plus", span: 10,     maxLen: 16, hearts: 3, hints: 2, undos: 2, coverage: 0.97, tightness: 0.91, freedom: 0.372, pieces: 70, maxCells: 360 , diag: 2 , mirrors: 1 },
-  { name: "Tricky", span: 12,     maxLen: 17, hearts: 3, hints: 2, undos: 1, coverage: 0.98, tightness: 0.92, freedom: 0.363, pieces: 77, maxCells: 395 , diag: 2 , mirrors: 1 },
-  { name: "Tough", span: 14,     maxLen: 18, hearts: 3, hints: 2, undos: 1, coverage: 0.98, tightness: 0.93, freedom: 0.369, pieces: 84, maxCells: 430 , diag: 2 , mirrors: 1 },
-  { name: "Hard", span: 17,     maxLen: 19, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.94, freedom: 0.319, pieces: 91, maxCells: 470 , diag: 3 , mirrors: 2 },
-  { name: "Very Hard", span: 20,     maxLen: 20, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.95, freedom: 0.315, pieces: 100, maxCells: 510 , diag: 3 , mirrors: 2 },
-  { name: "Super Hard", span: 24,     maxLen: 21, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.96, freedom: 0.287, pieces: 109, maxCells: 555 , diag: 3 , mirrors: 2 },
-  { name: "Expert", span: 30,     maxLen: 22, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.97, freedom: 0.315, pieces: 117, maxCells: 600 , diag: 4 , mirrors: 3 },
-  { name: "Elite", span: 36,     maxLen: 23, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.98, freedom: 0.294, pieces: 128, maxCells: 645 , diag: 4 , mirrors: 3 },
-  { name: "Master", span: 45,     maxLen: 24, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.99, freedom: 0.284, pieces: 138, maxCells: 690 , diag: 4 , mirrors: 3 },
-  { name: "Pro", span: Infinity,     maxLen: 26, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 1.0, freedom: 0.267, pieces: 148, maxCells: 740 , diag: 4 , mirrors: 3 },
+  { name: "Warm Up", span: 2,     maxLen: 22, hearts: 3, hints: 3, undos: 3, coverage: 0.94, tightness: 0.80, freedom: 0.494, pieces: 32, maxCells: 360 , diag: 0 , mirrors: 0 },
+  { name: "Little Easy", span: 3,     maxLen: 24, hearts: 3, hints: 3, undos: 3, coverage: 0.95, tightness: 0.83, freedom: 0.426, pieces: 38, maxCells: 444 , diag: 0 , mirrors: 0 },
+  { name: "Easy", span: 4,     maxLen: 26, hearts: 3, hints: 3, undos: 2, coverage: 0.95, tightness: 0.85, freedom: 0.360, pieces: 44, maxCells: 528 , diag: 0 , mirrors: 0 },
+  { name: "Easy Plus", span: 5,     maxLen: 29, hearts: 3, hints: 2, undos: 2, coverage: 0.96, tightness: 0.87, freedom: 0.390, pieces: 49, maxCells: 612 , diag: 0 , mirrors: 0 },
+  { name: "Little Medium", span: 6,     maxLen: 31, hearts: 3, hints: 2, undos: 2, coverage: 0.96, tightness: 0.88, freedom: 0.438, pieces: 55, maxCells: 696 , diag: 1 , mirrors: 0 },
+  { name: "Medium", span: 8,     maxLen: 33, hearts: 3, hints: 2, undos: 2, coverage: 0.97, tightness: 0.90, freedom: 0.322, pieces: 62, maxCells: 780 , diag: 1 , mirrors: 0 },
+  { name: "Medium Plus", span: 10,     maxLen: 35, hearts: 3, hints: 2, undos: 2, coverage: 0.97, tightness: 0.91, freedom: 0.372, pieces: 70, maxCells: 864 , diag: 2 , mirrors: 1 },
+  { name: "Tricky", span: 12,     maxLen: 37, hearts: 3, hints: 2, undos: 1, coverage: 0.98, tightness: 0.92, freedom: 0.363, pieces: 77, maxCells: 948 , diag: 2 , mirrors: 1 },
+  { name: "Tough", span: 14,     maxLen: 40, hearts: 3, hints: 2, undos: 1, coverage: 0.98, tightness: 0.93, freedom: 0.369, pieces: 84, maxCells: 1032 , diag: 2 , mirrors: 1 },
+  { name: "Hard", span: 17,     maxLen: 42, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.94, freedom: 0.319, pieces: 91, maxCells: 1128 , diag: 3 , mirrors: 2 },
+  { name: "Very Hard", span: 20,     maxLen: 44, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.95, freedom: 0.315, pieces: 100, maxCells: 1224 , diag: 3 , mirrors: 2 },
+  { name: "Super Hard", span: 24,     maxLen: 46, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.96, freedom: 0.287, pieces: 109, maxCells: 1332 , diag: 3 , mirrors: 2 },
+  { name: "Expert", span: 30,     maxLen: 48, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.97, freedom: 0.315, pieces: 117, maxCells: 1440 , diag: 4 , mirrors: 3 },
+  { name: "Elite", span: 36,     maxLen: 51, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.98, freedom: 0.294, pieces: 128, maxCells: 1548 , diag: 4 , mirrors: 3 },
+  { name: "Master", span: 45,     maxLen: 53, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.99, freedom: 0.284, pieces: 138, maxCells: 1656 , diag: 4 , mirrors: 3 },
+  { name: "Pro", span: Infinity,     maxLen: 57, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 1.0, freedom: 0.267, pieces: 148, maxCells: 1776 , diag: 4 , mirrors: 3 },
 ];
 const MEDAL = { 1: "#CD7F32", 2: "#AEB6C4", 3: "#FFC24B" };
 const TIER_HUE = ["#5FCB8A", "#4CC79B", "#3FBFD6", "#3EA8EE", "#3E9BF0", "#5580F2", "#6C7BF0", "#8470F2", "#9A6BF0", "#C07AD8", "#F0A93E", "#F2891B", "#F2761B", "#FF6A4A", "#FF3D9A", "#B14BFF"];
@@ -2490,7 +2544,12 @@ function decodeMask(code) {
   const m = /^(\d+)x(\d+)-([A-Za-z0-9\-_]+)$/.exec((code || "").trim());
   if (!m) return null;
   const cols = +m[1], rows = +m[2];
-  if (cols < 4 || rows < 4 || cols > 40 || rows > 40) return null;  // artwork masks reach 26+
+  /* Boards are far larger than when this cap was written — masks now reach the
+     seventies. Anything over the limit still SAVED fine but decoded to null,
+     so nearly half of a player's discovered shapes would quietly vanish from
+     the Collection. The ceiling is now above the largest mask the generator
+     can produce, with headroom. */
+  if (cols < 4 || rows < 4 || cols > 120 || rows > 120) return null;
   let b64 = m[3].replace(/-/g, "+").replace(/_/g, "/");
   while (b64.length % 4) b64 += "=";
   try {
@@ -2529,36 +2588,75 @@ function tidyDrawing(cols, rows, cells) {
 const cx = (i, cols) => (i % cols) * U + U / 2;
 const cy = (i, cols) => Math.floor(i / cols) * U + U / 2;
 
-const W_BOARD = 11.5;
-const W_MINI = 8;
 
-function piecePath(piece, cols) {
+/* A line-drawing needs ONE line weight. The board is drawn in cell units and
+   the SVG scales to fit the screen, so a stroke fixed in those units gets
+   thinner the bigger the board — a fourteen-cell board drew its arrows 2.7x
+   heavier than a forty-cell one, and the backdrop dots shrank to a third of a
+   pixel and vanished. Nothing about the game changes between those boards; the
+   drawing should not either.
+
+   These derive board-unit sizes from the on-screen size we actually want, so
+   the weight of a line is the same on every level. The pen does not change
+   because the paper got bigger. */
+const SCREEN_REF = 380;                 // a phone's CSS width
+const boardInk = (cols, rows) => {
+  const span = (Math.max(cols, rows) + VIEW_PAD * 2) * U;
+  const perPx = span / SCREEN_REF;      // board units in one screen pixel
+  return {
+    stroke: 2.4 * perPx,
+    dot: 1.25 * perPx,
+    /* Score pops and the tap ring were scaled by cols alone, but a board is
+       fitted by whichever side is longer. On a tall narrow board that made the
+       "+150" three and a half pixels tall — unreadable — while a wide board got
+       thirteen. Same screen size everywhere now. */
+    text: 13 * perPx,
+    rise: 26 * perPx,
+    ring: 20 * perPx,
+    // A tap zone may not spill into the next lane, or a tap becomes a guess
+    // between two arrows. Screen-constant up to that ceiling, capped after.
+    hit: (big) => Math.min((big ? 20 : 14) * perPx, (big ? 0.95 : 0.82) * U),
+  };
+};
+
+function piecePath(piece, cols, w = 9.6) {
   const D = DIRS[piece.dir];
   const pts = [...piece.cells].reverse().map((i) => ({ x: cx(i, cols), y: cy(i, cols) }));
   const head = pts[pts.length - 1];
   // nx/ny rather than dx/dy: on a diagonal, dx and dy are both 1, so scaling by
   // them would push the stub and the tip 1.41x too far.
-  if (pts.length === 1) pts.unshift({ x: head.x - D.nx * 34, y: head.y - D.ny * 34 });
-  const tip = { x: head.x + D.nx * 7, y: head.y + D.ny * 7 };
+  // Both lengths follow the stroke, so a one-cell arrow keeps its shape and the
+  // line always meets the back of the head at the same overlap.
+  if (pts.length === 1) pts.unshift({ x: head.x - D.nx * w * 3.54, y: head.y - D.ny * w * 3.54 });
+  const tip = { x: head.x + D.nx * w * 0.73, y: head.y + D.ny * w * 0.73 };
   return `M ${pts[0].x} ${pts[0].y} ` + pts.slice(1).map((p) => `L ${p.x} ${p.y}`).join(" ") + ` L ${tip.x} ${tip.y}`;
 }
 
-function headChevron(piece, cols) {
+/* The arrowhead is drawn in proportion to the line it caps. It used to be a
+   fixed size while the stroke scaled with the board, so on a large board the
+   head was barely wider than the line and the arrows read as plain strokes
+   with no direction at all. These ratios are the old numbers expressed against
+   the stroke weight they were originally tuned for. */
+function headChevron(piece, cols, w = 9.6) {
   const i = piece.cells[0];
   const hx = cx(i, cols);
   const hy = cy(i, cols);
-  return { d: `M ${hx + 2} ${hy - 15} L ${hx + 25} ${hy} L ${hx + 2} ${hy + 15}`, rot: `rotate(${DIRS[piece.dir].angle} ${hx} ${hy})` };
+  const back = w * 0.21, reach = w * 2.6, flare = w * 1.56;
+  return {
+    d: `M ${hx + back} ${hy - flare} L ${hx + reach} ${hy} L ${hx + back} ${hy + flare}`,
+    rot: `rotate(${DIRS[piece.dir].angle} ${hx} ${hy})`,
+  };
 }
 
 function Piece({ piece, cols, tone, width, className, style, hit, onDown }) {
-  const d = piecePath(piece, cols);
-  const chev = headChevron(piece, cols);
+  const d = piecePath(piece, cols, width);
+  const chev = headChevron(piece, cols, width);
   return (
     <g className={className} style={style}>
       <path d={d} stroke={tone} strokeWidth={width} strokeLinecap="round" strokeLinejoin="round" fill="none" />
       <path d={chev.d} transform={chev.rot} stroke={tone} strokeWidth={width} strokeLinecap="round" strokeLinejoin="round" fill="none" />
       {onDown && (
-        <path d={d} stroke="transparent" strokeWidth={hit} strokeLinecap="round" strokeLinejoin="round" fill="none" pointerEvents="stroke" style={{ cursor: "pointer" }} onPointerDown={onDown} />
+        <path d={d} data-piece={piece.id} stroke="transparent" strokeWidth={hit} strokeLinecap="round" strokeLinejoin="round" fill="none" pointerEvents="stroke" style={{ cursor: "pointer" }} onPointerDown={onDown} />
       )}
     </g>
   );
@@ -2566,17 +2664,19 @@ function Piece({ piece, cols, tone, width, className, style, hit, onDown }) {
 
 /* The head always exits straight, but the body should follow the bends behind
    it — so we draw one long path (body + exit lane) and slide a dash along it. */
-function departGeom(piece, cols, rows, mirrors) {
+function departGeom(piece, cols, rows, mirrors, w = 9.6) {
   const D = DIRS[piece.dir];
   const pts = [...piece.cells].reverse().map((i) => ({ x: cx(i, cols), y: cy(i, cols) }));
   const head = pts[pts.length - 1];
-  if (pts.length === 1) pts.unshift({ x: head.x - D.nx * 34, y: head.y - D.ny * 34 });
+  // matches the stub piecePath draws, so a one-cell arrow does not change
+  // length the instant it starts to leave
+  if (pts.length === 1) pts.unshift({ x: head.x - D.nx * w * 3.54, y: head.y - D.ny * w * 3.54 });
 
   let bodyLen = 0;
   for (let i = 1; i < pts.length; i++) {
     bodyLen += Math.abs(pts[i].x - pts[i - 1].x) + Math.abs(pts[i].y - pts[i - 1].y);
   }
-  bodyLen += 7; // out to the chevron base
+  bodyLen += w * 0.73; // out to the chevron base
 
   /* With deflectors the flight is no longer a straight run: walk the actual
      lane cells so the arrow visibly turns where the lane turns, then carry on
@@ -2629,15 +2729,15 @@ function lanePath(head, dir, cols, rows, mirrors) {
   return d;
 }
 
-function DepartingPiece({ piece, cols, rows, tone, mirrors }) {
-  const g = departGeom(piece, cols, rows, mirrors);
-  const chev = headChevron(piece, cols);
+function DepartingPiece({ piece, cols, rows, tone, mirrors, width }) {
+  const g = departGeom(piece, cols, rows, mirrors, width);
+  const chev = headChevron(piece, cols, width);
   return (
     <g className="dep-fade">
       <path
         d={g.d}
         stroke={tone}
-        strokeWidth={W_BOARD}
+        strokeWidth={width}
         strokeLinecap="round"
         strokeLinejoin="round"
         fill="none"
@@ -2652,7 +2752,7 @@ function DepartingPiece({ piece, cols, rows, tone, mirrors }) {
           d={chev.d}
           transform={chev.rot}
           stroke={tone}
-          strokeWidth={W_BOARD}
+          strokeWidth={width}
           strokeLinecap="round"
           strokeLinejoin="round"
           fill="none"
@@ -2675,6 +2775,23 @@ function maskPath(m, inset = 0.15, size = 0.7) {
   return d;
 }
 
+/* Discovered shapes are stored as encoded masks and drawn as thumbnails. The
+   grid decoded and re-traced all of them on every single render — at up to a
+   hundred and sixty shapes of several hundred cells each that is over two
+   megabytes of path data rebuilt each time the Collection tab so much as
+   re-renders, which is what made it stutter. The codes never change, so the
+   result is cached against the code itself. */
+const FOUND_PATH = new Map();
+function cachedFound(code) {
+  let hit = FOUND_PATH.get(code);
+  if (hit === undefined) {
+    const m = decodeMask(code);
+    hit = m ? { cols: m.cols, rows: m.rows, d: maskPath(m, 0.14, 0.72) } : null;
+    FOUND_PATH.set(code, hit);
+  }
+  return hit;
+}
+
 const THUMB_PATH = new Map();
 function cachedMask(shapeKey) {
   let hit = THUMB_PATH.get(shapeKey);
@@ -2695,7 +2812,17 @@ function ShapeThumb({ shapeKey, on }) {
   );
 }
 
-const todayKey = () => new Date().toISOString().slice(0, 10);
+/* The player's own day, not UTC. toISOString() gave the UTC date, so in
+   Pakistan the daily rolled over at 05:00 local — anyone playing after midnight
+   got yesterday's puzzle again and no credit for it. */
+const dayKey = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const todayKey = () => dayKey(new Date());
+const yesterdayKey = () => {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return dayKey(d);
+};
 
 /* ═══════════  game  ═══════════ */
 
@@ -2769,6 +2896,8 @@ export default function ArrowEscapeV3() {
   const nextRef = useRef(null);
   const [streak, setStreak] = useState(0);
   const [dailyDone, setDailyDone] = useState(false);
+  const lastDailyRef = useRef(null);   // the day the last daily was cleared
+  const peakCombo = useRef(0);        // highest chain reached on this board
   const press = useRef(null);
   const viewport = useRef(null);
   const ptrs = useRef(new Map());
@@ -2840,13 +2969,9 @@ export default function ArrowEscapeV3() {
      two banners at once teaches neither. */
   const activeTip = useMemo(() => {
     if (mode !== "journey" || tut < 9) return null;
-    const present = {
-      seal: pieces.some((p) => p.needs !== undefined),
-      diag: pieces.some((p) => DIAG_NAMES.includes(p.dir)),
-      mirror: mirrors.size > 0,
-    };
-    return MECHANIC_TIPS.find((t) => present[t.key] && !seenTips[t.key]) || null;
-  }, [mode, tut, pieces, mirrors, seenTips]);
+    const ctx = { pieces, mirrors, shield, combo };
+    return MECHANIC_TIPS.find((t) => !seenTips[t.key] && t.when(ctx)) || null;
+  }, [mode, tut, pieces, mirrors, shield, combo, seenTips]);
 
   const dismissTip = useCallback(() => {
     if (!activeTip) return;
@@ -2876,23 +3001,27 @@ export default function ArrowEscapeV3() {
 
   // the dot grid never changes while a board is in play — rebuilding its few
   // hundred nodes on every tap was the main source of stutter
+  /* The backdrop dots used to be one <circle> element per grid cell — over six
+     hundred nodes on a normal board, each one composited separately on every
+     frame of a pan, zoom or board animation. They are identical little discs,
+     so the whole field collapses into two paths: one for the dots inside the
+     shape, one for the fainter ones around it. Two nodes instead of six
+     hundred, drawn identically. */
   const dotLayer = useMemo(
-    () =>
-      Array.from({ length: (cols + DOT_PAD * 2) * (rows + DOT_PAD * 2) }).map((_, k) => {
-        const gx = (k % (cols + DOT_PAD * 2)) - DOT_PAD;
-        const gy = Math.floor(k / (cols + DOT_PAD * 2)) - DOT_PAD;
-        const inMask = gx >= 0 && gy >= 0 && gx < cols && gy < rows && mask.cells.has(gy * cols + gx);
-        return (
-          <circle
-            key={`d${k}`}
-            cx={gx * U + U / 2}
-            cy={gy * U + U / 2}
-            r={inMask ? 3.8 : 3}
-            fill={C.dot}
-            opacity={inMask ? 1 : 0.55}
-          />
-        );
-      }),
+    () => {
+      const disc = (x, y, r) =>
+        `M${x - r} ${y}a${r} ${r} 0 1 0 ${r * 2} 0a${r} ${r} 0 1 0 ${-r * 2} 0`;
+      /* Only the dots inside the shape. The surrounding ones marked out empty
+         space on a small board, but at this size they were over half of some
+         seventeen hundred discs and eighty kilobytes of path data for a strip
+         of decoration nobody reads. */
+      const dotR = boardInk(cols, rows).dot;
+      let inside = "";
+      for (const i of mask.cells) {
+        inside += disc((i % cols) * U + U / 2, Math.floor(i / cols) * U + U / 2, dotR);
+      }
+      return <path d={inside} fill={C.dot} />;
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [cols, rows, mask, dark]
   );
@@ -2900,7 +3029,13 @@ export default function ArrowEscapeV3() {
   /* One solid silhouette of the level's shape. maskPath's defaults leave a gap
      around each cell for the thumbnail look; at full size we want the cells to
      meet so the picture reads as one figure rather than a mosaic. */
-  const revealPath = useMemo(() => maskPath(mask, 0, 1), [mask]);
+  /* A hair of overlap on each cell. Laid out as exact 1x1 squares the edges
+     only touch, and a renderer can leave a faint seam along every shared edge —
+     a grid of hairlines across a figure that should read as one solid shape. */
+  const revealPath = useMemo(() => maskPath(mask, -0.02, 1.04), [mask]);
+
+  // one line weight for this board, sized from how big it lands on screen
+  const ink = useMemo(() => boardInk(cols, rows), [cols, rows]);
 
   const progress = pieces.length ? ((pieces.length - alive.size) / pieces.length) * 100 : 0;
 
@@ -2937,9 +3072,17 @@ export default function ArrowEscapeV3() {
         adWatchRef.current = Math.max(0, p.adWatchCount | 0);
         setBadges(p.badges ?? []);
         setStats(p.stats ?? { arrows: 0, flawRun: 0, noUndo: 0, bestChain: 0 });
-        setStreak(p.streak ?? 0);
+        /* A streak has to be consecutive. The old code only ever added to it,
+           so a player could take a month off, play one daily, and continue
+           from where they left — the number was a count of days played, not a
+           streak. If the last daily was neither today nor yesterday, the run
+           is broken and starts over. */
+        const last = p.lastDaily;
+        const unbroken = last === todayKey() || last === yesterdayKey();
+        setStreak(unbroken ? p.streak ?? 0 : 0);
         setGrid(!!p.grid);
         setDailyDone(p.lastDaily === todayKey());
+        lastDailyRef.current = p.lastDaily ?? null;
         if (p.level > 1) {
           const st = makeLevel(p.level);
           setLevel(p.level);
@@ -3022,20 +3165,38 @@ export default function ArrowEscapeV3() {
 
   /* A life back, on the same board — the one reward players actually want. */
   const watchForLife = useCallback(async () => {
+    /* Same trap as the hint button: with ads removed there is no ad to watch,
+       so the continue button was hidden entirely and the player who paid got
+       no second chance while a free player did. The ad was the price; once
+       paid, the life is simply given. */
+    if (adsRemoved) {
+      setHearts(1);
+      setPhase("playing");
+      Snd.shieldUp();
+      return;
+    }
     const ok = await claimRewarded("life");
     if (ok === null) return;
     if (!ok) return flashNote("No ad available right now.");
     setHearts(1);
     setPhase("playing");
     Snd.shieldUp();
-  }, [flashNote, claimRewarded]);
+  }, [flashNote, claimRewarded, adsRemoved]);
 
   const watchForHint = useCallback(async () => {
+    /* A player who removed ads has no ad to watch — and the button was simply
+       disabled for them, so paying for ad removal also took away every extra
+       hint. The ad was the price of the hint, not the hint itself; once it has
+       been paid for, the hint is simply given. */
+    if (adsRemoved) {
+      setHintsLeft((n) => n + 1);
+      return;
+    }
     const ok = await claimRewarded("hint");
     if (ok === null) return;
     if (!ok) return flashNote("No ad available right now.");
     setHintsLeft((n) => n + 1);
-  }, [flashNote, claimRewarded]);
+  }, [flashNote, claimRewarded, adsRemoved]);
 
   const maybeInterstitial = useCallback(async () => {
     if (adsRemoved) return;
@@ -3056,6 +3217,7 @@ export default function ArrowEscapeV3() {
     aliveRef.current = fresh;
     setAlive(fresh);
     setHistory([]);
+    peakCombo.current = 0;
     scoreLog.current.clear();
     setHearts(st.hearts);
     setHintsLeft(st.hints);
@@ -3270,6 +3432,10 @@ export default function ArrowEscapeV3() {
       const nextCombo = combo + 1;
       const gain = (10 + freed * 15) * Math.min(nextCombo, 5);
       setCombo(nextCombo);
+      // the badge is for REACHING a twelve-chain; recording only the combo at
+      // the final tap meant a twenty-chain broken by one mistake counted as
+      // whatever short run happened to finish the board
+      peakCombo.current = Math.max(peakCombo.current, nextCombo);
       Snd.depart(nextCombo);
       setScore((s) => s + gain);
       scoreLog.current.set(piece.id, gain);
@@ -3320,13 +3486,21 @@ export default function ArrowEscapeV3() {
             arrows: stats.arrows + pieces.length,
             flawRun: mistakes === 0 ? stats.flawRun + 1 : 0,
             noUndo: undosLeft === setup.undos ? stats.noUndo + 1 : stats.noUndo,
-            bestChain: Math.max(stats.bestChain, nextCombo),
+            bestChain: Math.max(stats.bestChain, peakCombo.current, nextCombo),
           };
 
           const won = new Set(badges);
           won.add("first");
           if (nextStats.flawRun >= 5) won.add("flaw5");
-          if (mode === "daily" && streak + 1 >= 7) won.add("streak7");
+          /* streak + 1 assumed the run always continued. If the last daily was
+             not yesterday the run restarts at 1, so the badge has to read the
+             same number the streak itself will become. */
+          const dailyStreakNow = dailyDone
+            ? streak
+            : lastDailyRef.current === yesterdayKey()
+            ? streak + 1
+            : 1;
+          if (mode === "daily" && dailyStreakNow >= 7) won.add("streak7");
           if (mode === "journey" && tierIndex >= 9) won.add("hard");
           if (mode === "journey" && tierIndex >= 15) won.add("pro");
           if (nextStats.arrows >= 1000) won.add("k1");
@@ -3398,7 +3572,10 @@ export default function ArrowEscapeV3() {
             /* a drawn board is a one-off — leave journey progress alone */
           } else if (mode === "daily") {
             setStreak((st) => {
-              const ns = dailyDone ? st : st + 1;
+              // already played today: unchanged. Played yesterday: the run
+              // continues. Anything else: this is day one of a new run.
+              const ns = dailyStreakNow;
+              lastDailyRef.current = todayKey();
               persist({ streak: ns, lastDaily: todayKey() });
               return ns;
             });
@@ -3432,16 +3609,42 @@ export default function ArrowEscapeV3() {
     (piece) => (e) => {
       if (phase !== "playing") return;
       e.preventDefault();
+
+      /* A cell is about ten pixels across on a phone, so a fingertip covers
+         several arrows at once and SVG hands us whichever happens to be drawn
+         last. That is a coin toss, and losing it costs a life.
+
+         Ask the browser for every arrow actually under the finger. If the one
+         it picked is blocked but another one there can move, the player
+         plainly meant that one. This never reveals anything or plays a move on
+         its own — it only settles which arrow an ambiguous tap refers to. */
+      let target = piece;
+      if (blockerOf(piece) !== null && typeof document.elementsFromPoint === "function") {
+        try {
+          for (const el of document.elementsFromPoint(e.clientX, e.clientY)) {
+            const id = el.getAttribute && el.getAttribute("data-piece");
+            if (id === null || id === undefined) continue;
+            const cand = pieces[+id];
+            if (cand && alive.has(cand.id) && blockerOf(cand) === null) {
+              target = cand;
+              break;
+            }
+          }
+        } catch {
+          /* elementsFromPoint unavailable or threw — keep the arrow SVG chose */
+        }
+      }
+
       const timer = setTimeout(() => {
         if (!press.current) return;
         press.current.held = true;
-        setHoldId(piece.id);
+        setHoldId(target.id);
         buzz(6);
         if (tut === 2) setTutStep(9);
       }, 180);
-      press.current = { piece, timer, held: false };
+      press.current = { piece: target, timer, held: false };
     },
-    [phase, tut, setTutStep]
+    [phase, tut, setTutStep, blockerOf, pieces, alive]
   );
 
   // lock the document while a board is on screen — otherwise the page itself
@@ -3748,12 +3951,11 @@ export default function ArrowEscapeV3() {
           </div>
 
           <button
-            style={{ ...S.hintPill, opacity: hintsLeft > 0 || !adsRemoved ? 1 : 0.4 }}
+            style={S.hintPill}
             onClick={hintsLeft > 0 ? useHint : watchForHint}
-            disabled={hintsLeft <= 0 && adsRemoved}
           >
             <Bulb />
-            <span style={S.hintTxt}>{hintsLeft > 0 ? hintsLeft : "▶"}</span>
+            <span style={S.hintTxt}>{hintsLeft > 0 ? hintsLeft : adsRemoved ? "+" : "▶"}</span>
           </button>
         </div>
 
@@ -3822,7 +4024,7 @@ export default function ArrowEscapeV3() {
                       key={`ln${p.id}`}
                       d={lanePath(h, p.dir, cols, rows, mirrors)}
                       stroke={toneFor(p.dir, theme)}
-                      strokeWidth={4.5}
+                      strokeWidth={ink.stroke * 0.4}
                       fill="none"
                       opacity={0.3}
                     />
@@ -3845,11 +4047,11 @@ export default function ArrowEscapeV3() {
                       <rect
                         x={mx - U * 0.44} y={my - U * 0.44}
                         width={U * 0.88} height={U * 0.88} rx={U * 0.22}
-                        fill={C.card} stroke={C.edge} strokeWidth={3}
+                        fill={C.card} stroke={C.edge} strokeWidth={ink.stroke * 0.3}
                       />
                       <path
                         d={`M ${mx - sx} ${my + r} L ${mx + sx} ${my - r}`}
-                        stroke={C.muted} strokeWidth={9} strokeLinecap="round"
+                        stroke={C.muted} strokeWidth={ink.stroke * 0.85} strokeLinecap="round"
                       />
                     </g>
                   );
@@ -3864,7 +4066,7 @@ export default function ArrowEscapeV3() {
                     d={lanePath(h, hp.dir, cols, rows, mirrors)}
                     fill="none"
                     stroke={toneFor(hp.dir, theme)}
-                    strokeWidth={16}
+                    strokeWidth={ink.stroke * 1.5}
                     strokeLinecap="round"
                     opacity={0.28}
                   />
@@ -3886,8 +4088,8 @@ export default function ArrowEscapeV3() {
                     piece={p}
                     cols={cols}
                     tone={tone}
-                    width={W_BOARD}
-                    hit={bigTouch ? 78 : 52}
+                    width={ink.stroke}
+                    hit={ink.hit(bigTouch)}
                     className={cls}
                     style={{ "--d": `${Math.min(idx, 16) * 18}ms`, opacity: isSealed && !isBad && !isBlk && !isHint && !isHeld ? 0.45 : 1 }}
                     onDown={onPieceDown(p)}
@@ -3895,15 +4097,21 @@ export default function ArrowEscapeV3() {
                 );
               })}
 
+              {/* The scale and the animation have to sit on different elements.
+                  In SVG the transform attribute and the CSS transform property
+                  are one and the same, so animating transform on the scaled <g>
+                  replaced scale(100) with scale(.93): the silhouette shrank to a
+                  speck in the corner for the whole reveal, then snapped to full
+                  size when the animation ended. */}
               {(phase === "reveal" || phase === "cleared") && (
-                <g transform={`scale(${U})`} className="reveal-fill">
-                  <path d={revealPath} fill={TIER_HUE[tierIndex] ?? C.accent} />
+                <g transform={`scale(${U})`}>
+                  <path d={revealPath} className="reveal-fill" fill={TIER_HUE[tierIndex] ?? C.accent} />
                 </g>
               )}
 
               {[...flying.entries()].map(([id, key]) =>
                 pieces[id] ? (
-                  <DepartingPiece key={`f${key}`} piece={pieces[id]} cols={cols} rows={rows} tone={C.accent} mirrors={mirrors} />
+                  <DepartingPiece key={`f${key}`} piece={pieces[id]} cols={cols} rows={rows} tone={C.accent} mirrors={mirrors} width={ink.stroke} />
                 ) : null
               )}
 
@@ -3913,10 +4121,10 @@ export default function ArrowEscapeV3() {
                   className="ring"
                   cx={cx(ring.cell, cols)}
                   cy={cy(ring.cell, cols)}
-                  r={cols * 5.5}
+                  r={ink.ring}
                   fill="none"
                   stroke={C.accent}
-                  strokeWidth={cols * 0.9}
+                  strokeWidth={ink.stroke * 1.35}
                 />
               )}
 
@@ -3928,10 +4136,10 @@ export default function ArrowEscapeV3() {
                   x={q.x}
                   y={q.y}
                   fill={q.hue}
-                  fontSize={cols * 3.6}
+                  fontSize={ink.text}
                   fontWeight={800}
                   textAnchor="middle"
-                  style={{ fontFamily: "Nunito, sans-serif", "--rise": `${cols * 7}px` }}
+                  style={{ fontFamily: "Nunito, sans-serif", "--rise": `${ink.rise}px` }}
                 >
                   {q.text}
                 </text>
@@ -3983,11 +4191,11 @@ export default function ArrowEscapeV3() {
             <div style={S.ovCard}>
               <div style={{ ...S.ovTitle, color: C.danger }}>Out of lives</div>
               <div style={S.ovSub}>Tip: hold an arrow to see where it is aimed, or tap # for all of them.</div>
-              {!adsRemoved && (
-                <button style={S.adBtn} onClick={watchForLife}>
-                  <span style={S.adPlay}>▶</span> Watch an ad · get a life back
-                </button>
-              )}
+              <button style={S.adBtn} onClick={watchForLife}>
+                {adsRemoved
+                  ? <>Continue · get a life back</>
+                  : <><span style={S.adPlay}>▶</span> Watch an ad · get a life back</>}
+              </button>
               {adNote && <div style={S.adNote}>{adNote}</div>}
               <button style={S.primary} onClick={restart}>
                 Try again
@@ -4215,12 +4423,12 @@ export default function ArrowEscapeV3() {
               <div style={{ ...S.colTitle, marginTop: 16 }}>Discovered shapes</div>
               <div style={S.foundGrid}>
                 {found.map((f) => {
-                  const m = decodeMask(f.c);
+                  const m = cachedFound(f.c);
                   if (!m) return null;
                   return (
                     <div key={f.n} style={{ ...S.foundItem, border: `2px solid ${MEDAL[f.r ?? 1]}` }}>
                       <svg viewBox={`0 0 ${m.cols} ${m.rows}`} style={{ width: 38, height: 38 }}>
-                        <path d={maskPath(m, 0.14, 0.72)} fill={C.accent} />
+                        <path d={m.d} fill={C.accent} />
                       </svg>
                       <span style={S.foundName}>{f.n}</span>
                     </div>
@@ -4269,8 +4477,11 @@ export default function ArrowEscapeV3() {
           </div>
 
           <div style={S.tip}>
-            <b>Bronze</b> — clear the shape. <b>Silver</b> — clear it without a single mistake.
-            <b> Gold</b> — flawless at Hard or beyond: no mistakes and no undo.
+            {/* These three lines described the old rules: bronze for merely
+                finishing, and gold gated behind Hard. Both changed — bronze now
+                asks for a near-clean run, and gold is earnable on any level. */}
+            <b>Bronze</b> — clear it with at most one mistake. <b>Silver</b> — clear it
+            without a single mistake. <b>Gold</b> — no mistakes and no undo, on any level.
             <br />
             Past level {CURATED_UNTIL} the game keeps inventing new shapes, and every one you
             clear is kept here. There is no end to them.
@@ -4787,8 +4998,6 @@ svg { shape-rendering: geometricPrecision; }
 @keyframes heartLow{0%,100%{transform:scale(1)}50%{transform:scale(1.16)}}
 .heart-low{animation:heartLow 1100ms ease-in-out infinite}
 .starpop{animation:starpop 620ms cubic-bezier(.26,1.42,.42,1) backwards}
-@keyframes badgeIn{0%{transform:scale(.4);opacity:0}100%{transform:scale(1);opacity:1}}
-.badge-in{animation:badgeIn 340ms cubic-bezier(.26,1.46,.42,1)}
 @keyframes popUp{0%{transform:translateY(0);opacity:0}20%{transform:translateY(calc(var(--rise,60px) * -0.3));opacity:1}100%{transform:translateY(calc(var(--rise,60px) * -1));opacity:0}}
 .pop{animation:popUp 1000ms cubic-bezier(.12,.88,.24,1) forwards;pointer-events:none;will-change:transform,opacity}
 @keyframes ovin{from{opacity:0;transform:scale(.97)}to{opacity:1;transform:scale(1)}}
@@ -4820,7 +5029,7 @@ button:focus-visible{outline:3px solid ${C.accent};outline-offset:3px}
 .reveal-fill{animation:revealIn 520ms cubic-bezier(.22,1.05,.32,1) backwards;transform-box:fill-box;transform-origin:center;will-change:transform,opacity}
 
 @media (prefers-reduced-motion: reduce){
-.settle,.snake,.chev-out,.dep-fade,.ring,.shake,.flash,.hint,.hbreak,.starpop,.ovin,.confetti,.badge-in,.pop,.score-tick,.combo-in,.heart-low,.left-tick,
+.settle,.snake,.chev-out,.dep-fade,.ring,.shake,.flash,.hint,.hbreak,.starpop,.ovin,.confetti,.pop,.score-tick,.combo-in,.heart-low,.left-tick,
 .screen-in,.board-in,.hud-in,.card-in,.nav-on,.reveal-fill{animation-duration:1ms!important;animation-iteration-count:1!important}
 button{transition-duration:1ms!important}
 button:active:not(:disabled){transform:none}
@@ -4833,17 +5042,19 @@ let CSS = makeCSS(C);
 /* ═══════════  styles  ═══════════ */
 
 const BOARD_W = "min(93vw, 412px)";
-const CELL_CAP = 62;
-const VIEW_PAD = 0.6;  // just enough margin for the stroke, no wasted screen
-const DOT_PAD = 2;   // just past the viewBox edge; more is invisible and costs a render
 
 const makeStyles = (C) => ({
   playRoot: { position: "fixed", inset: 0, height: "100dvh", boxSizing: "border-box", paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "calc(56px + env(safe-area-inset-bottom, 0px))", touchAction: "none", overscrollBehavior: "none", background: C.bg, color: C.ink, fontFamily: "'Nunito', system-ui, sans-serif", display: "flex", flexDirection: "column", WebkitTapHighlightColor: "transparent", userSelect: "none", overflow: "hidden" },
   hud: { display: "flex", alignItems: "center", gap: 8, padding: "12px 14px 8px" },
   hudBtn: { width: 42, height: 42, borderRadius: "50%", background: C.card, border: `1px solid ${C.edge}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: C.sh1, flexShrink: 0 },
-  hudMid: { flex: 1, textAlign: "center" },
+  /* minWidth:0 is what actually lets this shrink. A flex child will not go
+     below its content width without it, so a long shape name would push the
+     HUD wider instead of ellipsing — and with nothing stopping the wrap it
+     broke to a second line, shoving the hearts down. The HUD then changed
+     height from level to level depending on the name. */
+  hudMid: { flex: 1, minWidth: 0, textAlign: "center" },
   leftCount: { fontWeight: 800, fontSize: 12, color: C.muted },
-  diffLabel: { fontWeight: 900, fontSize: 15, letterSpacing: "0.01em" },
+  diffLabel: { fontWeight: 900, fontSize: 15, letterSpacing: "0.01em", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
   hudHearts: { display: "flex", gap: 4, justifyContent: "center", alignItems: "center", marginTop: 3 },
   hintPill: { display: "flex", alignItems: "center", gap: 5, background: C.card, border: `1px solid ${C.edge}`, borderRadius: 999, padding: "10px 14px", cursor: "pointer", boxShadow: C.sh1, flexShrink: 0, transition: "opacity 260ms cubic-bezier(.4,0,.2,1)" },
   hintTxt: { fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 13, color: C.accent },
@@ -4957,7 +5168,9 @@ const makeStyles = (C) => ({
   lvNote: { fontSize: 11.5, fontWeight: 600, color: C.muted, lineHeight: 1.5, marginBottom: 14 },
   lvChapter: { marginBottom: 18 },
   lvHead: { display: "flex", alignItems: "center", gap: 9, marginBottom: 9 },
-  lvChapName: { flex: 1, fontWeight: 900, fontSize: 14, color: C.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  // nowrap and ellipsis do nothing on a flex child without minWidth:0 — the box
+  // simply grows past its share and shoves the star count off the row.
+  lvChapName: { flex: 1, minWidth: 0, fontWeight: 900, fontSize: 14, color: C.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
   lvChapStars: { fontSize: 11, fontWeight: 800, color: C.muted, flexShrink: 0 },
   lvGrid: { display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 7 },
   lvCell: { background: C.bg, border: "2px solid", borderRadius: 12, padding: "9px 2px 7px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, fontFamily: "'Nunito',sans-serif" },
