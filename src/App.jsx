@@ -18,6 +18,12 @@ const LIGHT = {
   gold: "#FFC24B",
   flow: "#8B5CF6",
   muted: "#8A93AC",
+  /* Sealed arrows used muted at 45% opacity, which measured 1.5:1 against the
+     board — below the roughly 3:1 a line needs to register at all. Half the
+     board looked like a rendering fault rather than a locked mechanic. This
+     reads clearly at 5.2:1 while still sitting well behind a live arrow's
+     13.5:1, and the dashed stroke carries the "locked" meaning instead. */
+  sealed: "#5A6480",
   dot: "#D5DBE8",
   line: "#E6EBF4",
   gridLine: "#B9C6E0",
@@ -42,6 +48,7 @@ const DARK = {
   gold: "#FFC24B",
   flow: "#A78BFA",
   muted: "#8592BC",
+  sealed: "#9AA6CE",
   dot: "#27334F",
   line: "#222E4C",
   gridLine: "#3C4E76",
@@ -1354,7 +1361,7 @@ function artMask(seed) {
     /* Drawn at the resolution the board now uses. Detail is a function of how
        many cells a feature spans, so this is the only thing that actually buys
        a finer shape — an eye that cannot read at 18 cells reads easily at 40. */
-    const size = 30 + ((r() * 13) | 0);
+    const size = 22 + ((r() * 9) | 0);
     const c = ArtCanvas(size, 3);
     draw(c, r);
     let grid = aHarvest(c, 0.42);
@@ -1362,7 +1369,7 @@ function artMask(seed) {
     grid = aSmooth(grid);
     const m = aTidy(grid);
     if (!m) continue;
-    if (m.cells.size < 200 || m.cells.size > 900) continue;
+    if (m.cells.size < 130 || m.cells.size > 460) continue;
     if (m.cols < 9 || m.rows < 9) continue;
     return { ...m, name: `${ART_ADJ[(seed * 7) % ART_ADJ.length]} ${name}`, procedural: true };
   }
@@ -1673,7 +1680,7 @@ function measureBoard(pieces, cols, rows, mirrors) {
    the arrows become untappable hairlines. Raising the cell budget let the
    biggest shapes reach 76 cells across, so the budget alone is not enough —
    the dimension has to be capped directly. */
-const MAX_DIM = 40;
+const MAX_DIM = 26;
 
 function fitMask(mask, maxCells) {
   const overDim = mask.cols > MAX_DIM || mask.rows > MAX_DIM;
@@ -2348,22 +2355,22 @@ function curatedKey(level) {
    These values are what the original game measurably played at, tier by tier,
    so the curve stays where it was and the target does real work from now on. */
 const TIERS = [
-  { name: "Warm Up", span: 2,     maxLen: 22, hearts: 3, hints: 3, undos: 3, coverage: 0.94, tightness: 0.80, freedom: 0.494, pieces: 32, maxCells: 360 , diag: 0 , mirrors: 0 },
-  { name: "Little Easy", span: 3,     maxLen: 24, hearts: 3, hints: 3, undos: 3, coverage: 0.95, tightness: 0.83, freedom: 0.426, pieces: 38, maxCells: 444 , diag: 0 , mirrors: 0 },
-  { name: "Easy", span: 4,     maxLen: 26, hearts: 3, hints: 3, undos: 2, coverage: 0.95, tightness: 0.85, freedom: 0.360, pieces: 44, maxCells: 528 , diag: 0 , mirrors: 0 },
-  { name: "Easy Plus", span: 5,     maxLen: 29, hearts: 3, hints: 2, undos: 2, coverage: 0.96, tightness: 0.87, freedom: 0.390, pieces: 49, maxCells: 612 , diag: 0 , mirrors: 0 },
-  { name: "Little Medium", span: 6,     maxLen: 31, hearts: 3, hints: 2, undos: 2, coverage: 0.96, tightness: 0.88, freedom: 0.438, pieces: 55, maxCells: 696 , diag: 1 , mirrors: 0 },
-  { name: "Medium", span: 8,     maxLen: 33, hearts: 3, hints: 2, undos: 2, coverage: 0.97, tightness: 0.90, freedom: 0.322, pieces: 62, maxCells: 780 , diag: 1 , mirrors: 0 },
-  { name: "Medium Plus", span: 10,     maxLen: 35, hearts: 3, hints: 2, undos: 2, coverage: 0.97, tightness: 0.91, freedom: 0.372, pieces: 70, maxCells: 864 , diag: 2 , mirrors: 1 },
-  { name: "Tricky", span: 12,     maxLen: 37, hearts: 3, hints: 2, undos: 1, coverage: 0.98, tightness: 0.92, freedom: 0.363, pieces: 77, maxCells: 948 , diag: 2 , mirrors: 1 },
-  { name: "Tough", span: 14,     maxLen: 40, hearts: 3, hints: 2, undos: 1, coverage: 0.98, tightness: 0.93, freedom: 0.369, pieces: 84, maxCells: 1032 , diag: 2 , mirrors: 1 },
-  { name: "Hard", span: 17,     maxLen: 42, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.94, freedom: 0.319, pieces: 91, maxCells: 1128 , diag: 3 , mirrors: 2 },
-  { name: "Very Hard", span: 20,     maxLen: 44, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.95, freedom: 0.315, pieces: 100, maxCells: 1224 , diag: 3 , mirrors: 2 },
-  { name: "Super Hard", span: 24,     maxLen: 46, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.96, freedom: 0.287, pieces: 109, maxCells: 1332 , diag: 3 , mirrors: 2 },
-  { name: "Expert", span: 30,     maxLen: 48, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.97, freedom: 0.315, pieces: 117, maxCells: 1440 , diag: 4 , mirrors: 3 },
-  { name: "Elite", span: 36,     maxLen: 51, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.98, freedom: 0.294, pieces: 128, maxCells: 1548 , diag: 4 , mirrors: 3 },
-  { name: "Master", span: 45,     maxLen: 53, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.99, freedom: 0.284, pieces: 138, maxCells: 1656 , diag: 4 , mirrors: 3 },
-  { name: "Pro", span: Infinity,     maxLen: 57, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 1.0, freedom: 0.267, pieces: 148, maxCells: 1776 , diag: 4 , mirrors: 3 },
+  { name: "Warm Up", span: 2,     maxLen: 14, hearts: 3, hints: 3, undos: 3, coverage: 0.94, tightness: 0.80, freedom: 0.494, pieces: 32, maxCells: 188 , diag: 0 , mirrors: 0 },
+  { name: "Little Easy", span: 3,     maxLen: 15, hearts: 3, hints: 3, undos: 3, coverage: 0.95, tightness: 0.83, freedom: 0.426, pieces: 38, maxCells: 231 , diag: 0 , mirrors: 0 },
+  { name: "Easy", span: 4,     maxLen: 16, hearts: 3, hints: 3, undos: 2, coverage: 0.95, tightness: 0.85, freedom: 0.360, pieces: 44, maxCells: 275 , diag: 0 , mirrors: 0 },
+  { name: "Easy Plus", span: 5,     maxLen: 18, hearts: 3, hints: 2, undos: 2, coverage: 0.96, tightness: 0.87, freedom: 0.390, pieces: 49, maxCells: 319 , diag: 0 , mirrors: 0 },
+  { name: "Little Medium", span: 6,     maxLen: 19, hearts: 3, hints: 2, undos: 2, coverage: 0.96, tightness: 0.88, freedom: 0.438, pieces: 55, maxCells: 362 , diag: 1 , mirrors: 0 },
+  { name: "Medium", span: 8,     maxLen: 20, hearts: 3, hints: 2, undos: 2, coverage: 0.97, tightness: 0.90, freedom: 0.322, pieces: 62, maxCells: 406 , diag: 1 , mirrors: 0 },
+  { name: "Medium Plus", span: 10,     maxLen: 21, hearts: 3, hints: 2, undos: 2, coverage: 0.97, tightness: 0.91, freedom: 0.372, pieces: 70, maxCells: 450 , diag: 2 , mirrors: 1 },
+  { name: "Tricky", span: 12,     maxLen: 23, hearts: 3, hints: 2, undos: 1, coverage: 0.98, tightness: 0.92, freedom: 0.363, pieces: 77, maxCells: 494 , diag: 2 , mirrors: 1 },
+  { name: "Tough", span: 14,     maxLen: 25, hearts: 3, hints: 2, undos: 1, coverage: 0.98, tightness: 0.93, freedom: 0.369, pieces: 84, maxCells: 538 , diag: 2 , mirrors: 1 },
+  { name: "Hard", span: 17,     maxLen: 26, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.94, freedom: 0.319, pieces: 91, maxCells: 588 , diag: 3 , mirrors: 2 },
+  { name: "Very Hard", span: 20,     maxLen: 27, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.95, freedom: 0.315, pieces: 100, maxCells: 638 , diag: 3 , mirrors: 2 },
+  { name: "Super Hard", span: 24,     maxLen: 28, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.96, freedom: 0.287, pieces: 109, maxCells: 694 , diag: 3 , mirrors: 2 },
+  { name: "Expert", span: 30,     maxLen: 29, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.97, freedom: 0.315, pieces: 117, maxCells: 750 , diag: 4 , mirrors: 3 },
+  { name: "Elite", span: 36,     maxLen: 31, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.98, freedom: 0.294, pieces: 128, maxCells: 806 , diag: 4 , mirrors: 3 },
+  { name: "Master", span: 45,     maxLen: 33, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.99, freedom: 0.284, pieces: 138, maxCells: 862 , diag: 4 , mirrors: 3 },
+  { name: "Pro", span: Infinity,     maxLen: 35, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 1.0, freedom: 0.267, pieces: 148, maxCells: 925 , diag: 4 , mirrors: 3 },
 ];
 const MEDAL = { 1: "#CD7F32", 2: "#AEB6C4", 3: "#FFC24B" };
 const TIER_HUE = ["#5FCB8A", "#4CC79B", "#3FBFD6", "#3EA8EE", "#3E9BF0", "#5580F2", "#6C7BF0", "#8470F2", "#9A6BF0", "#C07AD8", "#F0A93E", "#F2891B", "#F2761B", "#FF6A4A", "#FF3D9A", "#B14BFF"];
@@ -2604,8 +2611,13 @@ const boardInk = (cols, rows) => {
   const span = (Math.max(cols, rows) + VIEW_PAD * 2) * U;
   const perPx = span / SCREEN_REF;      // board units in one screen pixel
   return {
-    stroke: 2.4 * perPx,
-    dot: 1.25 * perPx,
+    /* Capped against the CELL, not just the screen. An arrow has to sit inside
+       a 100-unit cell with its neighbours one cell away, so its thickness is a
+       fraction of that cell — screen-constant alone pushed it to 17% of a cell
+       on a big board where the original was 11.5%, and the arrows crowded each
+       other. Screen-constant below the cap, cell-bound above it. */
+    stroke: Math.min(2.4 * perPx, 0.12 * U),
+    dot: Math.min(1.25 * perPx, 0.05 * U),
     /* Score pops and the tap ring were scaled by cols alone, but a board is
        fitted by whichever side is longer. On a tall narrow board that made the
        "+150" three and a half pixels tall — unreadable — while a wide board got
@@ -2627,8 +2639,8 @@ function piecePath(piece, cols, w = 9.6) {
   // them would push the stub and the tip 1.41x too far.
   // Both lengths follow the stroke, so a one-cell arrow keeps its shape and the
   // line always meets the back of the head at the same overlap.
-  if (pts.length === 1) pts.unshift({ x: head.x - D.nx * w * 3.54, y: head.y - D.ny * w * 3.54 });
-  const tip = { x: head.x + D.nx * w * 0.73, y: head.y + D.ny * w * 0.73 };
+  if (pts.length === 1) pts.unshift({ x: head.x - D.nx * U * 0.34, y: head.y - D.ny * U * 0.34 });
+  const tip = { x: head.x + D.nx * U * 0.07, y: head.y + D.ny * U * 0.07 };
   return `M ${pts[0].x} ${pts[0].y} ` + pts.slice(1).map((p) => `L ${p.x} ${p.y}`).join(" ") + ` L ${tip.x} ${tip.y}`;
 }
 
@@ -2641,7 +2653,11 @@ function headChevron(piece, cols, w = 9.6) {
   const i = piece.cells[0];
   const hx = cx(i, cols);
   const hy = cy(i, cols);
-  const back = w * 0.21, reach = w * 2.6, flare = w * 1.56;
+  /* The head is measured against the CELL. Tying it to the stroke made it grow
+     with the line, and on a dense board a head half a cell wide ran into the
+     arrows around it. A cell is always 100 units, so an arrowhead sized from it
+     always fits its own square whatever the board. */
+  const back = U * 0.02, reach = U * 0.26, flare = U * 0.16;
   return {
     d: `M ${hx + back} ${hy - flare} L ${hx + reach} ${hy} L ${hx + back} ${hy + flare}`,
     rot: `rotate(${DIRS[piece.dir].angle} ${hx} ${hy})`,
@@ -2670,13 +2686,13 @@ function departGeom(piece, cols, rows, mirrors, w = 9.6) {
   const head = pts[pts.length - 1];
   // matches the stub piecePath draws, so a one-cell arrow does not change
   // length the instant it starts to leave
-  if (pts.length === 1) pts.unshift({ x: head.x - D.nx * w * 3.54, y: head.y - D.ny * w * 3.54 });
+  if (pts.length === 1) pts.unshift({ x: head.x - D.nx * U * 0.34, y: head.y - D.ny * U * 0.34 });
 
   let bodyLen = 0;
   for (let i = 1; i < pts.length; i++) {
     bodyLen += Math.abs(pts[i].x - pts[i - 1].x) + Math.abs(pts[i].y - pts[i - 1].y);
   }
-  bodyLen += w * 0.73; // out to the chevron base
+  bodyLen += U * 0.07; // out to the chevron base
 
   /* With deflectors the flight is no longer a straight run: walk the actual
      lane cells so the arrow visibly turns where the lane turns, then carry on
@@ -4044,14 +4060,13 @@ export default function ArrowEscapeV3() {
                   const sx = kind === "/" ? r : -r;
                   return (
                     <g key={`mir${cell}`}>
-                      <rect
-                        x={mx - U * 0.44} y={my - U * 0.44}
-                        width={U * 0.88} height={U * 0.88} rx={U * 0.22}
-                        fill={C.card} stroke={C.edge} strokeWidth={ink.stroke * 0.3}
-                      />
+                      {/* Just the bar. A ring around it made the universal
+                          "prohibited" sign, which says the opposite of what a
+                          deflector does. The bar alone is the mirror; it only
+                          ever needed to be dark enough to see. */}
                       <path
                         d={`M ${mx - sx} ${my + r} L ${mx + sx} ${my - r}`}
-                        stroke={C.muted} strokeWidth={ink.stroke * 0.85} strokeLinecap="round"
+                        stroke={C.sealed} strokeWidth={ink.stroke * 1.15} strokeLinecap="round"
                       />
                     </g>
                   );
@@ -4080,7 +4095,8 @@ export default function ArrowEscapeV3() {
                 const isHint = hintId === p.id;
                 const isHeld = holdId === p.id;
                 const isSealed = p.needs !== undefined && alive.has(p.needs);
-                const tone = isBad || isBlk ? C.danger : isHint || isHeld ? C.accent : isSealed ? C.muted : toneFor(p.dir, theme);
+                const tone = isBad || isBlk ? C.danger : isHint || isHeld ? C.accent : isSealed ? C.sealed : toneFor(p.dir, theme);
+                const quiet = isSealed && !isBad && !isBlk && !isHint && !isHeld;
                 const cls = isBad ? "shake" : isBlk ? "flash" : isHint ? "hint" : "settle";
                 return (
                   <Piece
@@ -4091,7 +4107,7 @@ export default function ArrowEscapeV3() {
                     width={ink.stroke}
                     hit={ink.hit(bigTouch)}
                     className={cls}
-                    style={{ "--d": `${Math.min(idx, 16) * 18}ms`, opacity: isSealed && !isBad && !isBlk && !isHint && !isHeld ? 0.45 : 1 }}
+                    style={{ "--d": `${Math.min(idx, 16) * 18}ms`, opacity: quiet ? 0.85 : 1 }}
                     onDown={onPieceDown(p)}
                   />
                 );
