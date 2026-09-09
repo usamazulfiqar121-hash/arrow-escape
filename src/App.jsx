@@ -413,6 +413,27 @@ function aRect(c, x0, y0, x1, y1, val) {
   for (let y = p; y <= q; y++) for (let x = a; x <= b; x++) c.buf[y * c.S + x] = val;
 }
 
+/* Carve a face. A solid silhouette is the reason a cat and a raccoon looked
+   like the same blob: at this resolution the outline alone carries almost no
+   information, and 115 of the shapes had no interior detail at all. Two eyes
+   and a gap at the neck are what make an animal read as that animal. */
+function aEyes(c, cx0, y, spread, rad) {
+  aEll(c, cx0 - spread - rad, y - rad, cx0 - spread + rad, y + rad, 0);
+  aEll(c, cx0 + spread - rad, y - rad, cx0 + spread + rad, y + rad, 0);
+}
+/* A carve has to be at least two cells across or aSmooth fills it straight back
+   in — it closes any hole whose four neighbours are solid. At these canvas
+   sizes one cell is about 3.3 units, so nothing thinner than ~9 survives. */
+const CARVE_MIN = 9;
+function aNeck(c, x0, x1, y, th) {
+  const t = Math.max(th, CARVE_MIN);
+  aRect(c, x0, y - t / 2, x1, y + t / 2, 0);
+}
+function aSlot(c, x, y0, y1, w) {
+  const t = Math.max(w, CARVE_MIN);
+  aRect(c, x - t / 2, y0, x + t / 2, y1, 0);
+}
+
 function aPoly(c, pts, val) {
   const P = pts.map(([x, y]) => [aToS(c, x), aToS(c, y)]);
   let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9;
@@ -521,12 +542,1100 @@ function aTidy(rows) {
     }
     if (comp.length > best.length) best = comp;
   }
-  return { cols, rows: rw, cells: new Set(best) };
+  if (!best.length) return null;
+
+  /* Crop a second time, to the island we actually kept. The first crop above
+     measured every cell including the stray specks, and those specks are then
+     thrown away — so a speck out near the edge left the board several columns
+     wider than the shape, with a dead empty strip down one side. That was
+     happening to about eight percent of generated levels. */
+  let x0 = cols, x1 = -1, y0 = rw, y1 = -1;
+  for (const i of best) {
+    const x = i % cols, y = (i / cols) | 0;
+    if (x < x0) x0 = x;
+    if (x > x1) x1 = x;
+    if (y < y0) y0 = y;
+    if (y > y1) y1 = y;
+  }
+  const fc = x1 - x0 + 1, fr = y1 - y0 + 1;
+  const out = new Set();
+  for (const i of best) out.add(((i / cols | 0) - y0) * fc + (i % cols) - x0);
+  return { cols: fc, rows: fr, cells: out };
 }
 
 /* ── families: each returns a drawing function given a seeded rng ── */
 
 const ART_FAMILIES = [
+  ["Camel", (c, r) => {
+    const hump = 12 + r() * 6;
+    aEll(c, 22, 46, 78, 74, 1);
+    aEll(c, 30, 46 - hump, 52, 58, 1);
+    aEll(c, 52, 46 - hump, 74, 58, 1);
+    aRect(c, 68, 22, 80, 52, 1);
+    aEll(c, 66, 12, 90, 30, 1);
+    aRect(c, 28, 70, 35, 94, 1);
+    aRect(c, 62, 70, 69, 94, 1);
+  }],
+  ["Kangaroo", (c, r) => {
+    aEll(c, 34, 30, 66, 70, 1);
+    aEll(c, 44, 10, 68, 34, 1);
+    aPoly(c, [[48, 14], [46, 0], [54, 12]], 1);
+    aPoly(c, [[58, 14], [62, 0], [56, 12]], 1);
+    aPoly(c, [[38, 60], [62, 62], [58, 92], [30, 92]], 1);
+    aRect(c, 26, 84, 62, 94, 1);
+    aPoly(c, [[34, 58], [6, 78 + r() * 10], [18, 88], [40, 72]], 1);
+  }],
+  ["Raccoon", (c, r) => {
+    const ear = 11 + r() * 5;
+    aEll(c, 24, 16, 24 + ear * 2, 16 + ear * 2, 1);
+    aEll(c, 76 - ear * 2, 16, 76, 16 + ear * 2, 1);
+    aEll(c, 24, 20, 76, 62, 1);
+    aPoly(c, [[38, 46], [62, 46], [50, 66]], 1);
+    aEll(c, 30, 58, 70, 94, 1);
+    aRect(c, 70, 62, 96, 74, 1);
+    aEyes(c, 50, 36, 13, 6);
+    aNeck(c, 32, 68, 60, 10);
+  }],
+  ["Wolf", (c, r) => {
+    const snout = 12 + r() * 6;
+    aPoly(c, [[30, 34], [26, 10], [44, 26]], 1);
+    aPoly(c, [[70, 34], [74, 10], [56, 26]], 1);
+    aEll(c, 28, 22, 72, 62, 1);
+    aPoly(c, [[42, 52], [58, 52], [50, 52 + snout]], 1);
+    aEll(c, 32, 58, 68, 92, 1);
+    aEyes(c, 50, 38, 12, 5);
+    aNeck(c, 34, 66, 60, 9);
+  }],
+  ["Goat", (c, r) => {
+    const horn = 14 + r() * 8;
+    aEll(c, 24, 42, 76, 74, 1);
+    aEll(c, 60, 22, 88, 50, 1);
+    aPoly(c, [[66, 24], [58, 24 - horn], [72, 20]], 1);
+    aPoly(c, [[80, 24], [88, 24 - horn], [74, 20]], 1);
+    aPoly(c, [[68, 46], [80, 46], [74, 62]], 1);
+    aRect(c, 30, 70, 37, 94, 1);
+    aRect(c, 60, 70, 67, 94, 1);
+  }],
+  ["Llama", (c, r) => {
+    const neck = 9 + r() * 4;
+    aEll(c, 24, 52, 74, 84, 1);
+    aRect(c, 58 - neck, 26, 58 + neck, 60, 1);
+    aEll(c, 50, 12, 78, 34, 1);
+    aPoly(c, [[56, 16], [54, 2], [62, 14]], 1);
+    aPoly(c, [[68, 16], [72, 2], [64, 14]], 1);
+    aRect(c, 30, 80, 37, 96, 1);
+    aRect(c, 58, 80, 65, 96, 1);
+  }],
+  ["Peacock", (c, r) => {
+    const fan = 40 + r() * 8;
+    for (let i = 0; i < 9; i++) {
+      const a = Math.PI + (i / 8) * Math.PI;
+      const x = 50 + Math.cos(a) * fan, y = 64 + Math.sin(a) * fan;
+      aEll(c, x - 9, y - 9, x + 9, y + 9, 1);
+    }
+    aEll(c, 38, 46, 62, 86, 1);
+    aEll(c, 42, 22, 58, 42, 1);
+    aPoly(c, [[46, 6], [50, 20], [54, 6]], 1);
+  }],
+  ["Parrot", (c, r) => {
+    aEll(c, 32, 26, 68, 72, 1);
+    aEll(c, 38, 10, 66, 36, 1);
+    aPoly(c, [[38, 18], [20, 24], [40, 34]], 1);
+    aPoly(c, [[44, 6], [56, 0], [58, 12]], 1);
+    aPoly(c, [[48, 64], [66, 62], [58, 96], [44, 92]], 1);
+    if (r() < 0.7) aPoly(c, [[62, 36], [86, 46], [62, 62]], 1);
+  }],
+  ["Eagle", (c, r) => {
+    const span = 36 + r() * 10;
+    aEll(c, 40, 24, 60, 70, 1);
+    aEll(c, 40, 8, 60, 30, 1);
+    aPoly(c, [[40, 16], [24, 20], [42, 26]], 1);
+    aPoly(c, [[42, 30], [50 - span, 20], [50 - span + 10, 46], [44, 56]], 1);
+    aPoly(c, [[58, 30], [50 + span, 20], [50 + span - 10, 46], [56, 56]], 1);
+    aPoly(c, [[42, 66], [58, 66], [54, 92], [46, 92]], 1);
+  }],
+  ["Pelican", (c, r) => {
+    const pouch = 16 + r() * 8;
+    aEll(c, 22, 44, 72, 82, 1);
+    aEll(c, 54, 18, 84, 46, 1);
+    aPoly(c, [[78, 26], [98, 30], [96, 40], [76, 42]], 1);
+    aEll(c, 66, 34, 92, 34 + pouch, 1);
+    aPoly(c, [[30, 50], [58, 44], [52, 70], [28, 68]], 1);
+  }],
+  ["Lizard", (c, r) => {
+    aEll(c, 32, 30, 62, 76, 1);
+    aEll(c, 38, 12, 58, 34, 1);
+    const tail = 22 + r() * 10;
+    for (let i = 0; i <= 20; i++) {
+      const t = i / 20;
+      const x = 48 + Math.sin(t * Math.PI) * 16, y = 74 + t * tail;
+      const th = 7 - t * 4;
+      aEll(c, x - th, y - th, x + th, y + th, 1);
+    }
+    for (const [sx, sy] of [[-1, 40], [1, 40], [-1, 66], [1, 66]])
+      aPoly(c, [[50 + sx * 14, sy], [50 + sx * 32, sy + 10], [50 + sx * 16, sy + 10]], 1);
+  }],
+  ["Crocodile", (c, r) => {
+    const jaw = 8 + r() * 4;
+    aEll(c, 10, 42, 74, 68, 1);
+    aPoly(c, [[62, 44], [98, 46], [98, 58], [62, 62]], 1);
+    for (let i = 0; i < 5; i++) aPoly(c, [[20 + i * 10, 42], [25 + i * 10, 42 - jaw], [30 + i * 10, 42]], 1);
+    for (const x of [22, 40, 56])
+      { aPoly(c, [[x, 64], [x - 8, 82], [x + 6, 82]], 1); }
+    aPoly(c, [[10, 48], [2, 44], [4, 64]], 1);
+  }],
+  ["Beetle", (c, r) => {
+    const w = 26 + r() * 6;
+    aEll(c, 50 - w, 26, 50 + w, 88, 1);
+    aEll(c, 50 - 16, 10, 50 + 16, 34, 1);
+    aRect(c, 48, 30, 52, 86, 0);
+    for (const s of [-1, 1]) for (const y of [38, 54, 70])
+      aPoly(c, [[50 + s * w, y], [50 + s * (w + 18), y - 6], [50 + s * (w + 18), y + 2]], 1);
+    aPoly(c, [[44, 12], [36, 0], [46, 8]], 1);
+    aPoly(c, [[56, 12], [64, 0], [54, 8]], 1);
+  }],
+  ["Moth", (c, r) => {
+    const span = 30 + r() * 8;
+    aEll(c, 44, 22, 56, 78, 1);
+    aEll(c, 50 - span, 20, 50 - 4, 58, 1);
+    aEll(c, 50 + 4, 20, 50 + span, 58, 1);
+    aEll(c, 50 - span * 0.7, 52, 50 - 4, 82, 1);
+    aEll(c, 50 + 4, 52, 50 + span * 0.7, 82, 1);
+    aPoly(c, [[46, 22], [34, 6], [48, 18]], 1);
+    aPoly(c, [[54, 22], [66, 6], [52, 18]], 1);
+  }],
+  ["Grasshopper", (c, r) => {
+    aEll(c, 20, 44, 70, 68, 1);
+    aEll(c, 66, 38, 90, 62, 1);
+    aPoly(c, [[84, 42], [98, 32], [92, 46]], 1);
+    const hop = 20 + r() * 10;
+    aPoly(c, [[40, 62], [30, 62 - hop], [44, 60]], 1);
+    aPoly(c, [[30, 62 - hop], [16, 88], [26, 88]], 1);
+    aPoly(c, [[56, 66], [48, 86], [58, 86]], 1);
+    aEll(c, 26, 34, 66, 50, 1);
+  }],
+  ["Rose", (c, r) => {
+    const turns = 2.2 + r() * 0.8;
+    for (let i = 0; i <= 110; i++) {
+      const t = i / 110, a = t * Math.PI * 2 * turns;
+      const rad = 4 + t * 24, th = 5 + t * 3;
+      const x = 50 + Math.cos(a) * rad, y = 36 + Math.sin(a) * rad;
+      aEll(c, x - th, y - th, x + th, y + th, 1);
+    }
+    aRect(c, 47, 62, 53, 96, 1);
+    aEll(c, 22, 66, 48, 80, 1);
+    aEll(c, 52, 76, 78, 90, 1);
+  }],
+  ["Daisy", (c, r) => {
+    const pet = 7 + ((r() * 3) | 0);
+    for (let i = 0; i < pet; i++) {
+      const a = (i / pet) * Math.PI * 2;
+      const x = 50 + Math.cos(a) * 22, y = 36 + Math.sin(a) * 22;
+      aEll(c, x - 13, y - 9, x + 13, y + 9, 1);
+    }
+    aEll(c, 40, 26, 60, 46, 1);
+    aRect(c, 47, 46, 53, 96, 1);
+    aEll(c, 24, 62, 48, 74, 1);
+  }],
+  ["Lotus", (c, r) => {
+    const w = 12 + r() * 5;
+    aPoly(c, [[50 - w, 84], [50, 34], [50 + w, 84]], 1);
+    aPoly(c, [[50 - w - 18, 84], [50 - 20, 44], [50 - 2, 84]], 1);
+    aPoly(c, [[50 + w + 18, 84], [50 + 20, 44], [50 + 2, 84]], 1);
+    aPoly(c, [[14, 86], [30, 56], [46, 86]], 1);
+    aPoly(c, [[86, 86], [70, 56], [54, 86]], 1);
+    aRect(c, 12, 82, 88, 92, 1);
+  }],
+  ["Bamboo", (c, r) => {
+    /* Two stalks, not one. A single 28-wide column came to the same 221 cells
+       every time and cleared the 130 floor only on the largest canvas, so this
+       family turned up about five times in twenty thousand levels. */
+    /* One stalk, and leaves that stay short. The previous version gave each
+       leaf a 44-unit span reaching the canvas edge, so four of them merged into
+       one wide band and the whole thing rasterised as a plus sign, wider than
+       it was tall. Bamboo has to read as vertical. */
+    const segs = 4 + ((r() * 2) | 0);
+    for (let i = 0; i < segs; i++) {
+      const y = 4 + (i / segs) * 90;
+      aRect(c, 36, y, 64, y + 90 / segs - 4, 1);
+    }
+    for (const [y, sd] of [[22, -1], [44, 1], [68, -1]])
+      aEll(c, 50 + sd * 18 - 14, y - 6, 50 + sd * 18 + 14, y + 6, 1);
+  }],
+  ["Fern", (c, r) => {
+    const fronds = 6 + ((r() * 3) | 0);
+    aRect(c, 47, 20, 53, 96, 1);
+    for (let i = 0; i < fronds; i++) {
+      const t = i / (fronds - 1), y = 22 + t * 60;
+      const len = 34 * (1 - t * 0.55);
+      aPoly(c, [[50, y], [50 - len, y + 10], [50 - len + 8, y + 16], [48, y + 10]], 1);
+      aPoly(c, [[50, y], [50 + len, y + 10], [50 + len - 8, y + 16], [52, y + 10]], 1);
+    }
+  }],
+  ["Pumpkin", (c, r) => {
+    const w = 34 + r() * 8;
+    aEll(c, 50 - w, 28, 50 + w, 92, 1);
+    aEll(c, 50 - w * 0.55, 28, 50 + w * 0.55, 92, 1);
+    aRect(c, 45, 12, 55, 32, 1);
+    aPoly(c, [[54, 18], [76, 8], [58, 26]], 1);
+  }],
+  ["Banana", (c, r) => {
+    /* Fatter than the first draft, which sat on the 130-cell floor at every
+       canvas size and so appeared eight times in twenty thousand levels. */
+    const curve = 34 + r() * 8;
+    for (let i = 0; i <= 40; i++) {
+      const a = Math.PI * 1.15 + (i / 40) * Math.PI * 0.8;
+      const x = 50 + Math.cos(a) * curve, y = 40 - Math.sin(a) * curve;
+      const th = 17 - Math.abs(i / 40 - 0.5) * 12;
+      aEll(c, x - th, y - th, x + th, y + th, 1);
+    }
+  }],
+  ["Lemon", (c, r) => {
+    const w = 32 + r() * 6;
+    aEll(c, 50 - w, 30, 50 + w, 84, 1);
+    aPoly(c, [[50 - w + 2, 50], [50 - w - 12, 57], [50 - w + 2, 64]], 1);
+    aPoly(c, [[50 + w - 2, 50], [50 + w + 12, 57], [50 + w - 2, 64]], 1);
+    aRect(c, 47, 20, 53, 34, 1);
+    aPoly(c, [[52, 24], [72, 16], [56, 30]], 1);
+  }],
+  ["Peach", (c, r) => {
+    const w = 32 + r() * 6;
+    aEll(c, 50 - w, 26, 50 + w, 92, 1);
+    aPoly(c, [[48, 34], [52, 34], [52, 88], [48, 88]], 0);
+    aRect(c, 47, 12, 53, 30, 1);
+    aPoly(c, [[52, 16], [78, 6], [56, 26]], 1);
+  }],
+  ["Avocado", (c, r) => {
+    const w = 28 + r() * 6;
+    aEll(c, 50 - w, 30, 50 + w, 94, 1);
+    aEll(c, 50 - w * 0.6, 12, 50 + w * 0.6, 48, 1);
+    aEll(c, 50 - 12, 56, 50 + 12, 80, 0);
+  }],
+  ["Chili", (c, r) => {
+    const bend = 16 + r() * 8;
+    for (let i = 0; i <= 40; i++) {
+      const t = i / 40, y = 28 + t * 62;
+      const x = 50 + Math.sin(t * Math.PI * 0.9) * bend;
+      const th = 13 - t * 9;
+      aEll(c, x - th, y - th, x + th, y + th, 1);
+    }
+    aRect(c, 44, 12, 56, 32, 1);
+    aPoly(c, [[38, 14], [62, 14], [50, 26]], 1);
+  }],
+  ["Bread Loaf", (c, r) => {
+    const w = 36 + r() * 6;
+    aEll(c, 50 - w, 26, 50 + w, 66, 1);
+    aRect(c, 50 - w, 46, 50 + w, 84, 1);
+    for (let i = 0; i < 3; i++) aPoly(c, [[36 + i * 12, 30], [44 + i * 12, 22], [46 + i * 12, 30]], 1);
+  }],
+  ["Croissant", (c, r) => {
+    const rad = 30 + r() * 6;
+    for (let i = 0; i <= 40; i++) {
+      const a = Math.PI * 0.15 + (i / 40) * Math.PI * 0.7;
+      const x = 50 - Math.cos(a) * rad, y = 76 - Math.sin(a) * rad;
+      const th = 15 - Math.abs(i / 40 - 0.5) * 14;
+      aEll(c, x - th, y - th, x + th, y + th, 1);
+    }
+    for (let i = 0; i <= 40; i++) {
+      const a = Math.PI * 0.15 + (i / 40) * Math.PI * 0.7;
+      const x = 50 + Math.cos(a) * rad, y = 76 - Math.sin(a) * rad;
+      const th = 15 - Math.abs(i / 40 - 0.5) * 14;
+      aEll(c, x - th, y - th, x + th, y + th, 1);
+    }
+  }],
+  ["Cheese", (c, r) => {
+    aPoly(c, [[10, 82], [10, 46], [90, 30], [90, 82]], 1);
+    aPoly(c, [[10, 46], [90, 30], [90, 42], [10, 58]], 1);
+    for (const [x, y, rad] of [[30, 66, 8], [54, 58, 10], [74, 68, 7]])
+      aEll(c, x - rad, y - rad, x + rad, y + rad, 0);
+  }],
+  ["Egg", (c, r) => {
+    const w = 28 + r() * 6;
+    aEll(c, 50 - w, 18, 50 + w, 94, 1);
+    aEll(c, 50 - w * 0.8, 12, 50 + w * 0.8, 56, 1);
+  }],
+  ["Kettle", (c, r) => {
+    aEll(c, 20, 36, 80, 88, 1);
+    aRect(c, 40, 20, 60, 40, 1);
+    aRect(c, 34, 14, 66, 24, 1);
+    aPoly(c, [[76, 46], [98, 30], [98, 40], [78, 58]], 1);
+    aEll(c, 14, 44, 34, 74, 1);
+    aEll(c, 20, 51, 30, 67, 0);
+  }],
+  ["Pan", (c, r) => {
+    aEll(c, 12, 40, 68, 84, 1);
+    aRect(c, 12, 40, 68, 62, 1);
+    aRect(c, 64, 44, 96, 54, 1);
+    if (r() < 0.6) aEll(c, 88, 42, 98, 56, 1);
+  }],
+  ["Spoon", (c, r) => {
+    const bowl = 20 + r() * 6;
+    aEll(c, 50 - bowl, 6, 50 + bowl, 6 + bowl * 2.2, 1);
+    aRect(c, 42, 44, 58, 96, 1);
+  }],
+  ["Jar", (c, r) => {
+    const w = 30 + r() * 6;
+    aRect(c, 50 - w, 26, 50 + w, 90, 1);
+    aEll(c, 50 - w, 78, 50 + w, 96, 1);
+    aRect(c, 50 - w - 4, 14, 50 + w + 4, 30, 1);
+    aRect(c, 50 - w - 2, 8, 50 + w + 2, 18, 1);
+  }],
+  ["Barrel", (c, r) => {
+    const bulge = 6 + r() * 5;
+    aPoly(c, [[28 - bulge, 16], [72 + bulge, 16], [78 + bulge, 54], [72 + bulge, 92], [28 - bulge, 92], [22 - bulge, 54]], 1);
+    aRect(c, 22 - bulge, 34, 78 + bulge, 42, 1);
+    aRect(c, 22 - bulge, 66, 78 + bulge, 74, 1);
+  }],
+  ["Chest", (c, r) => {
+    aEll(c, 12, 18, 88, 62, 1);
+    aRect(c, 12, 40, 88, 46, 1);
+    aRect(c, 12, 44, 88, 86, 1);
+    aRect(c, 42, 50, 58, 68, 0);
+    aRect(c, 10, 82, 90, 92, 1);
+  }],
+  ["Suitcase", (c, r) => {
+    aRect(c, 12, 30, 88, 88, 1);
+    aRect(c, 38, 14, 62, 34, 1);
+    aRect(c, 44, 20, 56, 32, 0);
+    aRect(c, 10, 48, 90, 56, 0);
+  }],
+  ["Backpack", (c, r) => {
+    aEll(c, 18, 18, 82, 60, 1);
+    aRect(c, 18, 38, 82, 90, 1);
+    aRect(c, 30, 62, 70, 84, 0);
+    aRect(c, 30, 6, 40, 26, 1);
+    aRect(c, 60, 6, 70, 26, 1);
+  }],
+  ["Glasses", (c, r) => {
+    const rad = 23 + r() * 5;
+    aEll(c, 4, 50 - rad, 4 + rad * 2, 50 + rad, 1);
+    aEll(c, 12, 50 - rad + 8, rad * 2 - 4, 50 + rad - 8, 0);
+    aEll(c, 96 - rad * 2, 50 - rad, 96, 50 + rad, 1);
+    aEll(c, 104 - rad * 2, 50 - rad + 8, 88, 50 + rad - 8, 0);
+    aRect(c, 4 + rad * 2 - 4, 42, 96 - rad * 2 + 4, 58, 1);
+    aRect(c, 2, 44, 14, 52, 1);
+    aRect(c, 86, 44, 98, 52, 1);
+  }],
+  ["Boot", (c, r) => {
+    const shaft = 30 + r() * 12;
+    aRect(c, 32, 90 - shaft - 26, 66, 74, 1);
+    aPoly(c, [[32, 68], [66, 68], [88, 84], [88, 92], [32, 92]], 1);
+    aRect(c, 28, 88, 90, 96, 1);
+  }],
+  ["Saw", (c, r) => {
+    const teeth = 6 + ((r() * 4) | 0);
+    aPoly(c, [[10, 26], [78, 26], [78, 58], [10, 44]], 1);
+    for (let i = 0; i < teeth; i++) {
+      const x = 12 + (i / teeth) * 64;
+      aPoly(c, [[x, 46], [x + 6, 62], [x + 11, 46]], 1);
+    }
+    aRect(c, 74, 18, 92, 44, 1);
+    aEll(c, 78, 24, 90, 38, 0);
+  }],
+  ["Wrench", (c, r) => {
+    const jaw = 11 + r() * 5;
+    aEll(c, 22, 4, 78, 50, 1);
+    aPoly(c, [[50 - jaw, 4], [50 + jaw, 4], [50 + jaw, 22], [50 - jaw, 22]], 0);
+    aEll(c, 38, 22, 62, 42, 0);
+    aRect(c, 38, 44, 62, 96, 1);
+  }],
+  ["Gear", (c, r) => {
+    const teeth = 7 + ((r() * 4) | 0), rad = 28;
+    aEll(c, 50 - rad, 50 - rad, 50 + rad, 50 + rad, 1);
+    for (let i = 0; i < teeth; i++) {
+      const a = (i / teeth) * Math.PI * 2;
+      const x = 50 + Math.cos(a) * (rad + 8), y = 50 + Math.sin(a) * (rad + 8);
+      aEll(c, x - 10, y - 10, x + 10, y + 10, 1);
+    }
+    aEll(c, 38, 38, 62, 62, 0);
+  }],
+  ["Bulb", (c, r) => {
+    const rad = 26 + r() * 5;
+    aEll(c, 50 - rad, 8, 50 + rad, 8 + rad * 2, 1);
+    aPoly(c, [[50 - rad + 6, 8 + rad * 1.7], [50 + rad - 6, 8 + rad * 1.7], [50 + 13, 74], [50 - 13, 74]], 1);
+    aRect(c, 50 - 14, 70, 50 + 14, 82, 1);
+    aRect(c, 50 - 14, 84, 50 + 14, 94, 1);
+  }],
+  ["Fan", (c, r) => {
+    const blades = 3 + ((r() * 2) | 0);
+    for (let i = 0; i < blades; i++) {
+      const a = (i / blades) * Math.PI * 2;
+      const x = 50 + Math.cos(a) * 24, y = 44 + Math.sin(a) * 24;
+      aEll(c, x - 18, y - 12, x + 18, y + 12, 1);
+    }
+    aEll(c, 42, 36, 58, 52, 1);
+    aRect(c, 46, 50, 54, 86, 1);
+    aRect(c, 28, 84, 72, 94, 1);
+  }],
+  ["Stone Arch", (c, r) => {
+    const arch = 22 + r() * 8;
+    aRect(c, 6, 40, 94, 54, 1);
+    aEll(c, 50 - arch - 14, 40, 50 + arch + 14, 40 + arch * 2, 1);
+    aEll(c, 50 - arch, 46, 50 + arch, 46 + arch * 2, 0);
+    aRect(c, 6, 54, 20, 92, 1);
+    aRect(c, 80, 54, 94, 92, 1);
+    for (let i = 0; i < 5; i++) aRect(c, 14 + i * 18, 24, 20 + i * 18, 42, 1);
+  }],
+  ["Tent", (c, r) => {
+    const w = 40 + r() * 6;
+    aPoly(c, [[50 - w, 88], [50, 12], [50 + w, 88]], 1);
+    aPoly(c, [[50 - 14, 88], [50, 44], [50 + 14, 88]], 0);
+    aRect(c, 50 - w - 4, 84, 50 + w + 4, 94, 1);
+  }],
+  ["Barn", (c, r) => {
+    const w = 38 + r() * 6;
+    aPoly(c, [[50 - w, 42], [50 - w * 0.6, 18], [50 + w * 0.6, 18], [50 + w, 42]], 1);
+    aRect(c, 50 - w, 40, 50 + w, 90, 1);
+    aRect(c, 50 - 14, 60, 50 + 14, 90, 0);
+    aRect(c, 50 - 2, 6, 50 + 2, 20, 1);
+  }],
+  ["Well", (c, r) => {
+    const w = 30 + r() * 6;
+    aRect(c, 50 - w, 52, 50 + w, 92, 1);
+    aRect(c, 50 - w - 6, 46, 50 + w + 6, 56, 1);
+    aPoly(c, [[50 - w - 8, 30], [50, 8], [50 + w + 8, 30]], 1);
+    aRect(c, 50 - w + 4, 28, 50 - w + 10, 52, 1);
+    aRect(c, 50 + w - 10, 28, 50 + w - 4, 52, 1);
+  }],
+  ["Watchtower", (c, r) => {
+    const w = 22 + r() * 6;
+    aRect(c, 50 - w, 26, 50 + w, 92, 1);
+    aRect(c, 50 - w - 7, 18, 50 + w + 7, 30, 1);
+    for (let i = 0; i < 4; i++) aRect(c, 50 - w - 6 + i * ((w * 2 + 12) / 4), 8, 50 - w - 1 + i * ((w * 2 + 12) / 4), 20, 1);
+    aRect(c, 50 - 8, 60, 50 + 8, 92, 0);
+  }],
+  ["Panda", (c, r) => {
+    const ear = 10 + r() * 5;
+    aEll(c, 26, 16, 26 + ear * 2, 16 + ear * 2, 1);
+    aEll(c, 74 - ear * 2, 16, 74, 16 + ear * 2, 1);
+    aEll(c, 24, 20, 76, 66, 1);
+    aEll(c, 32, 60, 68, 96, 1);
+    aRect(c, 18, 62, 34, 88, 1);
+    aRect(c, 66, 62, 82, 88, 1);
+    aEyes(c, 50, 38, 14, 6);
+    aNeck(c, 34, 66, 64, 9);
+  }],
+  ["Koala", (c, r) => {
+    const ear = 13 + r() * 6;
+    aEll(c, 14, 18, 14 + ear * 2, 18 + ear * 2, 1);
+    aEll(c, 86 - ear * 2, 18, 86, 18 + ear * 2, 1);
+    aEll(c, 28, 20, 72, 64, 1);
+    aEll(c, 42, 44, 58, 60, 1);
+    aEll(c, 34, 58, 66, 94, 1);
+    aEyes(c, 50, 36, 12, 5);
+    aNeck(c, 34, 66, 60, 9);
+  }],
+  ["Monkey", (c, r) => {
+    const ear = 11 + r() * 5;
+    aEll(c, 16, 26, 16 + ear * 2, 26 + ear * 2, 1);
+    aEll(c, 84 - ear * 2, 26, 84, 26 + ear * 2, 1);
+    aEll(c, 30, 16, 70, 58, 1);
+    aEll(c, 38, 36, 62, 56, 1);
+    aEll(c, 34, 54, 66, 92, 1);
+    if (r() < 0.7) aEll(c, 62, 66, 92, 90, 1);
+    aEyes(c, 50, 32, 11, 5);
+    aNeck(c, 36, 64, 56, 9);
+  }],
+  ["Lion", (c, r) => {
+    const mane = 24 + r() * 8;
+    aEll(c, 50 - mane, 50 - mane, 50 + mane, 50 + mane, 1);
+    for (let i = 0; i < 10; i++) {
+      const a = (i / 10) * Math.PI * 2;
+      const x = 50 + Math.cos(a) * mane, y = 50 + Math.sin(a) * mane;
+      aEll(c, x - 9, y - 9, x + 9, y + 9, 1);
+    }
+    aEll(c, 38, 40, 62, 66, 1);
+    aEyes(c, 50, 48, 10, 5);
+  }],
+  ["Giraffe", (c, r) => {
+    const neck = 8 + r() * 4;
+    aEll(c, 30, 62, 78, 92, 1);
+    aRect(c, 50 - neck, 22, 50 + neck, 70, 1);
+    aEll(c, 40, 8, 66, 30, 1);
+    aRect(c, 44, 2, 47, 12, 1);
+    aRect(c, 57, 2, 60, 12, 1);
+    aRect(c, 34, 86, 40, 98, 1);
+    aRect(c, 66, 86, 72, 98, 1);
+  }],
+  ["Cow", (c, r) => {
+    aEll(c, 22, 40, 78, 78, 1);
+    aEll(c, 60, 20, 90, 48, 1);
+    aPoly(c, [[62, 24], [52, 12], [66, 20]], 1);
+    aPoly(c, [[86, 24], [96, 12], [82, 20]], 1);
+    aRect(c, 28, 74, 35, 96, 1);
+    aRect(c, 62, 74, 69, 96, 1);
+    if (r() < 0.6) aEll(c, 30, 50, 46, 66, 0);
+  }],
+  ["Pig", (c, r) => {
+    const snout = 9 + r() * 4;
+    aEll(c, 22, 34, 78, 80, 1);
+    aEll(c, 50 - snout, 44, 50 + snout, 44 + snout * 1.6, 1);
+    aPoly(c, [[30, 36], [26, 20], [42, 30]], 1);
+    aPoly(c, [[70, 36], [74, 20], [58, 30]], 1);
+    aRect(c, 30, 76, 38, 94, 1);
+    aRect(c, 62, 76, 70, 94, 1);
+    aEyes(c, 50, 40, 13, 5);
+    aSlot(c, 50, 76, 96, 9);
+  }],
+  ["Rooster", (c, r) => {
+    const comb = 8 + r() * 5;
+    aEll(c, 30, 40, 74, 88, 1);
+    aEll(c, 52, 16, 80, 46, 1);
+    for (let i = 0; i < 3; i++) aEll(c, 56 + i * 8, 8, 56 + i * 8 + comb, 8 + comb, 1);
+    aPoly(c, [[78, 30], [94, 34], [78, 40]], 1);
+    aPoly(c, [[32, 44], [10, 24 + r() * 10], [16, 60]], 1);
+  }],
+  ["Flamingo", (c, r) => {
+    aEll(c, 32, 48, 74, 80, 1);
+    const bend = 12 + r() * 8;
+    for (let i = 0; i <= 30; i++) {
+      const t = i / 30, y = 14 + t * 40;
+      const x = 56 + Math.sin(t * Math.PI) * bend;
+      aEll(c, x - 5, y - 5, x + 5, y + 5, 1);
+    }
+    aEll(c, 48, 8, 68, 24, 1);
+    aPoly(c, [[48, 16], [34, 22], [50, 24]], 1);
+    aRect(c, 48, 78, 54, 98, 1);
+  }],
+  ["Bat", (c, r) => {
+    const span = 34 + r() * 10;
+    aEll(c, 40, 30, 60, 62, 1);
+    aPoly(c, [[42, 36], [50 - span, 28], [50 - span + 8, 48], [50 - span + 4, 44], [44, 58]], 1);
+    aPoly(c, [[58, 36], [50 + span, 28], [50 + span - 8, 48], [50 + span - 4, 44], [56, 58]], 1);
+    aPoly(c, [[42, 32], [40, 16], [50, 28]], 1);
+    aPoly(c, [[58, 32], [60, 16], [50, 28]], 1);
+  }],
+  ["Mouse", (c, r) => {
+    const ear = 14 + r() * 6;
+    aEll(c, 22, 26, 22 + ear * 2, 26 + ear * 2, 1);
+    aEll(c, 78 - ear * 2, 26, 78, 26 + ear * 2, 1);
+    aEll(c, 28, 30, 72, 82, 1);
+    aPoly(c, [[44, 74], [56, 74], [50, 88]], 1);
+    if (r() < 0.8) { aRect(c, 68, 70, 92, 78, 1); aEll(c, 84, 56, 98, 78, 1); }
+    aEyes(c, 50, 44, 11, 5);
+  }],
+  ["Hedgehog", (c, r) => {
+    aEll(c, 18, 42, 72, 84, 1);
+    const spikes = 9 + ((r() * 4) | 0);
+    for (let i = 0; i < spikes; i++) {
+      const t = i / (spikes - 1);
+      const x = 20 + t * 50, y = 46 + Math.sin(t * Math.PI) * -6;
+      aPoly(c, [[x - 7, y + 8], [x, y - 16 - r() * 6], [x + 7, y + 8]], 1);
+    }
+    aPoly(c, [[68, 54], [96, 66], [68, 78]], 1);
+    aEyes(c, 74, 62, 6, 4);
+  }],
+  ["Seahorse", (c, r) => {
+    const curl = 10 + r() * 6;
+    for (let i = 0; i <= 40; i++) {
+      const t = i / 40, y = 22 + t * 60;
+      const x = 50 + Math.sin(t * Math.PI * 1.5) * curl * (1 - t * 0.2);
+      const th = 9 - t * 3;
+      aEll(c, x - th, y - th, x + th, y + th, 1);
+    }
+    aEll(c, 40, 8, 64, 30, 1);
+    aPoly(c, [[40, 16], [26, 22], [42, 26]], 1);
+    aPoly(c, [[54, 20], [66, 10], [64, 26]], 1);
+  }],
+  ["Starfish", (c, r) => {
+    const arm = 34 + r() * 8, w = 13 + r() * 4;
+    aEll(c, 50 - w, 50 - w, 50 + w, 50 + w, 1);
+    for (let i = 0; i < 5; i++) {
+      const a = -Math.PI / 2 + (i / 5) * Math.PI * 2;
+      for (let t = 0; t <= 6; t++) {
+        const d = (t / 6) * arm, rad = w - (t / 6) * (w - 4);
+        const x = 50 + Math.cos(a) * d, y = 50 + Math.sin(a) * d;
+        aEll(c, x - rad, y - rad, x + rad, y + rad, 1);
+      }
+    }
+  }],
+  ["Jellyfish", (c, r) => {
+    aEll(c, 20, 14, 80, 58, 1);
+    aRect(c, 20, 40, 80, 52, 1);
+    const legs = 4 + ((r() * 3) | 0);
+    for (let i = 0; i < legs; i++) {
+      const x0 = 26 + (i / (legs - 1)) * 48;
+      for (let t = 0; t <= 14; t++) {
+        const y = 52 + (t / 14) * 40;
+        const x = x0 + Math.sin(t / 3 + i) * 5;
+        aEll(c, x - 4, y - 4, x + 4, y + 4, 1);
+      }
+    }
+  }],
+  ["Shark", (c, r) => {
+    aEll(c, 12, 44, 82, 76, 1);
+    aPoly(c, [[44, 46], [52, 16 + r() * 8], [62, 46]], 1);
+    aPoly(c, [[80, 50], [98, 32], [96, 74], [80, 68]], 1);
+    aPoly(c, [[34, 70], [40, 92], [54, 72]], 1);
+    aPoly(c, [[12, 58], [2, 52], [4, 66]], 1);
+  }],
+  ["Shrimp", (c, r) => {
+    const curve = 22 + r() * 8;
+    for (let i = 0; i <= 40; i++) {
+      const a = Math.PI * 0.15 + (i / 40) * Math.PI * 1.1;
+      const x = 50 + Math.cos(a) * curve, y = 48 + Math.sin(a) * curve;
+      const th = 11 - (i / 40) * 5;
+      aEll(c, x - th, y - th, x + th, y + th, 1);
+    }
+    aEll(c, 56, 16, 84, 42, 1);
+    aPoly(c, [[80, 22], [98, 10], [86, 30]], 1);
+  }],
+  ["Clam", (c, r) => {
+    const lift = 6 + r() * 6;
+    aEll(c, 12, 30 - lift, 88, 88, 1);
+    const ribs = 5 + ((r() * 3) | 0);
+    for (let i = 1; i < ribs; i++) {
+      const x = 12 + (i / ribs) * 76;
+      aPoly(c, [[x - 1, 40], [x + 1, 40], [50, 90]], 0);
+    }
+    aRect(c, 10, 84, 90, 94, 1);
+  }],
+  ["Ant", (c, r) => {
+    aEll(c, 12, 40, 40, 66, 1);
+    aEll(c, 42, 42, 62, 62, 1);
+    aEll(c, 62, 34, 94, 70, 1);
+    const legs = 3;
+    for (let i = 0; i < legs; i++) {
+      const x = 46 + i * 8;
+      aPoly(c, [[x, 58], [x - 10, 86], [x - 4, 86]], 1);
+      aPoly(c, [[x, 48], [x - 10, 20], [x - 4, 20]], 1);
+    }
+    aPoly(c, [[18, 42], [8, 20 + r() * 8], [22, 40]], 1);
+  }],
+  ["Dragonfly", (c, r) => {
+    const span = 30 + r() * 10;
+    aEll(c, 44, 10, 58, 26, 1);
+    aRect(c, 46, 24, 56, 92, 1);
+    aEll(c, 50 - span, 26, 50 - 6, 46, 1);
+    aEll(c, 50 + 6, 26, 50 + span, 46, 1);
+    aEll(c, 50 - span * 0.8, 48, 50 - 6, 64, 1);
+    aEll(c, 50 + 6, 48, 50 + span * 0.8, 64, 1);
+  }],
+  ["Caterpillar", (c, r) => {
+    const segs = 5 + ((r() * 3) | 0), rad = 13 + r() * 4;
+    for (let i = 0; i < segs; i++) {
+      const x = 16 + (i / (segs - 1)) * 68;
+      const y = 56 + Math.sin(i * 0.9) * 10;
+      aEll(c, x - rad, y - rad, x + rad, y + rad, 1);
+    }
+    aRect(c, 18, 18, 22, 34, 1);
+    aRect(c, 28, 18, 32, 34, 1);
+  }],
+  ["Scorpion", (c, r) => {
+    aEll(c, 32, 46, 68, 80, 1);
+    aEll(c, 18, 52, 40, 74, 1);
+    aPoly(c, [[22, 54], [4, 40], [18, 38], [26, 50]], 1);
+    aPoly(c, [[36, 54], [22, 34], [34, 32], [42, 48]], 1);
+    const tail = 8 + r() * 5;
+    for (let i = 0; i <= 12; i++) {
+      const t = i / 12, a = Math.PI * 0.5 - t * Math.PI * 0.9;
+      const x = 62 + Math.cos(a) * 26, y = 62 - Math.sin(a) * 34;
+      aEll(c, x - tail * 0.5, y - tail * 0.5, x + tail * 0.5, y + tail * 0.5, 1);
+    }
+  }],
+  ["Tulip", (c, r) => {
+    const w = 18 + r() * 8;
+    aPoly(c, [[50 - w, 26], [50 - w, 46], [50, 58], [50 + w, 46], [50 + w, 26], [50 + w * 0.4, 36], [50, 22], [50 - w * 0.4, 36]], 1);
+    aRect(c, 47, 54, 53, 94, 1);
+    aEll(c, 20, 60, 50, 76, 1);
+    aEll(c, 50, 70, 80, 86, 1);
+  }],
+  ["Sunflower", (c, r) => {
+    const pet = 10 + ((r() * 4) | 0);
+    for (let i = 0; i < pet; i++) {
+      const a = (i / pet) * Math.PI * 2;
+      const x = 50 + Math.cos(a) * 24, y = 40 + Math.sin(a) * 24;
+      aEll(c, x - 10, y - 10, x + 10, y + 10, 1);
+    }
+    aEll(c, 36, 26, 64, 54, 1);
+    aRect(c, 47, 52, 53, 96, 1);
+    aEll(c, 20, 66, 48, 80, 1);
+  }],
+  ["Palm Tree", (c, r) => {
+    const lean = r() * 8 - 4;
+    for (let i = 0; i <= 20; i++) {
+      const t = i / 20, y = 34 + t * 62;
+      aEll(c, 46 + lean * (1 - t) - 5, y - 5, 54 + lean * (1 - t) + 5, y + 5, 1);
+    }
+    for (const [dx, dy] of [[-1, -0.3], [1, -0.3], [-0.7, 0.4], [0.7, 0.4], [0, -1]]) {
+      aPoly(c, [[50 + lean, 34], [50 + lean + dx * 40, 34 + dy * 26], [50 + lean + dx * 30, 34 + dy * 26 + 14]], 1);
+    }
+  }],
+  ["Pine Tree", (c, r) => {
+    const tiers = 3 + ((r() * 2) | 0);
+    for (let i = 0; i < tiers; i++) {
+      const t = i / (tiers - 1);
+      const y0 = 8 + t * 50, w = 14 + t * 26;
+      aPoly(c, [[50 - w, y0 + 26], [50, y0], [50 + w, y0 + 26]], 1);
+    }
+    aRect(c, 44, 80, 56, 96, 1);
+  }],
+  ["Acorn", (c, r) => {
+    const cap = 12 + r() * 6;
+    aEll(c, 24, 34, 76, 92, 1);
+    aRect(c, 22, 24, 78, 24 + cap * 2, 1);
+    aEll(c, 22, 14, 78, 40, 1);
+    aRect(c, 47, 4, 53, 18, 1);
+  }],
+  ["Wheat", (c, r) => {
+    const grains = 5 + ((r() * 3) | 0);
+    aRect(c, 47, 46, 53, 96, 1);
+    for (let i = 0; i < grains; i++) {
+      const y = 10 + (i / grains) * 40;
+      aEll(c, 28, y, 50, y + 14, 1);
+      aEll(c, 50, y, 72, y + 14, 1);
+    }
+    aEll(c, 42, 2, 58, 20, 1);
+  }],
+  ["Strawberry", (c, r) => {
+    const w = 26 + r() * 8;
+    aPoly(c, [[50 - w, 34], [50 + w, 34], [50, 94]], 1);
+    aEll(c, 50 - w, 20, 50 + w, 50, 1);
+    aPoly(c, [[30, 22], [50, 8], [70, 22], [50, 30]], 1);
+    aRect(c, 48, 2, 52, 14, 1);
+  }],
+  ["Cherry", (c, r) => {
+    const gap = 4 + r() * 6;
+    aEll(c, 12, 54, 48 - gap, 92, 1);
+    aEll(c, 52 + gap, 54, 88, 92, 1);
+    for (let i = 0; i <= 16; i++) {
+      const t = i / 16;
+      aEll(c, 30 - 2 + t * 18, 58 - t * 46, 30 + 2 + t * 18, 62 - t * 46, 1);
+      aEll(c, 70 - 2 - t * 18, 58 - t * 46, 70 + 2 - t * 18, 62 - t * 46, 1);
+    }
+    aPoly(c, [[46, 12], [72, 4], [56, 20]], 1);
+  }],
+  ["Grapes", (c, r) => {
+    const rad = 9 + r() * 3;
+    const rows = [[50], [40, 60], [30, 50, 70], [40, 60], [50]];
+    rows.forEach((xs, ri) => xs.forEach((x) => {
+      const y = 34 + ri * 15;
+      aEll(c, x - rad, y - rad, x + rad, y + rad, 1);
+    }));
+    aRect(c, 47, 12, 53, 34, 1);
+    aPoly(c, [[52, 16], [78, 8], [58, 26]], 1);
+  }],
+  ["Pineapple", (c, r) => {
+    const leaves = 4 + ((r() * 3) | 0);
+    aEll(c, 26, 34, 74, 94, 1);
+    for (let i = 0; i < leaves; i++) {
+      const t = i / (leaves - 1) - 0.5;
+      aPoly(c, [[50 + t * 20, 38], [50 + t * 40, 4], [50 + t * 20 + 8, 38]], 1);
+    }
+  }],
+  ["Watermelon", (c, r) => {
+    const rind = 6 + r() * 4;
+    aPoly(c, [[8, 30], [92, 30], [50, 94]], 1);
+    aEll(c, 8, 12, 92, 48, 1);
+    aRect(c, 6, 24, 94, 34, 1);
+    void rind;
+  }],
+  ["Carrot", (c, r) => {
+    const w = 16 + r() * 6;
+    aPoly(c, [[50 - w, 34], [50 + w, 34], [50, 96]], 1);
+    for (const dx of [-1, 0, 1]) aPoly(c, [[50 + dx * 8, 36], [50 + dx * 26, 4], [50 + dx * 8 + 10, 34]], 1);
+  }],
+  ["Corn", (c, r) => {
+    const w = 17 + r() * 5;
+    aEll(c, 50 - w, 18, 50 + w, 88, 1);
+    aPoly(c, [[50 - w, 40], [50 - w - 22, 66], [50 - w + 2, 84]], 1);
+    aPoly(c, [[50 + w, 40], [50 + w + 22, 66], [50 + w - 2, 84]], 1);
+  }],
+  ["Pizza Slice", (c, r) => {
+    aPoly(c, [[50, 92], [14, 18], [86, 18]], 1);
+    aRect(c, 12, 10, 88, 24, 1);
+    const bits = 3 + ((r() * 3) | 0);
+    for (let i = 0; i < bits; i++) {
+      const x = 32 + (i / bits) * 40, y = 40 + (i % 2) * 22;
+      aEll(c, x - 6, y - 6, x + 6, y + 6, 0);
+    }
+  }],
+  ["Pretzel", (c, r) => {
+    const th = 7 + r() * 3;
+    const ring = (cx0, cy0, rad) => {
+      for (let i = 0; i <= 40; i++) {
+        const a = (i / 40) * Math.PI * 2;
+        const x = cx0 + Math.cos(a) * rad, y = cy0 + Math.sin(a) * rad;
+        aEll(c, x - th, y - th, x + th, y + th, 1);
+      }
+    };
+    ring(32, 40, 18); ring(68, 40, 18); ring(50, 66, 20);
+  }],
+  ["Lollipop", (c, r) => {
+    const rad = 26 + r() * 6;
+    aEll(c, 50 - rad, 12, 50 + rad, 12 + rad * 2, 1);
+    aRect(c, 46, 12 + rad * 2 - 4, 54, 96, 1);
+  }],
+  ["Bottle", (c, r) => {
+    const neck = 8 + r() * 4;
+    aRect(c, 50 - neck, 8, 50 + neck, 34, 1);
+    aPoly(c, [[50 - neck, 32], [50 + neck, 32], [50 + 24, 52], [50 - 24, 52]], 1);
+    aRect(c, 26, 48, 74, 94, 1);
+    aRect(c, 50 - neck - 3, 4, 50 + neck + 3, 12, 1);
+  }],
+  ["Wine Glass", (c, r) => {
+    const bowl = 24 + r() * 6;
+    aEll(c, 50 - bowl, 8, 50 + bowl, 52, 1);
+    aRect(c, 50 - bowl, 6, 50 + bowl, 26, 1);
+    aRect(c, 46, 48, 54, 84, 1);
+    aEll(c, 26, 80, 74, 96, 1);
+  }],
+  ["Basket", (c, r) => {
+    const flare = 8 + r() * 6;
+    aPoly(c, [[26 - flare, 44], [74 + flare, 44], [66, 92], [34, 92]], 1);
+    aRect(c, 24 - flare, 40, 76 + flare, 50, 1);
+    aEll(c, 30, 10, 70, 50, 1);
+    aEll(c, 38, 20, 62, 56, 0);
+  }],
+  ["Ladder", (c, r) => {
+    const rungs = 4 + ((r() * 3) | 0);
+    aRect(c, 18, 6, 30, 96, 1);
+    aRect(c, 70, 6, 82, 96, 1);
+    for (let i = 0; i < rungs; i++) {
+      const y = 16 + (i / (rungs - 1)) * 68;
+      aRect(c, 24, y, 76, y + 9, 1);
+    }
+  }],
+  ["Hammer", (c, r) => {
+    const head = 16 + r() * 6;
+    aRect(c, 20, 12, 80, 12 + head, 1);
+    aPoly(c, [[20, 12], [10, 18], [20, 12 + head]], 1);
+    aRect(c, 44, 12 + head, 58, 96, 1);
+  }],
+  ["Scissors", (c, r) => {
+    /* Thicker than the first draft, which came to about 101 cells against a
+       130-cell floor and so never appeared. The ring holes are smaller too:
+       cutting them at the old size left almost no solid metal behind. */
+    const gap = 10 + r() * 6;
+    aPoly(c, [[50, 58], [50 - gap - 22, 6], [50 - gap - 4, 4], [50 + 9, 52]], 1);
+    aPoly(c, [[50, 58], [50 + gap + 22, 6], [50 + gap + 4, 4], [50 - 9, 52]], 1);
+    aEll(c, 20, 56, 52, 92, 1);
+    aEll(c, 29, 65, 43, 83, 0);
+    aEll(c, 48, 56, 80, 92, 1);
+    aEll(c, 57, 65, 71, 83, 0);
+  }],
+  ["Paintbrush", (c, r) => {
+    const w = 13 + r() * 5;
+    aPoly(c, [[50 - w - 4, 8], [50 + w + 4, 8], [50 + w, 34], [50 - w, 34]], 1);
+    aRect(c, 50 - w - 2, 32, 50 + w + 2, 46, 1);
+    aRect(c, 50 - w + 3, 44, 50 + w - 3, 96, 1);
+  }],
+  ["Ship Wheel", (c, r) => {
+    const rad = 32 + r() * 6;
+    aEll(c, 50 - rad, 50 - rad, 50 + rad, 50 + rad, 1);
+    aEll(c, 50 - rad + 8, 50 - rad + 8, 50 + rad - 8, 50 + rad - 8, 0);
+    aPoly(c, [[50, 24], [58, 50], [50, 76], [42, 50]], 1);
+    aEll(c, 45, 45, 55, 55, 1);
+  }],
+  ["Telescope", (c, r) => {
+    const w = 12 + r() * 5;
+    aPoly(c, [[8, 30 - w], [8, 30 + w], [70, 46 + w + 4], [70, 46 - w - 4]], 1);
+    aRect(c, 66, 40 - w - 6, 82, 54 + w + 6, 1);
+    aRect(c, 44, 58, 54, 94, 1);
+    aPoly(c, [[30, 96], [50, 62], [70, 96]], 1);
+  }],
+  ["Microphone", (c, r) => {
+    const w = 20 + r() * 6;
+    aEll(c, 50 - w, 8, 50 + w, 8 + w * 2.2, 1);
+    aRect(c, 50 - w, 24, 50 + w, 40, 1);
+    aRect(c, 44, 44, 56, 74, 1);
+    aEll(c, 28, 60, 72, 88, 1);
+    aEll(c, 36, 66, 64, 96, 0);
+    aRect(c, 44, 82, 56, 96, 1);
+  }],
+  ["Television", (c, r) => {
+    const w = 38 + r() * 6;
+    aRect(c, 50 - w, 18, 50 + w, 74, 1);
+    aRect(c, 50 - w + 8, 26, 50 + w - 8, 66, 0);
+    aRect(c, 40, 74, 60, 86, 1);
+    aRect(c, 24, 84, 76, 94, 1);
+    aRect(c, 50 - 2, 2, 50 + 2, 20, 1);
+  }],
+  ["Chair", (c, r) => {
+    const back = 8 + r() * 6;
+    aRect(c, 26, 6, 34 + back, 60, 1);
+    aRect(c, 26, 52, 82, 64, 1);
+    aRect(c, 28, 62, 38, 96, 1);
+    aRect(c, 70, 62, 80, 96, 1);
+    if (r() < 0.6) aRect(c, 26, 26, 34 + back + 26, 34, 1);
+  }],
+  ["Swan", (c, r) => {
+    const neck = 16 + r() * 8;
+    aEll(c, 22, 54, 82, 88, 1);
+    aRect(c, 50 - 4, 22, 50 + 4, 60, 1);
+    aEll(c, 50 - 9, 12, 50 + 9, 30, 1);
+    aPoly(c, [[50 + 8, 20], [50 + 20 + r() * 6, 24], [50 + 8, 28]], 1);
+    aPoly(c, [[30, 58], [58, 50], [66, 76], [34, 80]], 1);
+    if (r() < 0.6) aEll(c, 18, 70, 40, 86, 1);
+    void neck;
+  }],
+  ["Deer", (c, r) => {
+    const rack = 12 + r() * 10;
+    aEll(c, 38, 22, 62, 50, 1);
+    aPoly(c, [[44, 24], [40 - rack * 0.5, 6], [46, 20]], 1);
+    aPoly(c, [[56, 24], [60 + rack * 0.5, 6], [54, 20]], 1);
+    aPoly(c, [[38, 20], [30 - rack * 0.3, 10], [42, 18]], 1);
+    aPoly(c, [[62, 20], [70 + rack * 0.3, 10], [58, 18]], 1);
+    aEll(c, 34, 46, 66, 76, 1);
+    aRect(c, 38, 72, 44, 94, 1);
+    aRect(c, 56, 72, 62, 94, 1);
+  }],
+  ["Horse", (c, r) => {
+    aEll(c, 26, 44, 78, 74, 1);
+    aPoly(c, [[62, 46], [76, 20], [86, 26], [74, 50]], 1);
+    aEll(c, 72, 14, 90, 32, 1);
+    aPoly(c, [[60, 42], [66, 16], [72, 20]], 1);
+    aRect(c, 30, 70, 37, 94, 1);
+    aRect(c, 62, 70, 69, 94, 1);
+    if (r() < 0.7) aPoly(c, [[26, 48], [12, 56 + r() * 10], [26, 68]], 1);
+  }],
+  ["Squirrel", (c, r) => {
+    aEll(c, 30, 40, 62, 78, 1);
+    aEll(c, 34, 20, 58, 46, 1);
+    aPoly(c, [[38, 22], [36, 8], [46, 18]], 1);
+    aPoly(c, [[54, 22], [56, 8], [46, 18]], 1);
+    const bushy = 18 + r() * 10;
+    aEll(c, 58, 26, 58 + bushy + 12, 74, 1);
+    aRect(c, 34, 72, 58, 88, 1);
+    aEyes(c, 46, 32, 9, 4);
+  }],
+  ["Snake", (c, r) => {
+    const amp = 10 + r() * 8, th = 7 + r() * 3;
+    for (let i = 0; i <= 60; i++) {
+      const t = i / 60;
+      const y = 12 + t * 76;
+      const x = 50 + Math.sin(t * Math.PI * 2.4) * amp * (1 - t * 0.3);
+      aEll(c, x - th, y - th, x + th, y + th, 1);
+    }
+    aEll(c, 50 - amp - 10, 6, 50 - amp + 8, 22, 1);
+  }],
+  ["Duck", (c, r) => {
+    aEll(c, 24, 48, 80, 86, 1);
+    aEll(c, 54, 20, 82, 50, 1);
+    aPoly(c, [[80, 30], [96 + r() * 6, 34], [80, 40]], 1);
+    aPoly(c, [[34, 54], [62, 48], [56, 74], [32, 72]], 1);
+    if (r() < 0.6) aRect(c, 40, 84, 48, 94, 1);
+  }],
+  ["Sheep", (c, r) => {
+    const puff = 5 + r() * 3;
+    for (const [x, y] of [[34, 44], [50, 38], [66, 44], [30, 60], [50, 58], [70, 60], [40, 70], [60, 70]])
+      aEll(c, x - 14, y - 12, x + 14, y + 12, 1);
+    aEll(c, 60, 26, 84, 50, 1);
+    aRect(c, 38, 74, 45, 92, 1);
+    aRect(c, 58, 74, 65, 92, 1);
+    void puff;
+    aEyes(c, 72, 36, 7, 4);
+  }],
+  ["Snail Shell", (c, r) => {
+    const turns = 2.4 + r() * 0.8;
+    for (let i = 0; i <= 140; i++) {
+      const t = i / 140;
+      const a = t * Math.PI * 2 * turns;
+      const rad = 6 + t * 34;
+      const th = 5 + t * 4;
+      const x = 50 + Math.cos(a) * rad, y = 50 + Math.sin(a) * rad;
+      aEll(c, x - th, y - th, x + th, y + th, 1);
+    }
+  }],
+  ["Windmill Sail", (c, r) => {
+    const arm = 30 + r() * 10, w = 8 + r() * 4;
+    aEll(c, 50 - 9, 50 - 9, 50 + 9, 50 + 9, 1);
+    for (const [dx, dy] of [[1, 0], [0, 1], [-1, 0], [0, -1]]) {
+      const ex = 50 + dx * arm, ey = 50 + dy * arm;
+      aPoly(c, [[50, 50], [ex - dy * w, ey + dx * w], [ex + dy * w * 2, ey - dx * w * 2]], 1);
+    }
+  }],
+  ["Chess Piece", (c, r) => {
+    const bell = 14 + r() * 6;
+    aRect(c, 32, 84, 68, 94, 1);
+    aRect(c, 38, 76, 62, 86, 1);
+    aPoly(c, [[42, 46], [58, 46], [50 + bell, 78], [50 - bell, 78]], 1);
+    aEll(c, 40, 28, 60, 50, 1);
+    aEll(c, 44, 16, 56, 30, 1);
+  }],
+  ["Old Key", (c, r) => {
+    /* Sized up from the first draft, which filled about 74 cells and never
+       cleared the 130-cell floor, so this family could never appear at all. */
+    const bit = 14 + r() * 8;
+    aEll(c, 24, 4, 76, 50, 1);
+    aEll(c, 38, 17, 62, 37, 0);
+    aRect(c, 42, 44, 58, 94, 1);
+    aRect(c, 58, 62, 58 + bit, 74, 1);
+    aRect(c, 58, 80, 58 + bit * 0.75, 92, 1);
+  }],
+  ["Candle", (c, r) => {
+    const h = 30 + r() * 16;
+    aEll(c, 44, 8, 56, 26, 1);
+    aRect(c, 49, 24, 51, 32, 1);
+    aRect(c, 38, 30, 62, 30 + h + 24, 1);
+    aRect(c, 32, 30 + h + 22, 68, 30 + h + 32, 1);
+  }],
+  ["Mug", (c, r) => {
+    const handle = r() < 0.85;
+    aRect(c, 26, 30, 66, 84, 1);
+    aRect(c, 22, 26, 70, 34, 1);
+    if (handle) { aEll(c, 62, 40, 88, 70, 1); aEll(c, 68, 47, 80, 63, 0); }
+    if (r() < 0.6) { aEll(c, 30, 12, 40, 28, 1); aEll(c, 48, 10, 58, 26, 1); }
+  }],
+  ["Bucket", (c, r) => {
+    const flare = 6 + r() * 6;
+    aPoly(c, [[30 - flare, 34], [70 + flare, 34], [64, 92], [36, 92]], 1);
+    aRect(c, 26 - flare, 28, 74 + flare, 38, 1);
+    aEll(c, 34, 6, 66, 40, 1);
+    aEll(c, 41, 14, 59, 44, 0);
+  }],
+  ["Envelope", (c, r) => {
+    const flap = 26 + r() * 10;
+    aRect(c, 12, 28, 88, 76, 1);
+    aPoly(c, [[14, 30], [50, 30 + flap], [86, 30], [86, 36], [50, 30 + flap + 8], [14, 36]], 1);
+  }],
+  ["Gemstone", (c, r) => {
+    const tw = 20 + r() * 10;
+    aPoly(c, [[50 - tw, 26], [50 + tw, 26], [50 + tw * 1.5, 40], [50, 90], [50 - tw * 1.5, 40]], 1);
+    aRect(c, 50 - tw, 22, 50 + tw, 30, 1);
+  }],
+  ["Feather", (c, r) => {
+    const w = 12 + r() * 8;
+    for (let i = 0; i <= 50; i++) {
+      const t = i / 50;
+      const y = 10 + t * 78;
+      const spread = Math.sin(t * Math.PI) * w;
+      aEll(c, 50 - spread, y - 3, 50 + spread, y + 3, 1);
+    }
+    aRect(c, 48, 10, 52, 94, 1);
+  }],
+  ["Leaf", (c, r) => {
+    const w = 20 + r() * 10;
+    aEll(c, 50 - w, 14, 50 + w, 80, 1);
+    aPoly(c, [[50 - w, 60], [50 + w, 20], [50 + w, 26], [50 - w, 66]], 0);
+    aRect(c, 48, 40, 52, 94, 1);
+  }],
+  ["Wave", (c, r) => {
+    const amp = 12 + r() * 8;
+    for (let i = 0; i <= 70; i++) {
+      const t = i / 70;
+      const x = 8 + t * 84;
+      const y = 50 + Math.sin(t * Math.PI * 2) * amp;
+      aEll(c, x - 7, y - 7, x + 7, y + 7, 1);
+    }
+    aEll(c, 66, 20, 92, 44, 1);
+  }],
+  ["Sunburst", (c, r) => {
+    /* The rays are drawn as overlapping discs along each spoke rather than one
+       disc at the tip. Detached tips were being dropped as stray islands, and
+       what survived sat right on the 130-cell floor. */
+    const rays = 8 + ((r() * 5) | 0), len = 20 + r() * 10;
+    aEll(c, 26, 26, 74, 74, 1);
+    for (let i = 0; i < rays; i++) {
+      const a = (i / rays) * Math.PI * 2;
+      for (let t = 0; t <= 6; t++) {
+        const d = 20 + (t / 6) * len;
+        const x = 50 + Math.cos(a) * d, y = 50 + Math.sin(a) * d;
+        const rad = 8 - (t / 6) * 3;
+        aEll(c, x - rad, y - rad, x + rad, y + rad, 1);
+      }
+    }
+  }],
   ["Cat", (c, r) => {
     const ear = 18 + r() * 12, hw = 20 + r() * 8, tail = r() < 0.75;
     aPoly(c, [[50 - hw, 30], [50 - hw + 3, 30 - ear], [50 - 2, 24]], 1);
@@ -535,6 +1644,9 @@ const ART_FAMILIES = [
     const bw = 12 + r() * 10;
     aPoly(c, [[50 - bw, 50], [50 + bw, 50], [50 + bw + 12, 94], [50 - bw - 12, 94]], 1);
     if (tail) { aRect(c, 62 + r() * 6, 60, 74 + r() * 6, 94, 1); aEll(c, 60, 84, 84, 97, 1); }
+    aEyes(c, 50, 34, hw * 0.45, 5);
+    aNeck(c, 50 - bw - 2, 50 + bw + 2, 57, 10);
+    aSlot(c, 50, 76, 96, 10);
   }],
   ["Dog", (c, r) => {
     const droop = 40 + r() * 22;
@@ -545,6 +1657,8 @@ const ART_FAMILIES = [
     const bw = 12 + r() * 8;
     aPoly(c, [[50 - bw, 50], [50 + bw, 50], [50 + bw + 10, 94], [50 - bw - 10, 94]], 1);
     if (r() < 0.6) aRect(c, 68, 66, 80, 94, 1);
+    aEyes(c, 50, 38, 11, 5);
+    aNeck(c, 34, 66, 62, 10);
   }],
   ["Bird", (c, r) => {
     aEll(c, 26, 32, 84, 78, 1);
@@ -662,6 +1776,8 @@ const ART_FAMILIES = [
     if (r() < 0.6) aEll(c, 62 + r() * 8, 74, 84 + r() * 8, 92, 1);
     aEll(c, 39, 38, 47, 48, 0); aEll(c, 55, 38, 63, 48, 0);
     if (r() < 0.6) aEll(c, 47, 50, 55, 57, 0);
+    aEyes(c, 50, 46, 11, 5);
+    aNeck(c, 34, 66, 66, 9);
   }],
 
   ["Owl", (c, r) => {
@@ -677,6 +1793,8 @@ const ART_FAMILIES = [
     aRect(c, 40, 90, 46, 98, 1); aRect(c, 54, 90, 60, 98, 1);
     aEll(c, 30, 26, 44, 42, 0); aEll(c, 56, 26, 70, 42, 0);
     aPoly(c, [[46, 42], [54, 42], [50, 54]], 0);
+    aEyes(c, 50, 40, 14, 7);
+    aNeck(c, 34, 66, 64, 9);
   }],
 
   ["Bear", (c, r) => {
@@ -689,6 +1807,9 @@ const ART_FAMILIES = [
     if (r() < 0.55) { aEll(c, 50 - bw - 9, 58, 50 - bw + 5, 86, 1); aEll(c, 50 + bw - 5, 58, 50 + bw + 9, 86, 1); }
     aEll(c, 37, 26, 45, 35, 0); aEll(c, 55, 26, 63, 35, 0);
     aEll(c, 45, 40, 55, 50, 0);
+    aEyes(c, 50, 34, 12, 5);
+    aNeck(c, 32, 68, 58, 10);
+    aSlot(c, 50, 74, 96, 10);
   }],
 
   ["Fox", (c, r) => {
@@ -701,6 +1822,8 @@ const ART_FAMILIES = [
     const tail = r() < 0.8;
     if (tail) aEll(c, 62 + r() * 6, 62, 96, 90, 1);
     aEll(c, 37, 30, 45, 39, 0); aEll(c, 55, 30, 63, 39, 0);
+    aEyes(c, 50, 36, 12, 5);
+    aNeck(c, 34, 66, 58, 9);
   }],
 
   ["Whale", (c, r) => {
@@ -755,6 +1878,8 @@ const ART_FAMILIES = [
     if (r() < 0.5) aPoly(c, [[44, 22], [30, 28], [44, 32]], 1);
     aEll(c, 40, 18, 47, 26, 0); aEll(c, 55, 18, 62, 26, 0);
     if (r() < 0.6) aEll(c, 42, 48, 58, 76, 0);
+    aEyes(c, 50, 28, 10, 5);
+    aNeck(c, 36, 64, 44, 9);
   }],
 
   ["Elephant", (c, r) => {
@@ -768,6 +1893,8 @@ const ART_FAMILIES = [
     aRect(c, 26, 56, 40, 92, 1);
     aRect(c, 60, 56, 74, 92, 1);
     aEll(c, 36, 26, 44, 35, 0); aEll(c, 58, 26, 66, 35, 0);
+    aEyes(c, 50, 34, 15, 5);
+    aSlot(c, 50, 74, 96, 10);
   }],
 
   ["Frog", (c, r) => {
@@ -779,6 +1906,7 @@ const ART_FAMILIES = [
     aEll(c, 66, 54, 94, 92, 1);
     if (r() < 0.6) { aRect(c, 22, 84, 40, 92, 1); aRect(c, 60, 84, 78, 92, 1); }
     aEll(c, 28, 16, 38, 27, 0); aEll(c, 62, 16, 72, 27, 0);
+    aEyes(c, 50, 26, 14, 6);
   }],
 
   ["Snail", (c, r) => {
@@ -1326,6 +2454,31 @@ const SYMMETRIC = new Set([
   "Ice Cream", "Apple", "Cactus", "Cloud", "Star", "Heart", "Bell", "Gift",
   "Robot", "Ghost", "Kite", "Trophy", "Lantern", "Pyramid", "Hourglass",
   "Clock", "Camera", "Book", "Plane", "Anchor", "Pencil",
+  /* The new head-on subjects. Anything drawn facing the viewer has to be
+     mirrored or the raster leaves one side a cell or two off, which reads as a
+     mistake rather than as a hand-drawn wobble. Side-on subjects (Swan, Horse,
+     Squirrel, Duck, Sheep, Snail Shell, Key, Mug, Bucket, Leaf, Wave, Snake)
+     are deliberately left out — mirroring those would make them meaningless. */
+  "Deer", "Windmill Sail", "Chess Piece", "Candle", "Envelope",
+  "Feather", "Sunburst", "Gemstone",
+  /* Head-on again. Side-on subjects are deliberately absent: mirroring a Shark,
+     Rooster, Flamingo, Shrimp, Seahorse, Cow, Hammer, Paintbrush, Telescope,
+     Scorpion, Ant, Chair, Cherry, Grapes or Palm Tree would destroy what makes
+     them readable. */
+  "Panda", "Koala", "Monkey", "Lion", "Pig", "Bat", "Mouse", "Starfish",
+  "Jellyfish", "Clam", "Dragonfly", "Tulip", "Sunflower", "Pine Tree", "Acorn",
+  "Wheat", "Strawberry", "Pineapple", "Watermelon", "Carrot", "Corn",
+  "Pretzel", "Lollipop", "Bottle", "Wine Glass", "Basket", "Ladder",
+  "Scissors", "Ship Wheel", "Microphone", "Television",
+  /* Head-on once more. Left out on purpose: Camel, Kangaroo, Goat, Llama,
+     Pelican, Lizard, Crocodile, Grasshopper, Banana, Croissant, Chili, Cheese,
+     Pan, Saw, Kettle and Boot all read by their profile, and mirroring any of
+     them would turn it into a meaningless blob. */
+  "Raccoon", "Wolf", "Peacock", "Eagle", "Beetle", "Moth", "Rose", "Daisy",
+  "Lotus", "Bamboo", "Fern", "Pumpkin", "Lemon", "Peach", "Avocado",
+  "Bread Loaf", "Egg", "Spoon", "Jar", "Barrel", "Chest", "Suitcase",
+  "Backpack", "Glasses", "Wrench", "Gear", "Bulb", "Fan", "Stone Arch",
+  "Tent", "Barn", "Well", "Watchtower",
 ]);
 
 const ART_ADJ = ["Little", "Broad", "Tall", "Round", "Slim", "Wide", "Bold", "Fine", "Grand", "Neat",
@@ -1361,7 +2514,7 @@ function artMask(seed) {
     /* Drawn at the resolution the board now uses. Detail is a function of how
        many cells a feature spans, so this is the only thing that actually buys
        a finer shape — an eye that cannot read at 18 cells reads easily at 40. */
-    const size = 22 + ((r() * 9) | 0);
+    const size = 26 + ((r() * 9) | 0);
     const c = ArtCanvas(size, 3);
     draw(c, r);
     let grid = aHarvest(c, 0.42);
@@ -1369,7 +2522,7 @@ function artMask(seed) {
     grid = aSmooth(grid);
     const m = aTidy(grid);
     if (!m) continue;
-    if (m.cells.size < 130 || m.cells.size > 460) continue;
+    if (m.cells.size < 200 || m.cells.size > 640) continue;
     if (m.cols < 9 || m.rows < 9) continue;
     return { ...m, name: `${ART_ADJ[(seed * 7) % ART_ADJ.length]} ${name}`, procedural: true };
   }
@@ -1647,7 +2800,10 @@ function buildBoard(mask, { maxLen, coverage, tightness, pieces: target, diag },
 }
 
 function measureBoard(pieces, cols, rows, mirrors) {
-  if (!pieces.length) return { freedom: 1, forced: 0 };
+  // open must be present on every path: the caller multiplies it into the score,
+  // and one undefined turns the whole comparison into NaN, which silently makes
+  // the selector keep whichever board it built first.
+  if (!pieces.length) return { freedom: 1, forced: 0, open: 1 };
   const lanes = pieces.map((p) => exitLine(p.cells[0], p.dir, cols, rows, mirrors) || []);
   const owner = new Map();
   pieces.forEach((p) => p.cells.forEach((c) => owner.set(c, p.id)));
@@ -1660,15 +2816,22 @@ function measureBoard(pieces, cols, rows, mirrors) {
   let sum = 0;
   let n = 0;
   let forced = 0;   // moments where the board allows almost no choice
+  let open = 1;     // how much of the board is free on the very first move
   while (alive.size) {
     const free = [...alive].filter(isFree);
-    if (!free.length) return { freedom: 1, forced: 0 };
+    if (!free.length) return { freedom: 1, forced: 0, open: 1 };
+    if (n === 0) open = free.length / alive.size;
     sum += free.length / alive.size;
     if (free.length <= 2) forced++;
     n++;
     alive.delete(free[(RND() * free.length) | 0]);
   }
-  return n ? { freedom: sum / n, forced: forced / n } : { freedom: 1, forced: 0 };
+  /* `open` matters on its own. freedom is an average across the whole solve, so
+     a board that hands you twenty free arrows at the start and tightens later
+     scores the same as one that is taut throughout — and boards were opening
+     with 15 to 27 arrows free. The first third of every level was tapping with
+     nothing to decide. */
+  return n ? { freedom: sum / n, forced: forced / n, open } : { freedom: 1, forced: 0, open: 1 };
 }
 
 
@@ -1680,7 +2843,7 @@ function measureBoard(pieces, cols, rows, mirrors) {
    the arrows become untappable hairlines. Raising the cell budget let the
    biggest shapes reach 76 cells across, so the budget alone is not enough —
    the dimension has to be capped directly. */
-const MAX_DIM = 26;
+const MAX_DIM = 30;
 
 function fitMask(mask, maxCells) {
   const overDim = mask.cols > MAX_DIM || mask.rows > MAX_DIM;
@@ -1763,14 +2926,17 @@ function makeLevelFromMask(rawMask, tierIdx = 7) {
   const weave = texturedTier(tier, maskSeed(norm));
   const mirrors = placeMirrors(mask, weave.mirrors || 0);
   let best = null;
-  for (let i = 0; i < (mask.cells.size > 240 ? 3 : 6); i++) {
+  /* Three candidates from the same generator are three near-identical boards,
+     so the scoring below had nothing to choose between and every weight change
+     was a no-op. Widen the pool: this runs once when a level opens. */
+  for (let i = 0; i < (mask.cells.size > 240 ? 6 : 8); i++) {
     const pieces = buildBoard(mask, weave, mirrors);
     if (pieces.length < 3) continue;
     const mb = measureBoard(pieces, mask.cols, mask.rows, mirrors);
     const fill = pieces.reduce((a, p) => a + p.cells.length, 0) / mask.cells.size;
     // prefer the target openness, reward boards with more forced moments, and
     // heavily punish a board that leaves the shape half empty
-    const gap = Math.abs(mb.freedom - tier.freedom) - mb.forced * 0.35 + Math.max(0, tier.coverage - 0.06 - fill) * 4
+    const gap = Math.abs(mb.freedom - tier.freedom) - mb.forced * 0.6 + mb.open * 6.0 + Math.max(0, tier.coverage - 0.06 - fill) * 4
       - (chessWeight ? chessScore(pieces, mask.cols, mask.rows, mirrors) * chessWeight : 0);
     if (!best || gap < best.gap) best = { pieces, gap };
   }
@@ -1914,7 +3080,9 @@ function makeLevel(level, seed) {
   // Hard and above are judged like chess positions, and get extra candidate
   // boards to choose from — the generator plays out more lines before deciding
   const chessWeight = index >= HARD_TIER ? 0.9 : 0;
-  let tries = mask.cells.size > 240 ? 2 : mask.cells.size > 90 ? 4 : 7;
+  /* Two candidates is not a choice. Same reasoning as the curated builder
+     above: the scoring can only tighten a board if it has boards to compare. */
+  let tries = mask.cells.size > 240 ? 6 : mask.cells.size > 90 ? 8 : 10;
   if (chessWeight && mask.cells.size <= 420) tries += 2;
 
   const weave = texturedTier(tier, seed !== undefined ? seed : level);
@@ -1927,7 +3095,7 @@ function makeLevel(level, seed) {
     const fill = pieces.reduce((a, p) => a + p.cells.length, 0) / mask.cells.size;
     // prefer the target openness, reward boards with more forced moments, and
     // heavily punish a board that leaves the shape half empty
-    const gap = Math.abs(mb.freedom - tier.freedom) - mb.forced * 0.35 + Math.max(0, tier.coverage - 0.06 - fill) * 4
+    const gap = Math.abs(mb.freedom - tier.freedom) - mb.forced * 0.6 + mb.open * 6.0 + Math.max(0, tier.coverage - 0.06 - fill) * 4
       - (chessWeight ? chessScore(pieces, mask.cols, mask.rows, mirrors) * chessWeight : 0);
     if (!best || gap < best.gap) best = { pieces, gap };
   }
@@ -2359,18 +3527,18 @@ const TIERS = [
   { name: "Little Easy", span: 3,     maxLen: 15, hearts: 3, hints: 3, undos: 3, coverage: 0.95, tightness: 0.83, freedom: 0.426, pieces: 38, maxCells: 231 , diag: 0 , mirrors: 0 },
   { name: "Easy", span: 4,     maxLen: 16, hearts: 3, hints: 3, undos: 2, coverage: 0.95, tightness: 0.85, freedom: 0.360, pieces: 44, maxCells: 275 , diag: 0 , mirrors: 0 },
   { name: "Easy Plus", span: 5,     maxLen: 18, hearts: 3, hints: 2, undos: 2, coverage: 0.96, tightness: 0.87, freedom: 0.390, pieces: 49, maxCells: 319 , diag: 0 , mirrors: 0 },
-  { name: "Little Medium", span: 6,     maxLen: 19, hearts: 3, hints: 2, undos: 2, coverage: 0.96, tightness: 0.88, freedom: 0.438, pieces: 55, maxCells: 362 , diag: 1 , mirrors: 0 },
-  { name: "Medium", span: 8,     maxLen: 20, hearts: 3, hints: 2, undos: 2, coverage: 0.97, tightness: 0.90, freedom: 0.322, pieces: 62, maxCells: 406 , diag: 1 , mirrors: 0 },
-  { name: "Medium Plus", span: 10,     maxLen: 21, hearts: 3, hints: 2, undos: 2, coverage: 0.97, tightness: 0.91, freedom: 0.372, pieces: 70, maxCells: 450 , diag: 2 , mirrors: 1 },
-  { name: "Tricky", span: 12,     maxLen: 23, hearts: 3, hints: 2, undos: 1, coverage: 0.98, tightness: 0.92, freedom: 0.363, pieces: 77, maxCells: 494 , diag: 2 , mirrors: 1 },
-  { name: "Tough", span: 14,     maxLen: 25, hearts: 3, hints: 2, undos: 1, coverage: 0.98, tightness: 0.93, freedom: 0.369, pieces: 84, maxCells: 538 , diag: 2 , mirrors: 1 },
-  { name: "Hard", span: 17,     maxLen: 26, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.94, freedom: 0.319, pieces: 91, maxCells: 588 , diag: 3 , mirrors: 2 },
-  { name: "Very Hard", span: 20,     maxLen: 27, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.95, freedom: 0.315, pieces: 100, maxCells: 638 , diag: 3 , mirrors: 2 },
-  { name: "Super Hard", span: 24,     maxLen: 28, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.96, freedom: 0.287, pieces: 109, maxCells: 694 , diag: 3 , mirrors: 2 },
-  { name: "Expert", span: 30,     maxLen: 29, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.97, freedom: 0.315, pieces: 117, maxCells: 750 , diag: 4 , mirrors: 3 },
-  { name: "Elite", span: 36,     maxLen: 31, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.98, freedom: 0.294, pieces: 128, maxCells: 806 , diag: 4 , mirrors: 3 },
-  { name: "Master", span: 45,     maxLen: 33, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 0.99, freedom: 0.284, pieces: 138, maxCells: 862 , diag: 4 , mirrors: 3 },
-  { name: "Pro", span: Infinity,     maxLen: 35, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 1.0, freedom: 0.267, pieces: 148, maxCells: 925 , diag: 4 , mirrors: 3 },
+  { name: "Little Medium", span: 6,     maxLen: 19, hearts: 2, hints: 2, undos: 2, coverage: 0.96, tightness: 0.88, freedom: 0.438, pieces: 55, maxCells: 362 , diag: 1 , mirrors: 0 },
+  { name: "Medium", span: 8,     maxLen: 20, hearts: 2, hints: 2, undos: 2, coverage: 0.97, tightness: 0.90, freedom: 0.322, pieces: 62, maxCells: 406 , diag: 1 , mirrors: 0 },
+  { name: "Medium Plus", span: 10,     maxLen: 21, hearts: 2, hints: 2, undos: 2, coverage: 0.97, tightness: 0.91, freedom: 0.372, pieces: 70, maxCells: 450 , diag: 2 , mirrors: 1 },
+  { name: "Tricky", span: 12,     maxLen: 23, hearts: 2, hints: 2, undos: 1, coverage: 0.98, tightness: 0.92, freedom: 0.363, pieces: 77, maxCells: 494 , diag: 2 , mirrors: 1 },
+  { name: "Tough", span: 14,     maxLen: 25, hearts: 2, hints: 2, undos: 1, coverage: 0.98, tightness: 0.93, freedom: 0.369, pieces: 84, maxCells: 538 , diag: 2 , mirrors: 1 },
+  { name: "Hard", span: 17,     maxLen: 26, hearts: 2, hints: 1, undos: 1, coverage: 0.99, tightness: 0.94, freedom: 0.319, pieces: 91, maxCells: 588 , diag: 3 , mirrors: 2 },
+  { name: "Very Hard", span: 20,     maxLen: 27, hearts: 1, hints: 1, undos: 1, coverage: 0.99, tightness: 0.95, freedom: 0.315, pieces: 100, maxCells: 638 , diag: 3 , mirrors: 2 },
+  { name: "Super Hard", span: 24,     maxLen: 28, hearts: 1, hints: 1, undos: 1, coverage: 0.99, tightness: 0.96, freedom: 0.287, pieces: 109, maxCells: 694 , diag: 3 , mirrors: 2 },
+  { name: "Expert", span: 30,     maxLen: 29, hearts: 1, hints: 1, undos: 1, coverage: 0.99, tightness: 0.97, freedom: 0.315, pieces: 117, maxCells: 750 , diag: 4 , mirrors: 3 },
+  { name: "Elite", span: 36,     maxLen: 31, hearts: 1, hints: 1, undos: 1, coverage: 0.99, tightness: 0.98, freedom: 0.294, pieces: 128, maxCells: 806 , diag: 4 , mirrors: 3 },
+  { name: "Master", span: 45,     maxLen: 33, hearts: 1, hints: 1, undos: 1, coverage: 0.99, tightness: 0.99, freedom: 0.284, pieces: 138, maxCells: 862 , diag: 4 , mirrors: 3 },
+  { name: "Pro", span: Infinity,     maxLen: 35, hearts: 1, hints: 1, undos: 1, coverage: 0.99, tightness: 1.0, freedom: 0.267, pieces: 148, maxCells: 925 , diag: 4 , mirrors: 3 },
 ];
 const MEDAL = { 1: "#CD7F32", 2: "#AEB6C4", 3: "#FFC24B" };
 const TIER_HUE = ["#5FCB8A", "#4CC79B", "#3FBFD6", "#3EA8EE", "#3E9BF0", "#5580F2", "#6C7BF0", "#8470F2", "#9A6BF0", "#C07AD8", "#F0A93E", "#F2891B", "#F2761B", "#FF6A4A", "#FF3D9A", "#B14BFF"];
@@ -2860,6 +4028,12 @@ export default function ArrowEscapeV3() {
   const [undosLeft, setUndosLeft] = useState(setup.undos);
   const [taps, setTaps] = useState(0);
   const [mistakes, setMistakes] = useState(0);
+  /* Whether a hint was taken, recorded directly. Gold used to infer this by
+     comparing hintsLeft against the tier's allowance — but a player can earn an
+     extra hint from an ad, so after taking one the counter was back at its
+     starting value and the hint went unnoticed. Anyone who watched an ad could
+     take a hint and still be awarded gold. */
+  const tookHint = useRef(false);
   const [flying, setFlying] = useState(new Map());
   const lastMiss = useRef({ id: -1, t: 0 });
   const scoreLog = useRef(new Map()); // what each arrow paid, so undo can refund
@@ -3244,6 +4418,7 @@ export default function ArrowEscapeV3() {
     if (!keepScore) setScore(0);
     setTaps(0);
     setMistakes(0);
+    tookHint.current = false;
     setFlying(new Map());
     lastMiss.current = { id: -1, t: 0 };
     setBad(null);
@@ -3543,12 +4718,18 @@ export default function ArrowEscapeV3() {
              collection a record of attendance rather than of skill. It now
              asks for a near-clean run; 0 means the shape is not collected and
              the player can come back for it. */
+          /* Gold now also asks that you did not take a hint. Clearing without a
+             mistake or an undo was the whole bar, so a careful player earned
+             gold on almost every board and the collection filled itself. A hint
+             names the next move outright, and a flawless run that leaned on one
+             is not the same achievement. */
+          const usedHint = tookHint.current;
           const earned =
-            mistakes === 0 && undosLeft === setup.undos
+            mistakes === 0 && undosLeft === setup.undos && !usedHint
               ? 3
-              : mistakes === 0
+              : mistakes === 0 && undosLeft === setup.undos
               ? 2
-              : mistakes <= 1
+              : mistakes === 0
               ? 1
               : 0;
           setEarnedRank(earned);
@@ -3895,6 +5076,7 @@ export default function ArrowEscapeV3() {
     }
     if (!p) return;
     setHintsLeft((h) => h - 1);
+    tookHint.current = true;
     setHintId(p.id);
     setTimeout(() => setHintId(null), 1900);
   }, [hintsLeft, phase, pieces, alive, blockerOf, cols, rows]);
@@ -3956,7 +5138,11 @@ export default function ArrowEscapeV3() {
                 Array.from({ length: maxHearts }).map((_, i) => (
                   <span
                     key={i}
-                    className={heartPop && i === hearts ? "hbreak" : hearts === 1 && i === 0 ? "heart-low" : ""}
+                    /* maxHearts > 1: the warning means "down to your last one",
+                       not "this tier only grants one". On the one-heart tiers
+                       the old test was true from the first move, so the heart
+                       pulsed without pause for the whole level. */
+                    className={heartPop && i === hearts ? "hbreak" : hearts === 1 && maxHearts > 1 && i === 0 ? "heart-low" : ""}
                     style={S.inl}
                   >
                     <Heart on={i < hearts} />
@@ -4247,10 +5433,10 @@ export default function ArrowEscapeV3() {
               {mode !== "custom" && earnedRank < 3 && (
                 <div style={S.winNext}>
                   {earnedRank === 2
-                    ? "Clear it without an undo for Gold"
+                    ? "Clear it without a hint for Gold"
                     : earnedRank === 1
-                    ? "Clear it without a mistake for Silver"
-                    : "Clear it with at most one mistake to collect it"}
+                    ? "Clear it without an undo for Silver"
+                    : "Clear it without a single mistake to collect it"}
                 </div>
               )}
             </div>
@@ -4496,8 +5682,8 @@ export default function ArrowEscapeV3() {
             {/* These three lines described the old rules: bronze for merely
                 finishing, and gold gated behind Hard. Both changed — bronze now
                 asks for a near-clean run, and gold is earnable on any level. */}
-            <b>Bronze</b> — clear it with at most one mistake. <b>Silver</b> — clear it
-            without a single mistake. <b>Gold</b> — no mistakes and no undo, on any level.
+            <b>Bronze</b> — clear it without a single mistake. <b>Silver</b> — no
+            mistakes and no undo. <b>Gold</b> — no mistakes, no undo and no hint.
             <br />
             Past level {CURATED_UNTIL} the game keeps inventing new shapes, and every one you
             clear is kept here. There is no end to them.
