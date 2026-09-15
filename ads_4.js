@@ -1,10 +1,11 @@
+import { AdMob, BannerAdSize, BannerAdPosition, RewardAdPluginEvents } from '@capacitor-community/admob';
+
 // Helper to dynamically check cell occupation using live ref
 const isCellOccupied = (cell, pieces, aliveRef) => {
   return pieces.some(p => aliveRef.current.has(p.id) && p.cells.includes(cell));
 };
 
-import { AdMob, BannerAdSize, BannerAdPosition, RewardAdPluginEvents } from '@capacitor-community/admob';
-
+// Flip to false when you're ready to go live on your own ad units.
 const TESTING = false;
 
 const GOOGLE_TEST_IDS = {
@@ -60,7 +61,6 @@ initPromise.then(() => warmRewarded());
 
 let rewardedInFlight = null;
 let interstitialInFlight = null;
-
 let rewardReady = false;
 let warming = null;
 
@@ -70,6 +70,7 @@ async function warmRewarded(delayMs = 0) {
     try {
       await initPromise;
       if (delayMs > 0) { await new Promise(r => setTimeout(r, delayMs)); }
+      
       await AdMob.prepareRewardVideoAd({ adId: IDS.rewarded, isTesting: TESTING });
       rewardReady = true;
     } catch (e) {
@@ -99,15 +100,12 @@ async function runRewarded() {
     let settled = false;
     const settleOnce = (v) => { if (!settled) { settled = true; settle(v); } };
 
-    const evtRewarded = RewardAdPluginEvents?.Rewarded || 'onRewarded';
-    const evtDismissed = RewardAdPluginEvents?.Dismissed || 'onRewardedVideoAdDismissed';
-    const evtFailed = RewardAdPluginEvents?.FailedToShow || 'onRewardedVideoAdFailedToStart';
-
     try {
+      // FIX: Added optional chaining to prevent undefined access errors
       const results = await Promise.allSettled([
-        AdMob.addListener(evtRewarded, () => settleOnce(true)),
-        AdMob.addListener(evtDismissed, () => settleOnce(false)),
-        AdMob.addListener(evtFailed, () => settleOnce(false)),
+        AdMob.addListener((RewardAdPluginEvents?.Rewarded || 'onRewarded'), () => settleOnce(true)),
+        AdMob.addListener((RewardAdPluginEvents?.Dismissed || 'onDismissed'), () => settleOnce(false)),
+        AdMob.addListener((RewardAdPluginEvents?.FailedToShow || 'onFailedToShow'), () => settleOnce(false)),
       ]);
       for (const r of results) {
         if (r.status === "fulfilled" && r.value) handles.push(r.value);
@@ -120,7 +118,7 @@ async function runRewarded() {
     timer = setTimeout(() => settleOnce(true), 60000);
     rewardReady = false;
     await AdMob.showRewardVideoAd();
-    
+    rewardReady = false;
     const result = await earned;
     clearTimeout(timer);
     warmRewarded();
@@ -138,23 +136,17 @@ async function runRewarded() {
 
 window.ArrowAds = {
   ready: true,
-
   showRewarded() {
     if (rewardedInFlight) return rewardedInFlight;
     rewardedInFlight = (async () => {
-      try {
-        return await runRewarded();
-      } finally {
-        rewardedInFlight = null;
-      }
+      try { return await runRewarded(); } 
+      finally { rewardedInFlight = null; }
     })();
     return rewardedInFlight;
   },
-
   showInterstitial() {
     if (interstitialInFlight) return interstitialInFlight;
     interstitialInFlight = (async () => {
-      let timeoutId;
       try {
         await Promise.race([
           (async () => {
@@ -162,40 +154,32 @@ window.ArrowAds = {
             await AdMob.prepareInterstitial({ adId: IDS.interstitial, isTesting: TESTING });
             await AdMob.showInterstitial();
           })(),
-          new Promise((resolve) => {
-            timeoutId = setTimeout(resolve, 15000);
-          }),
+          new Promise((resolve) => setTimeout(resolve, 15000)),
         ]);
       } catch (e) {
         debugError("[ads] interstitial failed", e);
       } finally {
-        if (timeoutId) clearTimeout(timeoutId);
         interstitialInFlight = null;
       }
     })();
     return interstitialInFlight;
   },
-
   async hideBanner() {
     bannerSuppressed = true;
     try { await AdMob.hideBanner(); } catch (e) { debugError("[ads] hideBanner failed", e); }
   },
-
   async showBannerAgain() {
-    if (bannerSuppressed) return;
+    bannerSuppressed = false;
     try {
       await initPromise;
-      if (bannerSuppressed) return;
       await AdMob.showBanner({
         adId: IDS.banner,
         adSize: BannerAdSize.ADAPTIVE_BANNER,
         position: BannerAdPosition.BOTTOM_CENTER,
         isTesting: TESTING,
       });
-      if (bannerSuppressed) { try { await AdMob.hideBanner(); } catch {} }
     } catch (e) { debugError("[ads] showBannerAgain failed", e); }
   },
-
   billing: false,
   purchaseRemoveAds: async () => false,
   restorePurchases: async () => false,
