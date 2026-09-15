@@ -4770,7 +4770,8 @@ export default function ArrowEscapeV3() {
      at a time — a board can introduce a diagonal and a deflector at once, and
      two banners at once teaches neither. */
   const activeTip = useMemo(() => {
-    if (mode !== "journey" || tut < 9) return null;
+    // gridlock gets tips too: it is the one mode that introduces itself
+    if ((mode !== "journey" && mode !== "gridlock") || tut < 9) return null;
     const ctx = { pieces, mirrors, shield, combo, goal: setup.goal || { kind: "clear" }, gridlock: !!setup.gridlock };
     return MECHANIC_TIPS.find((t) => !seenTips[t.key] && t.when(ctx)) || null;
   }, [mode, tut, pieces, mirrors, shield, combo, seenTips, setup.goal, setup.gridlock]);
@@ -5153,7 +5154,10 @@ export default function ArrowEscapeV3() {
   // prebuild the next board during the celebration — no hitch on Next Level.
   // Starting at "reveal" rather than "cleared" buys the extra second.
   useEffect(() => {
-    if ((phase !== "reveal" && phase !== "cleared") || mode === "daily") return;
+    /* Not in gridlock: its next board comes from makeGridlock, so this built a
+       journey level that was thrown away — about 170ms of blocked main thread
+       during the win celebration, for nothing. */
+    if ((phase !== "reveal" && phase !== "cleared") || mode === "daily" || mode === "gridlock") return;
     const t = setTimeout(() => {
       nextRef.current = { lvl: level + 1, setup: makeLevel(level + 1) };
     }, 80);
@@ -5464,6 +5468,11 @@ export default function ArrowEscapeV3() {
               return ns;
             });
             setDailyDone(true);
+          } else if (mode === "gridlock") {
+            /* Gridlock keeps its own counter and must not touch this one. It
+               was falling through to the branch below — neither custom nor
+               daily — so clearing a Gridlock round advanced the journey by a
+               level the player had never opened, skipping its shape entirely. */
           } else if (level >= best) {
             // only a level at the frontier moves progress forward; replaying
             // an old one must not drag the save back with it
@@ -6211,7 +6220,9 @@ export default function ArrowEscapeV3() {
             </div>
 
             <button style={S.winBtn} onClick={(e) => { e.stopPropagation(); nextLevel(); }}>
-              {mode === "journey" ? "Next Level" : "Back to Journey"}
+              {/* This read "Back to Journey" in every mode but journey — while
+                  in Gridlock the same button starts the next Gridlock round. */}
+              {mode === "journey" ? "Next Level" : mode === "gridlock" ? "Next Round" : "Back to Journey"}
             </button>
             <button style={S.winGhost} onClick={(e) => { e.stopPropagation(); restart(); }}>
               Replay for a better score
@@ -6525,7 +6536,11 @@ export default function ArrowEscapeV3() {
               ))}
             </div>
           </div>
-          {!adsRemoved && (
+          {/* The whole card, not just its button. Hiding only the button left
+              the heading and its description sitting there with nothing to act
+              on — an advert for something the player cannot do. The free route
+              below says the same thing and does work. */}
+          {!adsRemoved && Ads.provider?.billing && (
             <div style={S.buyRow}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <span style={S.buyName}>Remove ads</span>
@@ -6536,7 +6551,7 @@ export default function ArrowEscapeV3() {
                 onClick={async () => {
                   const ok = await Ads.buyRemoveAds();
                   if (ok) { setAdsRemoved(true); persist({ adsRemoved: true }); }
-                  else flashNote("Purchases aren't set up yet.");
+                  else flashNote("That didn't go through. Nothing was charged.");
                 }}
               >
                 Buy
@@ -6546,10 +6561,16 @@ export default function ArrowEscapeV3() {
           {!adsRemoved && (
             <div style={S.watchRow}>
               <div style={S.watchTop}>
-                <span style={S.buyName}>Or watch your way there</span>
+                {/* "Or" only makes sense next to the Buy card above it, and
+                    that card is hidden until billing exists. */}
+                <span style={S.buyName}>{Ads.provider?.billing ? "Or watch your way there" : "Remove ads by watching"}</span>
                 <span style={S.watchCount}>{Math.min(adWatchCount, AD_REMOVAL_GOAL)} / {AD_REMOVAL_GOAL}</span>
               </div>
-              <span style={S.buyHint}>Every full view counts. Free, no purchase needed.</span>
+              <span style={S.buyHint}>
+                {Ads.provider?.billing
+                  ? "Every full view counts. Free, no purchase needed."
+                  : "Every full view counts. No banner and no ads between levels once you get there."}
+              </span>
               <div style={S.chapTrack}>
                 <div style={{ ...S.chapFill, width: `${Math.min(100, (adWatchCount / AD_REMOVAL_GOAL) * 100)}%`, background: C.go }} />
               </div>
@@ -6577,16 +6598,22 @@ export default function ArrowEscapeV3() {
             </div>
           )}
           {adsRemoved && <div style={S.buyDone}>Ads removed — thank you.</div>}
-          <button
-            style={S.restoreBtn}
-            onClick={async () => {
-              const ok = await Ads.restore();
-              if (ok) { setAdsRemoved(true); persist({ adsRemoved: true }); flashNote("Purchase restored."); }
-              else flashNote("Nothing to restore.");
-            }}
-          >
-            Restore purchases
-          </button>
+          {/* Same gate as Buy: with no billing there is nothing that could ever
+              be restored, so the button can only answer "nothing to restore" —
+              which reads as a lost purchase rather than as a feature that does
+              not exist yet. */}
+          {Ads.provider?.billing && (
+            <button
+              style={S.restoreBtn}
+              onClick={async () => {
+                const ok = await Ads.restore();
+                if (ok) { setAdsRemoved(true); persist({ adsRemoved: true }); flashNote("Purchase restored."); }
+                else flashNote("Nothing to restore.");
+              }}
+            >
+              Restore purchases
+            </button>
+          )}
           {adNote && <div style={S.adNote}>{adNote}</div>}
 
           <div style={S.themeRow}>
