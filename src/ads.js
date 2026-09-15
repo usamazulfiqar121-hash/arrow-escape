@@ -36,14 +36,14 @@ const IDS = TESTING ? GOOGLE_TEST_IDS : PROD_IDS;
 // TEMPORARY — surfaces exactly what's happening on screen since there's no
 // ADB access to read console logs on the test device. Remove this whole
 // block once ads are confirmed working; it must never ship to real users.
-/* Turned on because rewarded video is failing and the real reason is being
-   thrown away. Every failure currently reaches the player as the same sentence,
-   "No ad available right now", whether the cause is no fill, a bad unit id, a
-   plugin mismatch or the ad simply not being ready yet — so there is nothing to
-   act on. AdMob's own report shows three requests across a week at a hundred
-   percent match, which is the banner: the rewarded request is not arriving at
-   all. Set back to false once the cause is known. */
-const DEBUG_ALERT = true;
+/* Off again: it did its job. The rewarded ad unit id was wrong — the banner
+   worked because its id was right, and every rewarded request was going to a
+   unit that did not exist. With this on, the real error was visible in one tap
+   instead of being flattened into "No ad available right now".
+
+   Set it back to true the next time ads misbehave. It alerts on success as well
+   as failure, which is why it cannot be left on: three dialogs on every launch. */
+const DEBUG_ALERT = false;
 function debugLog(msg) {
   console.log(msg);
   if (DEBUG_ALERT) { try { window.alert(msg); } catch {} }
