@@ -5003,9 +5003,17 @@ export default function ArrowEscapeV3() {
     if (adBusy.current) return null;
     adBusy.current = true;
     setWatchingAd(true);
+    /* The game's audio is silenced for the ad and brought back in the finally,
+       not on the line after the await. Ads.rewarded swallows its own errors
+       today so the happy path is the only path — but if that ever changes, a
+       resume that sits after the await simply never runs, and the music is dead
+       for the rest of the session with nothing to show why. The finally is
+       already here; it costs nothing to use it. */
     try {
-      Snd.suspend(); const _reward = await Ads.rewarded(kind); Snd.resume(); return _reward;
+      Snd.suspend();
+      return await Ads.rewarded(kind);
     } finally {
+      Snd.resume();
       adBusy.current = false;
       setWatchingAd(false);
     }
@@ -5055,7 +5063,9 @@ export default function ArrowEscapeV3() {
     g.since = 0;
     g.at = now;
     // awaited: the next board must not load underneath the ad
-    Snd.suspend(); await Ads.interstitial(); Snd.resume();
+    // try/finally for the same reason as claimRewarded above — a resume that
+    // only runs on success leaves the game silent for good if it ever does not
+    try { Snd.suspend(); await Ads.interstitial(); } finally { Snd.resume(); }
   }, [adsRemoved]);
 
   /* ── level control ── */
