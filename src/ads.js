@@ -110,16 +110,18 @@ let interstitialInFlight = null;
 let rewardReady = false;
 let warming = null;
 
-async function warmRewarded() {
+async function warmRewarded(delayMs = 0) {
   if (rewardReady || warming) return warming;
   warming = (async () => {
     try {
       await initPromise;
+      if (delayMs > 0) { await new Promise(r => setTimeout(r, delayMs)); }
       await AdMob.prepareRewardVideoAd({ adId: IDS.rewarded, isTesting: TESTING });
       rewardReady = true;
     } catch (e) {
       rewardReady = false;
       debugError("[ads] rewarded could not be prepared", e);
+      setTimeout(() => warmRewarded(), 10000);
     } finally {
       warming = null;
     }
@@ -166,6 +168,7 @@ async function runRewarded() {
     }
 
     timer = setTimeout(() => settleOnce(true), 60000);
+    rewardReady = false;
     await AdMob.showRewardVideoAd();
     rewardReady = false;          // showing consumes it
     const result = await earned;
@@ -180,7 +183,7 @@ async function runRewarded() {
        same way — for good. Clearing it and asking again is the only way out. */
     rewardReady = false;
     debugError("[ads] rewarded FAILED", e);
-    warmRewarded();
+    warmRewarded(2000);
     return false;
   } finally {
     await cleanup();
