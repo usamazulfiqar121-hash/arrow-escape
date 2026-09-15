@@ -23,7 +23,7 @@ const GOOGLE_TEST_IDS = {
 const PROD_IDS = {
   banner: "ca-app-pub-5743225482205913/5655183719",
   interstitial: "ca-app-pub-5743225482205913/2019191036",
-  rewarded: "ca-app-pub-5743225482205913/9478878652",
+  rewarded: "ca-app-pub-5743225482205913/9637414887",
 };
 
 const IDS = TESTING ? GOOGLE_TEST_IDS : PROD_IDS;
