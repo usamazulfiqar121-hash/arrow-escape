@@ -5422,7 +5422,7 @@ export default function ArrowEscapeV3() {
              what the level asked costs the rank — the shape is still collected,
              so the work is not thrown away, but it collects at nothing. */
           const met = goalMet(setup.goal, {
-            taps, elapsed: elapsedNow(),
+            taps: taps + 1,elapsed: elapsedNow(),
             peakChain: peakCombo.current, rescued: rescued.current, mistakes,
           });
           const earned = !met ? 0 :
