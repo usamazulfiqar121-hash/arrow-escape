@@ -5004,7 +5004,7 @@ export default function ArrowEscapeV3() {
     adBusy.current = true;
     setWatchingAd(true);
     try {
-      return await Ads.rewarded(kind);
+      Snd.suspend(); const _reward = await Ads.rewarded(kind); Snd.resume(); return _reward;
     } finally {
       adBusy.current = false;
       setWatchingAd(false);
@@ -5055,7 +5055,7 @@ export default function ArrowEscapeV3() {
     g.since = 0;
     g.at = now;
     // awaited: the next board must not load underneath the ad
-    await Ads.interstitial();
+    Snd.suspend(); await Ads.interstitial(); Snd.resume();
   }, [adsRemoved]);
 
   /* ── level control ── */
