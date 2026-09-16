@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
-import vue from '@vitejs/plugin-vue' // (ya jo bhi framework aap use kar rahe ho)
+import vue from '@vitejs/plugin-vue'
 
 export default defineConfig({
-  base: './', // <--- Yeh line zaroori add karein
+  base: './',
   plugins: [vue()],
-}
+})
