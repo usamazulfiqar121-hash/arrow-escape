@@ -3723,8 +3723,17 @@ const Ads = {
     return false;
   },
   async interstitial() {
+    /* Ads.provider is window.ArrowAds, an object with showRewarded,
+       showInterstitial, hideBanner and so on — it has no setTimeout method,
+       so calling Ads.provider.setTimeout(...) threw a TypeError every single
+       time. The callback inside it called a bare showInterstitial(), which
+       does not exist anywhere else in this file either — it would have thrown
+       a ReferenceError even if it had been reached. Both errors were caught
+       by the empty catch below and swallowed, so the interstitial between
+       levels silently never appeared, with nothing in the console or on
+       screen to say why. */
     try {
-      if (Ads.provider?.showInterstitial) await Ads.provider.setTimeout(() => { showInterstitial(); }, 400);
+      if (Ads.provider?.showInterstitial) await Ads.provider.showInterstitial();
     } catch {}
   },
   async buyRemoveAds() {
@@ -4449,7 +4458,17 @@ function departGeom(piece, cols, rows, mirrors, w = 9.6) {
    the guide never pointed. */
 function lanePath(head, dir, cols, rows, mirrors) {
   const lane = exitLine(head, dir, cols, rows, mirrors) || [];
-  const far = (cols + rows + DOT_PAD * 2) * U;
+  /* DOT_PAD alone, matching what its own comment says: "how far a lane guide
+     runs past the board edge." The formula also carried cols + rows, and the
+     SVG this draws into has overflow: visible — needed so a piece can fly off
+     the board during its own exit animation without being clipped mid-flight.
+     Nothing here clips the lane guide, so on a real board that overshoot is
+     40 to 54 cell-lengths, measured, more than twice the board's own width —
+     and every arrow's lane draws one, so the trace-all view is that many
+     lines each running off screen. The `last` point is already at the board
+     edge — exitLine stops there — so the guide only needs to carry a little
+     further to read as continuing off the board, not span it again. */
+  const far = DOT_PAD * U;
   let d = `M ${cx(head, cols)} ${cy(head, cols)}`;
   let last = { x: cx(head, cols), y: cy(head, cols) };
   let prev = last;
@@ -6143,7 +6162,7 @@ export default function ArrowEscapeV3() {
   }} 
   aria-label="Toggle grid"
 >
-  #
+  <Hash on={grid} />
 </button>
           </div>
           <div style={S.scoreWrap}>
