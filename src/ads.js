@@ -272,4 +272,3 @@ window.ArrowAds = {
   purchaseRemoveAds: async () => false,
   restorePurchases: async () => false,
 };
-
