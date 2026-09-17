@@ -23,3 +23,10 @@ dist
 *.sln
 *.sw?
 node_modules
+
+# Backup files
+*.bak
+*.bak2
+
+# Build output
+dist/
