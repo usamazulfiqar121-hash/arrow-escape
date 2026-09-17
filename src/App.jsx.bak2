@@ -5014,7 +5014,7 @@ export default function ArrowEscapeV3() {
       } catch {
         setCoachSeen(false);
       } finally {
-        setTimeout(() => setBooted(true), 700);
+        setBooted(true);
       }
     })();
   }, []);
