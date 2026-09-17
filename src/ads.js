@@ -21,7 +21,7 @@ const IDS = TESTING ? GOOGLE_TEST_IDS : PROD_IDS;
 
 // DEBUG_ALERT is ON so every ad step pops a message on your phone.
 // Turn it back to false once you've confirmed ads are working.
-const DEBUG_ALERT = true;
+const DEBUG_ALERT = false;
 function debugLog(msg) {
   console.log(msg);
   if (DEBUG_ALERT) { try { window.alert(msg); } catch (e) {} }
