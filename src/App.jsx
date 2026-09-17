@@ -4863,8 +4863,8 @@ export default function ArrowEscapeV3() {
       }
       if (i < work.length) idle(step);
     };
-    idle(step);
-    return () => { stop = true; };
+    const warmTimer = setTimeout(() => idle(step), 2000);
+    return () => { stop = true; clearTimeout(warmTimer); };
   }, [booted, found]);
 
   const dismissTip = useCallback(() => {
@@ -4935,6 +4935,7 @@ export default function ArrowEscapeV3() {
 
   /* ── persistence ── */
   useEffect(() => {
+    let prewarmCh = 1;
     (async () => {
       try {
         const raw = await Store.get(SAVE_KEY);
@@ -4945,6 +4946,7 @@ export default function ArrowEscapeV3() {
         }
         const p = JSON.parse(raw);
         setBest(p.best ?? 1);
+        prewarmCh = chapterOf(p.best ?? 1);
         setBestScore(p.bestScore ?? 0);
         setGridRound(p.gridRound ?? 0);
         setGridBest(p.gridBest ?? 0);
@@ -5014,6 +5016,11 @@ export default function ArrowEscapeV3() {
       } catch {
         setCoachSeen(false);
       } finally {
+        try {
+          chapterInfo(prewarmCh);
+          cachedMask("catArt");
+          cachedMask("rocketArt");
+        } catch {}
         setTimeout(() => setBooted(true), 700);
       }
     })();
@@ -5281,7 +5288,7 @@ export default function ArrowEscapeV3() {
     if ((phase !== "reveal" && phase !== "cleared") || mode === "daily" || mode === "gridlock") return;
     const t = setTimeout(() => {
       nextRef.current = { lvl: level + 1, setup: makeLevel(level + 1) };
-    }, 80);
+    }, 1500);
     return () => clearTimeout(t);
   }, [phase, mode, level]);
 
