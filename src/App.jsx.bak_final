@@ -6453,7 +6453,7 @@ export default function ArrowEscapeV3() {
             </div>
 
             <div style={S.homeCards}>
-              <button style={{ ...S.homeCard, animationDelay: "30ms" }} className="card-in" onClick={() => {
+              <button style={{ ...S.homeCard, animationDelay: "40ms" }} className="card-in" onClick={() => {
                 returnTo.current = "home";
                 // Same-session fast path: hardware-back only changed the screen,
                 // so a still-playing board is already in memory — hand it back
@@ -6472,7 +6472,7 @@ export default function ArrowEscapeV3() {
                 <div style={S.homeCardBtn}>{dailyDone ? "Replay" : "Play"}</div>
               </button>
 
-              <button style={{ ...S.homeCard, animationDelay: "75ms" }} className="card-in" onClick={() => setScreen("studio")}>
+              <button style={{ ...S.homeCard, animationDelay: "110ms" }} className="card-in" onClick={() => setScreen("studio")}>
                 <div style={S.homeCardTitle}>Studio</div>
                 <div style={S.homeCardSub}>Draw & share</div>
                 <div style={S.homeCardArt}>
@@ -6489,7 +6489,7 @@ export default function ArrowEscapeV3() {
                 opens with a dozen or more legal moves however hard the
                 generator is pushed. No picture here, so the board can actually
                 close up. */}
-            <button style={{ ...S.gridCard, animationDelay: "140ms" }} className="card-in"
+            <button style={{ ...S.gridCard, animationDelay: "180ms" }} className="card-in"
                     onClick={() => {
                       returnTo.current = "home";
                       // Same-session fast path: the live board is still in memory.
@@ -6512,7 +6512,7 @@ export default function ArrowEscapeV3() {
               {gridBest > 0 && <div style={S.gridBestTag}>Best run · {gridBest} rounds</div>}
             </button>
 
-            <div style={{ ...S.chapterCard, animationDelay: "110ms" }} className="card-in">
+            <div style={{ ...S.chapterCard, animationDelay: "150ms" }} className="card-in">
               {(() => {
                 const ci = chapterInfo(chapterOf(best));
                 const done = best - ci.from;
@@ -6542,13 +6542,13 @@ export default function ArrowEscapeV3() {
               })()}
             </div>
 
-            <div style={{ ...S.brandWrap, animationDelay: "150ms" }} className="card-in">
+            <div style={{ ...S.brandWrap, animationDelay: "170ms" }} className="card-in">
               <div style={S.brand}>Arrow Escape</div>
               <div style={S.homeLevel}>Level {best}</div>
               <div style={{ ...S.homeDiff, color: TIER_HUE[tierFor(best).index] ?? C.accent }}>{tierFor(best).tier.name}</div>
             </div>
 
-            <button style={{ ...S.continueBtn, animationDelay: "180ms" }} className="card-in" onClick={() => {
+            <button style={{ ...S.continueBtn, animationDelay: "230ms" }} className="card-in" onClick={() => {
               returnTo.current = "home";
               // Same-session fast path: a journey board on the current frontier
               // is still in memory after a hardware-back — resume it in place
