@@ -30,3 +30,9 @@ node_modules
 
 # Build output
 dist/
+
+# Gradle resource folder — sirf .xml allowed
+android/app/src/main/res/**/*.bak
+android/app/src/main/res/**/*.bak2
+android/app/src/main/res/**/*.bak3
+android/app/src/main/res/**/*~
