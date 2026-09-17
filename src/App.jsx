@@ -3195,7 +3195,7 @@ button { transition: transform 110ms cubic-bezier(.34,1.4,.64,1), background 180
 button:active:not(:disabled) { transform: scale(.93); }
 
 @keyframes screenIn { from { opacity: 0; transform: translateY(14px) scale(.985); } to { opacity: 1; transform: none; } }
-.screen-in { animation: screenIn 260ms cubic-bezier(.18,.9,.26,1) both; will-change: transform, opacity; }
+.screen-in { animation: screenIn 200ms cubic-bezier(.18,.9,.26,1) both; }
 
 @keyframes boardIn { from { opacity: 0; transform: scale(.9); } to { opacity: 1; transform: scale(1); } }
 .board-in { animation: boardIn 300ms cubic-bezier(.16,.92,.26,1) backwards; transform-origin: center; }
@@ -3204,7 +3204,7 @@ button:active:not(:disabled) { transform: scale(.93); }
 .hud-in { animation: hudIn 260ms cubic-bezier(.2,.85,.3,1) both; }
 
 @keyframes cardIn { from { opacity: 0; transform: translateY(16px) scale(.96); } to { opacity: 1; transform: none; } }
-.card-in { animation: cardIn 300ms cubic-bezier(.2,1.06,.3,1) both; will-change: transform, opacity; }
+.card-in { animation: cardIn 240ms cubic-bezier(.2,1.06,.3,1) both; }
 
 @keyframes navPop { 0% { transform: scale(1); } 45% { transform: scale(1.18); } 100% { transform: scale(1); } }
 .nav-on { animation: navPop 280ms cubic-bezier(.34,1.5,.64,1); }
