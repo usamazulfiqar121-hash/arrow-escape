@@ -3320,7 +3320,11 @@ function makeGridlock(round, seed) {
   const mask = { cols: n, rows: n, cells, name: "Gridlock", procedural: false, plain: true };
   const idx = Math.min(TIERS.length - 1, 6 + Math.floor(round / 3));
   const tier = TIERS[idx];
-  RND = mulberry32((seed === undefined ? (Date.now() ^ (round * 2654435761)) : seed) >>> 0);
+  // named so the return below can report exactly which seed produced this
+  // board, whether it was passed in or invented here — a resume needs the
+  // real value, not just to know one existed
+  const usedSeed = (seed === undefined ? (Date.now() ^ (round * 2654435761)) : seed) >>> 0;
+  RND = mulberry32(usedSeed);
   const weave = texturedTier(tier, (RND() * 1e9) | 0);
   // pack it tighter every few rounds, which is what drives the opening down
   /* Never below what the tier already asks for. The first version capped this
@@ -3347,7 +3351,7 @@ function makeGridlock(round, seed) {
   if (!best) return null;
   return { mask, pieces: best, tier, tierIndex: idx, stepInTier: 0, mirrors,
            hearts: 3, hints: tier.hints, undos: tier.undos,
-           goal: { kind: "clear" }, gridlock: true, round };
+           goal: { kind: "clear" }, gridlock: true, round, seed: usedSeed };
 }
 
 function makeLevelFromMask(rawMask, tierIdx = 7) {
@@ -3544,9 +3548,14 @@ function makeLevel(level, seed) {
   assignLocks(best.pieces, mask.cols, mask.rows, lockRatio(index), mirrors);
   RND = Math.random;
 
+  /* `level` rides along on the returned board so a caller that only has the
+     setup object in hand (not the arguments that built it) can still rebuild
+     the identical board later — used for resuming a level after the app was
+     killed mid-play, where only the saved setup, not the original call, is
+     available. */
   return { mask, pieces: best.pieces, tier, tierIndex: index, stepInTier, mirrors,
            hearts: tier.hearts, hints: tier.hints, undos: tier.undos,
-           goal: goalFor(level, index, best.pieces, mask) };
+           goal: goalFor(level, index, best.pieces, mask), level };
 }
 
 /* Every board was woven the same way — same coverage, same snake-length spread,
@@ -4684,6 +4693,10 @@ export default function ArrowEscapeV3() {
   const [snap, setSnap] = useState(false);
   const [levelKey, setLevelKey] = useState(0);
   const nextRef = useRef(null);
+  // a saved mid-level snapshot, read once at boot and consumed by whichever
+  // Continue/Play/Start button matches its mode — see the boot effect and
+  // the save-progress effect further down
+  const inProgressRef = useRef(null);
   const [streak, setStreak] = useState(0);
   const [dailyDone, setDailyDone] = useState(false);
   const [gridRound, setGridRound] = useState(0);
@@ -4946,6 +4959,13 @@ export default function ArrowEscapeV3() {
         const unbroken = last === todayKey() || last === yesterdayKey();
         setStreak(unbroken ? p.streak ?? 0 : 0);
         setGrid(!!p.grid);
+        /* A save with 0 hearts is an attempt that had already ended — nothing
+           meaningful to hand back. Rather than also reconstruct which overlay
+           (out-of-lives, the reveal card) was on screen when it was saved,
+           resuming is only ever offered into a still-playing board; anything
+           else quietly falls back to today's fresh start, same as if there
+           were no saved progress at all. */
+        if (p.inProgress && p.inProgress.hearts > 0) inProgressRef.current = p.inProgress;
         setDailyDone(p.lastDaily === todayKey());
         lastDailyRef.current = p.lastDaily ?? null;
         // `>= 1`, not `> 1`: a save parked on level one fell through both
@@ -5088,26 +5108,38 @@ export default function ArrowEscapeV3() {
   }, [adsRemoved]);
 
   /* ── level control ── */
-  const applySetup = useCallback((st, keepScore) => {
+  /* `progress`, when given, is a saved in-progress snapshot (see the
+     save-progress effect below) — resuming a level after the app was killed
+     mid-play, rather than starting it fresh. It carries exactly what a fresh
+     start does not already produce on its own: which pieces are already gone
+     (as `history`, the same array undo already uses, so undo keeps working
+     unchanged after a resume), the remaining hearts/hints/undos, and the
+     scoring state those pieces earned. Every field below falls back to the
+     same fresh value as before when `progress` is absent, so no other caller
+     of applySetup is affected. */
+  const applySetup = useCallback((st, keepScore, progress) => {
     setSetup(st);
     const fresh = new Set(st.pieces.map((p) => p.id));
+    if (progress) for (const id of progress.history) fresh.delete(id);
     aliveRef.current = fresh;
     setAlive(fresh);
-    setHistory([]);
-    peakCombo.current = 0;
-    scoreLog.current.clear();
-    setHearts(st.hearts);
-    setHintsLeft(st.hints);
-    setUndosLeft(st.undos);
-    setShield(false);
-    setFlow(0);
-    setCombo(0);
-    if (!keepScore) setScore(0);
-    setTaps(0);
-    setMistakes(0);
-    tookHint.current = false;
-    rescued.current = false;
-    startedAt.current = Date.now();
+    setHistory(progress ? progress.history : []);
+    peakCombo.current = progress ? (progress.peakCombo || 0) : 0;
+    scoreLog.current = progress ? new Map(progress.scoreLog || []) : new Map();
+    setHearts(progress ? progress.hearts : st.hearts);
+    setHintsLeft(progress ? progress.hintsLeft : st.hints);
+    setUndosLeft(progress ? progress.undosLeft : st.undos);
+    setShield(progress ? !!progress.shield : false);
+    setFlow(progress ? progress.flow : 0);
+    setCombo(progress ? progress.combo : 0);
+    if (!keepScore) setScore(progress ? progress.score : 0);
+    setTaps(progress ? progress.taps : 0);
+    setMistakes(progress ? progress.mistakes : 0);
+    tookHint.current = progress ? !!progress.tookHint : false;
+    rescued.current = progress ? !!progress.rescued : false;
+    // the clock keeps running while the app is closed unless we wind it back
+    // by exactly how much progress had already elapsed when it was saved
+    startedAt.current = progress ? Date.now() - (progress.elapsedMs || 0) : Date.now();
     setFlying(new Map());
     lastMiss.current = { id: -1, t: 0 };
     setBad(null);
@@ -5134,6 +5166,17 @@ export default function ArrowEscapeV3() {
     },
     [applySetup]
   );
+
+  /* The Levels list and the prebuilt-next-board path both call startJourney
+     directly, and both must always get a fresh board — replaying level 5
+     from the list while level 16 is mid-attempt should never surface level
+     16's leftovers. Resuming is only offered from the one place a player
+     would expect it: Continue, for the exact level they were already on. */
+  const resumeJourney = useCallback((lvl, progress) => {
+    setMode("journey");
+    setLevel(lvl);
+    applySetup(makeLevel(lvl), false, progress);
+  }, [applySetup]);
 
   const startCustom = useCallback(
     (mask) => {
@@ -5173,12 +5216,31 @@ export default function ArrowEscapeV3() {
     applySetup(st);
   }, [applySetup, gridRound, flashNote]);
 
+  /* Resuming Gridlock needs the exact seed a fresh start never fixes — every
+     other attempt at the same round is meant to be a different board.
+     makeGridlock now reports back whichever seed it actually used (passed in
+     or invented), so a resume replays that one instead of a new one. */
+  const resumeGridlock = useCallback((round, seed, progress) => {
+    const st = makeGridlock(round, seed);
+    if (!st) { startGridlock(round); return; }
+    setMode("gridlock");
+    applySetup(st, false, progress);
+  }, [applySetup, startGridlock]);
+
   const startDaily = useCallback(() => {
     setMode("daily");
     // the daily should keep pace with the player, not sit at one fixed tier
     const lvl = Math.max(12, Math.min(level, 400));
     applySetup(makeLevel(lvl, hashStr(todayKey())));
   }, [applySetup, level]);
+
+  // same board-recipe as startDaily above; today's date is the seed, so this
+  // only reconstructs correctly on the same day it was saved on — exactly
+  // when a resume is expected to happen
+  const resumeDaily = useCallback((lvl, progress) => {
+    setMode("daily");
+    applySetup(makeLevel(lvl, hashStr(todayKey())), false, progress);
+  }, [applySetup]);
 
   // prebuild the next board during the celebration — no hitch on Next Level.
   // Starting at "reveal" rather than "cleared" buys the extra second.
@@ -5192,6 +5254,49 @@ export default function ArrowEscapeV3() {
     }, 80);
     return () => clearTimeout(t);
   }, [phase, mode, level]);
+
+  /* Mirrors the last "playing" moment to disk so the app can pick a level
+     back up after being killed mid-play, rather than only remembering which
+     level number to start over on. Only for the three modes with a single
+     obvious place to offer a resume — Continue, Daily's Play, Gridlock's
+     Start. Custom boards, drawn in Studio and launched from a list rather
+     than a single "your current attempt" button, are left out rather than
+     bolted on to a flow that doesn't really have a resume point.
+
+     Everything reconstructible comes off `setup` itself wherever possible
+     (setup.level, setup.round, setup.seed) rather than from state a
+     particular mode might not keep in step — daily's clamped level, for one,
+     never touches the journey `level` state — so the saved snapshot can only
+     drift from what is actually on screen if `setup` itself is wrong. */
+  useEffect(() => {
+    if (!booted || phase !== "playing") return;
+    if (mode !== "journey" && mode !== "daily" && mode !== "gridlock") return;
+    // nothing left to resume into — this guards the same instant the tap
+    // handler's own explicit clear above does, so a fully-cleared board can
+    // never get re-saved by this effect running one tick after that clear
+    if (setup.pieces.length - history.length <= 0) return;
+    persist({
+      inProgress: {
+        mode,
+        level: setup.level,
+        round: setup.round,
+        seed: setup.seed,
+        history,
+        hearts, hintsLeft, undosLeft,
+        score, combo, flow, shield,
+        taps, mistakes,
+        tookHint: tookHint.current,
+        rescued: rescued.current,
+        peakCombo: peakCombo.current,
+        scoreLog: [...scoreLog.current],
+        elapsedMs: Date.now() - startedAt.current,
+        // daily's board is seeded from the calendar date, not stored on its
+        // own — a save from before midnight is yesterday's board, and
+        // dailyDone alone does not catch that (a new day starts false too)
+        dateKey: todayKey(),
+      },
+    });
+  }, [booted, phase, mode, setup, history, hearts, hintsLeft, undosLeft, score, combo, flow, shield, taps, mistakes, persist]);
 
   // A replaying player should not have to sit through the reveal every time.
   const skipReveal = useCallback(() => {
@@ -5373,6 +5478,10 @@ export default function ArrowEscapeV3() {
       setAlive(nextAlive);
 
       if (willClear) {
+        // nothing left to resume into — remove the saved snapshot from the
+        // tap before this one now, rather than leave it sitting there for a
+        // kill-before-advancing to resurrect a board that is already won
+        if (mode === "journey" || mode === "daily" || mode === "gridlock") persist({ inProgress: null });
         setTimeout(() => {
           /* Gridlock has no picture to reveal — filling in a solid rectangle
              says nothing, and the pause before the win card is dead time. */
@@ -6281,17 +6390,28 @@ export default function ArrowEscapeV3() {
       <div style={S.shellBody}>
         {screen === "home" && (
           <div style={S.home} className="screen-in">
-            <div style={S.streakChip}>
-          🔥 {streak}
-          {streak > 0 && (
-            <span style={S.streakGoal}>
-              {streak >= 30 ? " · legend" : ` · ${[3, 7, 14, 30].find((t) => t > streak) - streak} to ${[3, 7, 14, 30].find((t) => t > streak)}`}
-            </span>
-          )}
-        </div>
+            <div
+              style={streak > 0
+                ? { ...S.streakChip, border: "1px solid rgba(255,194,75,0.35)", boxShadow: `0 2px 14px rgba(255,194,75,0.18), ${C.sh1}` }
+                : S.streakChip}
+            >
+              <StreakFlame on={streak > 0} />
+              <span style={S.streakCount}>{streak}</span>
+              {streak > 0 && (
+                <span style={S.streakGoal}>
+                  {streak >= 30 ? " · legend" : ` · ${[3, 7, 14, 30].find((t) => t > streak) - streak} to ${[3, 7, 14, 30].find((t) => t > streak)}`}
+                </span>
+              )}
+            </div>
 
             <div style={S.homeCards}>
-              <button style={{ ...S.homeCard, animationDelay: "40ms" }} className="card-in" onClick={() => { returnTo.current = "home"; startDaily(); setScreen("play"); }}>
+              <button style={{ ...S.homeCard, animationDelay: "40ms" }} className="card-in" onClick={() => {
+                returnTo.current = "home";
+                const p = inProgressRef.current;
+                if (p && p.mode === "daily" && !dailyDone && p.dateKey === todayKey()) { inProgressRef.current = null; resumeDaily(p.level, p); }
+                else startDaily();
+                setScreen("play");
+              }}>
                 <div style={S.homeCardTitle}>Daily</div>
                 <div style={S.homeCardSub}>{todayKey().slice(5).replace("-", " / ")}</div>
                 <div style={S.homeCardArt}>
@@ -6318,7 +6438,13 @@ export default function ArrowEscapeV3() {
                 generator is pushed. No picture here, so the board can actually
                 close up. */}
             <button style={{ ...S.gridCard, animationDelay: "180ms" }} className="card-in"
-                    onClick={() => { returnTo.current = "home"; startGridlock(); setScreen("play"); }}>
+                    onClick={() => {
+                      returnTo.current = "home";
+                      const p = inProgressRef.current;
+                      if (p && p.mode === "gridlock" && p.round === gridRound) { inProgressRef.current = null; resumeGridlock(p.round, p.seed, p); }
+                      else startGridlock();
+                      setScreen("play");
+                    }}>
               <div style={S.gridCardRow}>
                 <div>
                   <div style={S.homeCardTitle}>Gridlock</div>
@@ -6365,7 +6491,13 @@ export default function ArrowEscapeV3() {
               <div style={{ ...S.homeDiff, color: TIER_HUE[tierFor(best).index] ?? C.accent }}>{tierFor(best).tier.name}</div>
             </div>
 
-            <button style={{ ...S.continueBtn, animationDelay: "230ms" }} className="card-in" onClick={() => { returnTo.current = "home"; startJourney(best); setScreen("play"); }}>
+            <button style={{ ...S.continueBtn, animationDelay: "230ms" }} className="card-in" onClick={() => {
+              returnTo.current = "home";
+              const p = inProgressRef.current;
+              if (p && p.mode === "journey" && p.level === best) { inProgressRef.current = null; resumeJourney(p.level, p); }
+              else startJourney(best);
+              setScreen("play");
+            }}>
               Continue
             </button>
             <div style={S.homeFoot}>Best {bestScore.toLocaleString()} · level {best}</div>
@@ -6989,6 +7121,25 @@ const HomeIcon = () => (
     <path d="M3.5 10.5L12 3.5l8.5 7M5.5 9.5V20h13V9.5" stroke={C.accent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
+/* Two-tone so it reads as lit rather than flat: a warm gold body with a
+   brighter core, the same on/off language Heart and Star already use in this
+   file. Unlit (streak 0) drops to a quiet outline — a flame icon that always
+   looks lit regardless of the actual streak would be decorative, not
+   informative; this one reflects the number next to it. */
+const StreakFlame = ({ on }) => (
+  <svg width="18" height="18" viewBox="0 0 24 24">
+    <path
+      d="M12.4 2.4C12.4 2.4 7.6 7.9 7.6 12.9C7.6 16.1 9.7 18.7 12.3 18.7C15.2 18.7 17.5 16.2 17.2 13C17 10.7 15.2 9.6 15.5 7.2C15.7 5.5 14.4 3.5 12.4 2.4Z"
+      fill={on ? C.gold : "none"} stroke={on ? "none" : C.muted} strokeWidth="1.6" strokeLinejoin="round"
+    />
+    {on && (
+      <path
+        d="M12.7 9.6C12.7 9.6 10.9 12.1 10.9 13.9C10.9 15.2 11.8 16.1 12.9 16.1C14.1 16.1 15 15.1 14.9 13.8C14.8 12.5 13.8 12 13.9 10.7C13.95 10.1 13.4 9.9 12.7 9.6Z"
+        fill="#FFE9C2"
+      />
+    )}
+  </svg>
+);
 function MiniShape({ shapeKey }) {
   const m = cachedMask(shapeKey);
   return (
@@ -7205,8 +7356,9 @@ const makeStyles = (C) => ({
 
   shellBody: { flex: 1, minHeight: 0, width: BOARD_W, overflowY: "auto", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch", scrollBehavior: "smooth", paddingBottom: 8 },
   home: { display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 6 },
-  streakGoal: { fontWeight: 800, fontSize: 12, color: C.muted, letterSpacing: 0 },
-  streakChip: { background: C.card, border: `1px solid ${C.edge}`, borderRadius: 999, padding: "7px 16px", fontWeight: 900, fontSize: 13, boxShadow: C.sh1, marginBottom: 16, letterSpacing: "0.01em" },
+  streakGoal: { fontWeight: 700, fontSize: 12, color: C.muted, letterSpacing: 0 },
+  streakChip: { display: "flex", alignItems: "center", gap: 8, background: C.card, border: `1px solid ${C.edge}`, borderRadius: 999, padding: "8px 18px 8px 14px", boxShadow: C.sh1, marginBottom: 16 },
+  streakCount: { fontWeight: 900, fontSize: 15, color: C.ink, letterSpacing: "0.01em" },
   homeCards: { display: "flex", gap: 12, width: "100%" },
   homeCard: { flex: 1, background: `linear-gradient(180deg, ${C.card} 0%, ${C.card} 62%, ${C.bg} 190%)`, border: `1px solid ${C.edge}`, borderRadius: 18, padding: "14px 12px 12px", cursor: "pointer", boxShadow: C.sh2, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontFamily: "'Nunito',sans-serif" },
   homeCardTitle: { fontWeight: 900, fontSize: 18, letterSpacing: "-0.01em", color: C.ink },
