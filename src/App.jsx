@@ -1,10 +1,5 @@
 import React, { useState, useCallback, useMemo, useRef, useEffect } from "react";
 
-/* Fonts come from Google at runtime, via an @import at the top of the CSS
-   block below. Nothing to install and nothing to add to the entry file, so
-   this component still opens in a plain React preview. The cost is that a
-   cold or offline start shows the system font until the download lands. */
-
 /* ═══════════  tokens  ═══════════ */
 
 const LIGHT = {
@@ -18,21 +13,11 @@ const LIGHT = {
   gold: "#FFC24B",
   flow: "#8B5CF6",
   muted: "#8A93AC",
-  /* Sealed arrows used muted at 45% opacity, which measured 1.5:1 against the
-     board — below the roughly 3:1 a line needs to register at all. Half the
-     board looked like a rendering fault rather than a locked mechanic. This
-     reads clearly at 5.2:1 while still sitting well behind a live arrow's
-     13.5:1, and the dashed stroke carries the "locked" meaning instead. */
-  sealed: "#5A6480",
   dot: "#D5DBE8",
   line: "#E6EBF4",
   gridLine: "#B9C6E0",
   overlay: "rgba(255,255,255,0.96)",
   coachBg: "#E9F1FF",
-  edge: "rgba(27,36,64,0.00)",
-  sh1: "0 2px 8px rgba(27,36,64,0.07)",
-  sh2: "0 6px 20px rgba(27,36,64,0.10)",
-  sh3: "0 14px 36px rgba(27,36,64,0.14)",
 };
 
 /* High contrast — vivid arrows on near-black, easier in low light and for
@@ -48,46 +33,23 @@ const DARK = {
   gold: "#FFC24B",
   flow: "#A78BFA",
   muted: "#8592BC",
-  sealed: "#9AA6CE",
   dot: "#27334F",
   line: "#222E4C",
   gridLine: "#3C4E76",
   overlay: "rgba(8,12,26,0.96)",
   coachBg: "#16223F",
-  edge: "rgba(140,170,255,0.10)",
-  sh1: "0 2px 10px rgba(0,0,0,0.40)",
-  sh2: "0 8px 26px rgba(0,0,0,0.50)",
-  sh3: "0 18px 46px rgba(0,0,0,0.60)",
 };
 
 const C = { ...LIGHT, __dark: false };
 
 const DIRS = {
-  right: { dx: 1, dy: 0, angle: 0, nx: 1, ny: 0 },
-  left: { dx: -1, dy: 0, angle: 180, nx: -1, ny: 0 },
-  up: { dx: 0, dy: -1, angle: -90, nx: 0, ny: -1 },
-  down: { dx: 0, dy: 1, angle: 90, nx: 0, ny: 1 },
-  /* Diagonals. Every board used to be an orthogonal grid of lanes, so each one
-     read as the same circuit board no matter which shape it sat in. nx/ny are
-     the unit vector, used for drawing so a diagonal tip is not 1.41x longer
-     than a straight one. */
-  upRight: { dx: 1, dy: -1, angle: -45, nx: 0.7071, ny: -0.7071 },
-  downRight: { dx: 1, dy: 1, angle: 45, nx: 0.7071, ny: 0.7071 },
-  downLeft: { dx: -1, dy: 1, angle: 135, nx: -0.7071, ny: 0.7071 },
-  upLeft: { dx: -1, dy: -1, angle: -135, nx: -0.7071, ny: -0.7071 },
+  right: { dx: 1, dy: 0, angle: 0 },
+  left: { dx: -1, dy: 0, angle: 180 },
+  up: { dx: 0, dy: -1, angle: -90 },
+  down: { dx: 0, dy: 1, angle: 90 },
 };
 const DIR_NAMES = Object.keys(DIRS);
-/* Piece bodies only ever bend orthogonally. Two diagonal body segments can
-   cross at a shared corner without sharing a cell, which draws as an X of
-   overlapping strokes — so bodies stay on the square grid and only the
-   direction a piece flies out in can be diagonal. */
-const ORTHO_NAMES = ["right", "left", "up", "down"];
-const DIAG_NAMES = ["upRight", "downRight", "downLeft", "upLeft"];
 const U = 100;
-const VIEW_PAD = 0.6;  // just enough margin around the board for the stroke
-const DOT_PAD = 2;     // how far a lane guide runs past the board edge
-
-
 
 let HAPTICS = true;
 const buzz = (ms) => {
@@ -109,19 +71,12 @@ const Snd = (() => {
   let musicOn = true;
   let timer = null;
   let step = 0;
-  /* Set while the app is in the background. Without it, ensure() below quietly
-     resumes the context on the very next sound — and every effect calls
-     ensure() — so a single stray tap or timer in a backgrounded WebView undoes
-     the suspend and the music comes straight back over whatever the player
-     switched to. */
-  let asleep = false;
 
   function ensure() {
     if (ctx) {
-      if (ctx.state === "suspended" && !asleep) ctx.resume().catch(() => {});
+      if (ctx.state === "suspended") ctx.resume().catch(() => {});
       return ctx;
     }
-    if (asleep) return null;
     try {
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) return null;
@@ -268,10 +223,6 @@ const Snd = (() => {
   }
 
   function startMusic() {
-    // ensure() returns the existing context even while asleep, so this needs
-    // its own guard — otherwise a stray call in the background restarts the
-    // sequencer even though the clock is suspended.
-    if (asleep) return;
     const c = ensure();
     if (!c || timer) return;
     musicBus.gain.cancelScheduledValues(c.currentTime);
@@ -304,22 +255,10 @@ const Snd = (() => {
       else stopMusic();
     },
     suspend: () => {
-      /* Stop the sequencer as well as the clock. ctx.suspend() pauses the audio
-         clock, but the setInterval driving the chords keeps running in the
-         background and keeps queueing notes, so anything that resumes the
-         context finds the music already going. */
-      asleep = true;
-      if (timer) {
-        clearInterval(timer);
-        timer = null;
-      }
       if (ctx && ctx.state === "running") ctx.suspend().catch(() => {});
     },
     resume: () => {
-      asleep = false;
       if (ctx && ctx.state === "suspended" && (sfxOn || musicOn)) ctx.resume().catch(() => {});
-      // the sequencer was cleared on suspend, so bring it back if music is on
-      if (musicOn && ctx && !timer) startMusic();
     },
     depart,
     blocked,
@@ -375,102 +314,29 @@ function mulberry32(a) {
 
 function ArtCanvas(size, ss) {
   const S = size * ss;
-  /* Nothing narrower than about one grid cell can survive the harvest. Drawn
-     as a fill it speckles; carved out it chews a hole through the very thing
-     it was meant to detail — two eyes on a fourteen-cell head turned the head
-     into three stripes. Features below this width are skipped instead. */
-  /* `part` records which drawing call owns each pixel. Every shape in this file
-     is built from a handful of overlapping ellipses and polygons — a head, a
-     body, two ears, a tail — but they all write 1 into the same buffer, so the
-     raster comes out as one undivided blob and a cat is indistinguishable from
-     a raccoon. Keeping the owner lets aSeams() below draw the lines between
-     those parts afterwards, for every shape at once, without anyone having to
-     hand-place a single carve. */
-  return { n: size, ss, S, buf: new Uint8Array(S * S), part: new Uint16Array(S * S), pid: 0, minFeat: (100 / size) * 1.15 };
+  return { n: size, ss, S, buf: new Uint8Array(S * S) };
 }
-/* Every coordinate passes through here, so one scale and offset on the canvas
-   re-frames a whole drawing. Used by the two-pass fit below. */
-function aToS(c, v) { return ((v * (c.k || 1) + (c.oy || 0)) / 100) * c.S; }
-function aToX(c, v) { return ((v * (c.k || 1) + (c.ox || 0)) / 100) * c.S; }
-/* A carved hole needs more room than a drawn shape. A fill one cell wide still
-   reads as a line; a hole one cell wide needs solid on BOTH sides to read as a
-   hole at all, and when it does not it just slices the shape into stripes —
-   which is what two eyes did to a narrow bear's head. So holes are held to a
-   wider bar, and simply skipped on shapes too small to carry them. Detail then
-   appears on the roomy shapes that can show it and stays off the ones that
-   cannot, with no per-subject special-casing. */
-function aTooFine(c, w, h, val) {
-  const bar = val === 0 ? c.minFeat * 1.7 : c.minFeat;
-  return Math.min(Math.abs(w), Math.abs(h)) < bar;
-}
+function aToS(c, v) { return (v / 100) * c.S; }
 
 function aEll(c, x0, y0, x1, y1, val) {
-  if (aTooFine(c, x1 - x0, y1 - y0, val)) return;
-  const pid = ++c.pid;
-  const cx = aToX(c, (x0 + x1) / 2), cy = aToS(c, (y0 + y1) / 2);
-  const rx = Math.max(((x1 - x0) / 2 * (c.k || 1) / 100) * c.S, 0.5), ry = Math.max(((y1 - y0) / 2 * (c.k || 1) / 100) * c.S, 0.5);
+  const cx = aToS(c, (x0 + x1) / 2), cy = aToS(c, (y0 + y1) / 2);
+  const rx = Math.max(aToS(c, (x1 - x0) / 2), 0.5), ry = Math.max(aToS(c, (y1 - y0) / 2), 0.5);
   const a = Math.max(0, Math.floor(cx - rx)), b = Math.min(c.S - 1, Math.ceil(cx + rx));
   const p = Math.max(0, Math.floor(cy - ry)), q = Math.min(c.S - 1, Math.ceil(cy + ry));
   for (let y = p; y <= q; y++) for (let x = a; x <= b; x++) {
     const dx = (x + 0.5 - cx) / rx, dy = (y + 0.5 - cy) / ry;
-    if (dx * dx + dy * dy <= 1) { c.buf[y * c.S + x] = val; c.part[y * c.S + x] = val ? pid : 0; }
+    if (dx * dx + dy * dy <= 1) c.buf[y * c.S + x] = val;
   }
 }
 
 function aRect(c, x0, y0, x1, y1, val) {
-  if (aTooFine(c, x1 - x0, y1 - y0, val)) return;
-  const pid = ++c.pid;
-  const a = Math.max(0, Math.floor(aToX(c, x0))), b = Math.min(c.S - 1, Math.ceil(aToX(c, x1)));
+  const a = Math.max(0, Math.floor(aToS(c, x0))), b = Math.min(c.S - 1, Math.ceil(aToS(c, x1)));
   const p = Math.max(0, Math.floor(aToS(c, y0))), q = Math.min(c.S - 1, Math.ceil(aToS(c, y1)));
-  for (let y = p; y <= q; y++) for (let x = a; x <= b; x++) { c.buf[y * c.S + x] = val; c.part[y * c.S + x] = val ? pid : 0; }
-}
-
-/* Carve a face. A solid silhouette is the reason a cat and a raccoon looked
-   like the same blob: at this resolution the outline alone carries almost no
-   information, and 115 of the shapes had no interior detail at all. Two eyes
-   and a gap at the neck are what make an animal read as that animal. */
-/* A carve has to be at least two cells across or aSmooth fills it straight back
-   in — it closes any hole whose four neighbours are solid. At these canvas
-   sizes one cell is about 3.3 units, so nothing thinner than ~9 survives. */
-const CARVE_MIN = 9;
-/* A stem, trunk or stalk is what holds a shape together. Drawn thinner than
-   this it breaks up in the raster, and aTidy then keeps only the largest
-   surviving piece — so a wine glass became a bowl and a tree became a bush,
-   both of them wider than tall. */
-const STEM_MIN = 15;
-function aEyes(c, cx0, y, spread, rad) {
-  // Same floor as the other carves. Eyes drawn at radius 4 or 5 are under two
-  // cells across and aSmooth closed them again — several animals that were
-  // given eyes still came out as blank silhouettes.
-  const q = Math.max(rad, CARVE_MIN / 2);
-  aEll(c, cx0 - spread - q, y - q, cx0 - spread + q, y + q, 0);
-  aEll(c, cx0 + spread - q, y - q, cx0 + spread + q, y + q, 0);
-}
-/* A carve has to be at least two cells across or aSmooth fills it straight back
-   in — it closes any hole whose four neighbours are solid. At these canvas
-   sizes one cell is about 3.3 units, so nothing thinner than ~9 survives. */
-/* Both of these carve a notch in from each side and leave the middle joined.
-   Cutting straight across severed the shape, and the rasteriser then kept only
-   the larger half and discarded the rest — a tree lost its trunk, a wine glass
-   lost its stem and base, a cat lost its legs. Measured across the set, eleven
-   shapes were losing between a quarter and two fifths of themselves to their
-   own detail. A notch reads the same and cannot disconnect anything. */
-function aNeck(c, x0, x1, y, th) {
-  const t = Math.max(th, CARVE_MIN);
-  const bite = (x1 - x0) * 0.34;
-  aRect(c, x0, y - t / 2, x0 + bite, y + t / 2, 0);
-  aRect(c, x1 - bite, y - t / 2, x1, y + t / 2, 0);
-}
-function aSlot(c, x, y0, y1, w) {
-  const t = Math.max(w, CARVE_MIN);
-  const bite = (y1 - y0) * 0.34;
-  aRect(c, x - t / 2, y0, x + t / 2, y0 + bite, 0);
-  aRect(c, x - t / 2, y1 - bite, x + t / 2, y1, 0);
+  for (let y = p; y <= q; y++) for (let x = a; x <= b; x++) c.buf[y * c.S + x] = val;
 }
 
 function aPoly(c, pts, val) {
-  const pid = ++c.pid;
-  const P = pts.map(([x, y]) => [aToX(c, x), aToS(c, y)]);
+  const P = pts.map(([x, y]) => [aToS(c, x), aToS(c, y)]);
   let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9;
   for (const [x, y] of P) { minx = Math.min(minx, x); maxx = Math.max(maxx, x); miny = Math.min(miny, y); maxy = Math.max(maxy, y); }
   const a = Math.max(0, Math.floor(minx)), b = Math.min(c.S - 1, Math.ceil(maxx));
@@ -482,176 +348,8 @@ function aPoly(c, pts, val) {
       if ((yi > y + 0.5) !== (yj > y + 0.5) &&
           x + 0.5 < ((xj - xi) * (y + 0.5 - yi)) / (yj - yi) + xi) inside = !inside;
     }
-    if (inside) { c.buf[y * c.S + x] = val; c.part[y * c.S + x] = val ? pid : 0; }
+    if (inside) c.buf[y * c.S + x] = val;
   }
-}
-
-/* Draw the lines between a shape's parts, for every shape at once.
-
-   A cat is an ellipse for the head, two triangles for the ears, a trapezium for
-   the body and a rectangle for the tail — but all of them write the same 1, so
-   the raster fuses them and what comes out is a blob with a pointed top. Every
-   solid subject in this file has the same problem, and hand-placing a carve per
-   shape is both slow and dangerous: an earlier attempt at that severed eleven
-   shapes and threw away up to two fifths of each.
-
-   This walks the harvested grid, finds the cells where one part meets another,
-   and clears them — so the ears separate from the head, the head from the body,
-   the legs from the trunk. Then it repairs: anything that got cut loose is
-   bridged back to the main mass at its nearest point. The separation reads, and
-   nothing can be lost, which is the part that went wrong by hand. */
-function aSeams(c, rows) {
-  const size = c.n, ss = c.ss, S = c.S;
-  // dominant owner of each cell
-  const own = new Int32Array(size * size).fill(0);
-  for (let gy = 0; gy < size; gy++) for (let gx = 0; gx < size; gx++) {
-    if (rows[gy][gx] !== "#") continue;
-    const tally = new Map();
-    for (let y = 0; y < ss; y++) for (let x = 0; x < ss; x++) {
-      const i = (gy * ss + y) * S + gx * ss + x;
-      if (!c.buf[i]) continue;
-      const q = c.part[i];
-      tally.set(q, (tally.get(q) || 0) + 1);
-    }
-    let bestQ = 0, bestN = 0;
-    for (const [q, k] of tally) if (k > bestN) { bestN = k; bestQ = q; }
-    own[gy * size + gx] = bestQ;
-  }
-
-  /* A seam only belongs between two real structures. Several shapes are drawn
-     as a path of a hundred small circles — a rose, a pretzel, a snail shell, a
-     lion's mane — and every one of those circles is its own part, so without
-     this test the seams fell between all of them and shredded the shape. Eleven
-     shapes were losing between a quarter and two fifths of themselves that way.
-     Counting cells per part and requiring both sides to be substantial leaves
-     strokes alone and keeps the seam where it means something: head to body,
-     ear to head, leg to trunk. */
-  const bulk = new Map();
-  for (let i = 0; i < own.length; i++) if (own[i]) bulk.set(own[i], (bulk.get(own[i]) || 0) + 1);
-  const REAL = 6;
-
-  const grid = rows.map((r) => [...r]);
-  const at = (x, y) => (x < 0 || y < 0 || x >= size || y >= size ? null : grid[y][x]);
-  // clear a cell only where it has solid neighbours on both sides of the seam,
-  // so a seam never shaves the outside edge of the shape
-  const cut = [];
-  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
-    if (grid[y][x] !== "#") continue;
-    const me = own[y * size + x];
-    let other = 0;
-    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      const nx = x + dx, ny = y + dy;
-      if (at(nx, ny) !== "#") continue;
-      const q = own[ny * size + nx];
-      if (q && me && q !== me && (bulk.get(q) || 0) >= REAL && (bulk.get(me) || 0) >= REAL) other = q;
-    }
-    if (!other) continue;
-    /* Only cut where the shape is thick on every side, diagonals included. Four
-       orthogonal neighbours was not enough: where two parts meet across a thin
-       join — a boot's shaft sitting two cells into its foot — the seam ate the
-       join itself and left the two halves linked by whatever the repair could
-       manage. Requiring all eight keeps seams to the interior, where a line is
-       detail rather than a cut. */
-    let solid = 0;
-    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]])
-      if (at(x + dx, y + dy) === "#") solid++;
-    if (solid === 8) cut.push(y * size + x);
-  }
-  /* Back off entirely when the seams would eat the shape. A lion's mane is ten
-     large circles in a ring, all of them substantial enough to pass the test
-     above, so every one seams against its neighbours and what is left is a
-     checkerboard. Where that happens the shape keeps its solid silhouette —
-     which is no worse than it was — instead of being wrecked by its own detail.
-     Measured: this fires on a handful of shapes and leaves the rest seamed. */
-  /* Keep only the cells that form a run. Where parts interleave — the spokes
-     and frame of a bicycle, a teapot's handle crossing its body — the boundary
-     test fires on scattered single cells, and a scatter of holes is noise, not
-     detail: it reads as a damaged shape rather than a drawn one. A seam cell
-     with no seam neighbour is dropped, so what survives is a line. */
-  const isCut = new Set(cut);
-  const runs = cut.filter((i) => {
-    const x = i % size, y = (i / size) | 0;
-    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
-      const nx = x + dx, ny = y + dy;
-      if (nx < 0 || ny < 0 || nx >= size || ny >= size) continue;
-      if (isCut.has(ny * size + nx)) return true;
-    }
-    return false;
-  });
-
-  let filled = 0;
-  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) if (grid[y][x] === "#") filled++;
-  if (cut.length > filled * 0.2) return { grid, size };
-
-  for (const i of cut) grid[(i / size) | 0][i % size] = ".";
-  return { grid, size };
-}
-
-/* Put back anything the seams cut loose. Islands are joined to the main mass by
-   the shortest straight run of cells between them — one bridge each, which is
-   what a drawn illustration does anyway. Without this the rasteriser downstream
-   would simply keep the biggest piece and silently bin the rest. */
-function aRejoin(g) {
-  const { grid, size } = g;
-  const seen = new Int32Array(size * size).fill(-1);
-  const comps = [];
-  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
-    if (grid[y][x] !== "#" || seen[y * size + x] >= 0) continue;
-    const id = comps.length, cells = [], st = [[x, y]];
-    seen[y * size + x] = id;
-    while (st.length) {
-      const [cx0, cy0] = st.pop();
-      cells.push([cx0, cy0]);
-      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        const nx = cx0 + dx, ny = cy0 + dy;
-        if (nx < 0 || ny < 0 || nx >= size || ny >= size) continue;
-        if (grid[ny][nx] !== "#" || seen[ny * size + nx] >= 0) continue;
-        seen[ny * size + nx] = id;
-        st.push([nx, ny]);
-      }
-    }
-    comps.push(cells);
-  }
-  if (comps.length < 2) return grid.map((r) => r.join(""));
-  let main = 0;
-  comps.forEach((c2, i) => { if (c2.length > comps[main].length) main = i; });
-  for (let i = 0; i < comps.length; i++) {
-    if (i === main) continue;
-    let bd = 1e9, ba = null, bb = null;
-    for (const [ax, ay] of comps[i]) for (const [bx, by] of comps[main]) {
-      const d = Math.abs(ax - bx) + Math.abs(ay - by);
-      if (d < bd) { bd = d; ba = [ax, ay]; bb = [bx, by]; }
-    }
-    if (!ba) continue;
-    /* Two cells wide, not one. A single-cell bridge reads as a stray hair
-       rather than a join — a boot came out as a block and a foot linked by a
-       thread. Widening it perpendicular to the run makes it look like the two
-       parts belong together, which is what it is for. */
-    let [px, py] = ba;
-    const [qx, qy] = bb;
-    const put = (x, y) => { if (x >= 0 && y >= 0 && x < size && y < size) grid[y][x] = "#"; };
-    while (px !== qx || py !== qy) {
-      const horiz = px !== qx;
-      if (horiz) px += px < qx ? 1 : -1;
-      else py += py < qy ? 1 : -1;
-      put(px, py);
-      if (horiz) { put(px, py - 1); put(px, py + 1); }
-      else { put(px - 1, py); put(px + 1, py); }
-    }
-  }
-  return grid.map((r) => r.join(""));
-}
-
-/* The bounding box of what was actually drawn, in canvas units. */
-function aExtent(c) {
-  let x0 = c.S, x1 = -1, y0 = c.S, y1 = -1;
-  for (let y = 0; y < c.S; y++) for (let x = 0; x < c.S; x++) {
-    if (!c.buf[y * c.S + x]) continue;
-    if (x < x0) x0 = x; if (x > x1) x1 = x;
-    if (y < y0) y0 = y; if (y > y1) y1 = y;
-  }
-  if (x1 < 0) return null;
-  return { x0: (x0 / c.S) * 100, x1: (x1 / c.S) * 100, y0: (y0 / c.S) * 100, y1: (y1 / c.S) * 100 };
 }
 
 function aHarvest(c, thresh) {
@@ -669,52 +367,6 @@ function aHarvest(c, thresh) {
     rows.push(line);
   }
   return rows;
-}
-
-/* Mirror the left half onto the right. Rasterising a symmetric drawing gives
-   a nearly-symmetric grid, and "nearly" is worse than either: the eye catches
-   a wheel one cell wider than its twin instantly and reads the whole shape as
-   broken. Only for subjects that really are symmetric — forcing it on a
-   side-on fish or car would destroy them. */
-function aMirror(rows) {
-  const w = rows[0].length;
-  const half = Math.floor(w / 2);
-  return rows.map((r) => {
-    const a = [...r];
-    for (let x = 0; x < half; x++) a[w - 1 - x] = a[x];
-    return a.join("");
-  });
-}
-
-/* Smooth the outline. The harvest leaves single-cell spikes and single-cell
-   bites that no one drew — they are threshold noise, and they are most of what
-   makes a generated shape look ragged next to a hand-drawn one. Fill a hollow
-   that is surrounded on three sides, shave a bump that clings on by one. */
-function aSmooth(rows, passes = 1) {
-  let cur = rows;
-  const h = cur.length, w = cur[0].length;
-  const at = (g, x, y) => (x < 0 || y < 0 || x >= w || y >= h ? "." : g[y][x]);
-  for (let p = 0; p < passes; p++) {
-    const next = [];
-    for (let y = 0; y < h; y++) {
-      let line = "";
-      for (let x = 0; x < w; x++) {
-        let n = 0;
-        if (at(cur, x - 1, y) === "#") n++;
-        if (at(cur, x + 1, y) === "#") n++;
-        if (at(cur, x, y - 1) === "#") n++;
-        if (at(cur, x, y + 1) === "#") n++;
-        const on = cur[y][x] === "#";
-        // Fill only a hole boxed in on all four sides — that is unambiguous
-        // threshold noise. Filling at three closed the gaps between a train's
-        // wheels and merged them into one bar.
-        line += on ? (n <= 1 ? "." : "#") : n === 4 ? "#" : ".";
-      }
-      next.push(line);
-    }
-    cur = next;
-  }
-  return cur;
 }
 
 function aTidy(rows) {
@@ -745,1117 +397,12 @@ function aTidy(rows) {
     }
     if (comp.length > best.length) best = comp;
   }
-  if (!best.length) return null;
-
-  /* Crop a second time, to the island we actually kept. The first crop above
-     measured every cell including the stray specks, and those specks are then
-     thrown away — so a speck out near the edge left the board several columns
-     wider than the shape, with a dead empty strip down one side. That was
-     happening to about eight percent of generated levels. */
-  let x0 = cols, x1 = -1, y0 = rw, y1 = -1;
-  for (const i of best) {
-    const x = i % cols, y = (i / cols) | 0;
-    if (x < x0) x0 = x;
-    if (x > x1) x1 = x;
-    if (y < y0) y0 = y;
-    if (y > y1) y1 = y;
-  }
-  const fc = x1 - x0 + 1, fr = y1 - y0 + 1;
-  const out = new Set();
-  for (const i of best) out.add(((i / cols | 0) - y0) * fc + (i % cols) - x0);
-  return { cols: fc, rows: fr, cells: out };
+  return { cols, rows: rw, cells: new Set(best) };
 }
 
 /* ── families: each returns a drawing function given a seeded rng ── */
 
 const ART_FAMILIES = [
-  ["Camel", (c, r) => {
-    const hump = 12 + r() * 6;
-    aEll(c, 22, 46, 78, 74, 1);
-    aEll(c, 30, 46 - hump, 52, 58, 1);
-    aEll(c, 52, 46 - hump, 74, 58, 1);
-    aRect(c, 68, 22, 80, 52, 1);
-    aEll(c, 66, 12, 90, 30, 1);
-    aRect(c, 28, 70, 35, 94, 1);
-    aRect(c, 62, 70, 69, 94, 1);
-  }],
-  ["Kangaroo", (c, r) => {
-    aEll(c, 34, 30, 66, 70, 1);
-    aEll(c, 44, 10, 68, 34, 1);
-    aPoly(c, [[48, 14], [46, 0], [54, 12]], 1);
-    aPoly(c, [[58, 14], [62, 0], [56, 12]], 1);
-    aPoly(c, [[38, 60], [62, 62], [58, 92], [30, 92]], 1);
-    aRect(c, 26, 84, 62, 94, 1);
-    aPoly(c, [[34, 58], [6, 78 + r() * 10], [18, 88], [40, 72]], 1);
-  }],
-  ["Raccoon", (c, r) => {
-    const ear = 11 + r() * 5;
-    aEll(c, 24, 16, 24 + ear * 2, 16 + ear * 2, 1);
-    aEll(c, 76 - ear * 2, 16, 76, 16 + ear * 2, 1);
-    aEll(c, 24, 20, 76, 62, 1);
-    aPoly(c, [[38, 46], [62, 46], [50, 66]], 1);
-    aEll(c, 30, 58, 70, 94, 1);
-    aRect(c, 70, 62, 96, 74, 1);
-    aEyes(c, 50, 36, 13, 6);
-  }],
-  ["Wolf", (c, r) => {
-    const snout = 12 + r() * 6;
-    aPoly(c, [[30, 34], [26, 10], [44, 26]], 1);
-    aPoly(c, [[70, 34], [74, 10], [56, 26]], 1);
-    aEll(c, 28, 22, 72, 62, 1);
-    aPoly(c, [[42, 52], [58, 52], [50, 52 + snout]], 1);
-    aEll(c, 32, 58, 68, 92, 1);
-    aEyes(c, 50, 38, 12, 5);
-  }],
-  ["Goat", (c, r) => {
-    const horn = 14 + r() * 8;
-    aEll(c, 24, 42, 76, 74, 1);
-    aEll(c, 60, 22, 88, 50, 1);
-    aPoly(c, [[66, 24], [58, 24 - horn], [72, 20]], 1);
-    aPoly(c, [[80, 24], [88, 24 - horn], [74, 20]], 1);
-    aPoly(c, [[68, 46], [80, 46], [74, 62]], 1);
-    aRect(c, 30, 70, 37, 94, 1);
-    aRect(c, 60, 70, 67, 94, 1);
-  }],
-  ["Llama", (c, r) => {
-    const neck = 9 + r() * 4;
-    aEll(c, 24, 52, 74, 84, 1);
-    aRect(c, 58 - neck, 26, 58 + neck, 60, 1);
-    aEll(c, 50, 12, 78, 34, 1);
-    aPoly(c, [[56, 16], [54, 2], [62, 14]], 1);
-    aPoly(c, [[68, 16], [72, 2], [64, 14]], 1);
-    aRect(c, 30, 80, 37, 96, 1);
-    aRect(c, 58, 80, 65, 96, 1);
-  }],
-  ["Peacock", (c, r) => {
-    const fan = 40 + r() * 8;
-    for (let i = 0; i < 9; i++) {
-      const a = Math.PI + (i / 8) * Math.PI;
-      const x = 50 + Math.cos(a) * fan, y = 64 + Math.sin(a) * fan;
-      aEll(c, x - 9, y - 9, x + 9, y + 9, 1);
-    }
-    aEll(c, 38, 46, 62, 86, 1);
-    aEll(c, 42, 22, 58, 42, 1);
-    aPoly(c, [[46, 6], [50, 20], [54, 6]], 1);
-  }],
-  ["Parrot", (c, r) => {
-    aEll(c, 32, 26, 68, 72, 1);
-    aEll(c, 38, 10, 66, 36, 1);
-    aPoly(c, [[38, 18], [20, 24], [40, 34]], 1);
-    aPoly(c, [[44, 6], [56, 0], [58, 12]], 1);
-    aPoly(c, [[48, 64], [66, 62], [58, 96], [44, 92]], 1);
-    if (r() < 0.7) aPoly(c, [[62, 36], [86, 46], [62, 62]], 1);
-  }],
-  ["Eagle", (c, r) => {
-    const span = 36 + r() * 10;
-    aEll(c, 40, 24, 60, 70, 1);
-    aEll(c, 40, 8, 60, 30, 1);
-    aPoly(c, [[40, 16], [24, 20], [42, 26]], 1);
-    aPoly(c, [[42, 30], [50 - span, 20], [50 - span + 10, 46], [44, 56]], 1);
-    aPoly(c, [[58, 30], [50 + span, 20], [50 + span - 10, 46], [56, 56]], 1);
-    aPoly(c, [[42, 66], [58, 66], [54, 92], [46, 92]], 1);
-  }],
-  ["Pelican", (c, r) => {
-    const pouch = 16 + r() * 8;
-    aEll(c, 22, 44, 72, 82, 1);
-    aEll(c, 54, 18, 84, 46, 1);
-    aPoly(c, [[78, 26], [98, 30], [96, 40], [76, 42]], 1);
-    aEll(c, 66, 34, 92, 34 + pouch, 1);
-    aPoly(c, [[30, 50], [58, 44], [52, 70], [28, 68]], 1);
-  }],
-  ["Lizard", (c, r) => {
-    aEll(c, 32, 30, 62, 76, 1);
-    aEll(c, 38, 12, 58, 34, 1);
-    const tail = 22 + r() * 10;
-    for (let i = 0; i <= 20; i++) {
-      const t = i / 20;
-      const x = 48 + Math.sin(t * Math.PI) * 16, y = 74 + t * tail;
-      const th = 7 - t * 4;
-      aEll(c, x - th, y - th, x + th, y + th, 1);
-    }
-    for (const [sx, sy] of [[-1, 40], [1, 40], [-1, 66], [1, 66]])
-      aPoly(c, [[50 + sx * 14, sy], [50 + sx * 32, sy + 10], [50 + sx * 16, sy + 10]], 1);
-  }],
-  ["Crocodile", (c, r) => {
-    const jaw = 8 + r() * 4;
-    aEll(c, 10, 42, 74, 68, 1);
-    aPoly(c, [[62, 44], [98, 46], [98, 58], [62, 62]], 1);
-    for (let i = 0; i < 5; i++) aPoly(c, [[20 + i * 10, 42], [25 + i * 10, 42 - jaw], [30 + i * 10, 42]], 1);
-    for (const x of [22, 40, 56])
-      { aPoly(c, [[x, 64], [x - 8, 82], [x + 6, 82]], 1); }
-    aPoly(c, [[10, 48], [2, 44], [4, 64]], 1);
-  }],
-  ["Beetle", (c, r) => {
-    const w = 26 + r() * 6;
-    aEll(c, 50 - w, 26, 50 + w, 88, 1);
-    aEll(c, 50 - 16, 10, 50 + 16, 34, 1);
-    aRect(c, 48, 30, 52, 86, 0);
-    for (const s of [-1, 1]) for (const y of [38, 54, 70])
-      aPoly(c, [[50 + s * w, y], [50 + s * (w + 18), y - 6], [50 + s * (w + 18), y + 2]], 1);
-    aPoly(c, [[44, 12], [36, 0], [46, 8]], 1);
-    aPoly(c, [[56, 12], [64, 0], [54, 8]], 1);
-  }],
-  ["Moth", (c, r) => {
-    const span = 30 + r() * 8;
-    aEll(c, 44, 22, 56, 78, 1);
-    aEll(c, 50 - span, 20, 50 - 4, 58, 1);
-    aEll(c, 50 + 4, 20, 50 + span, 58, 1);
-    aEll(c, 50 - span * 0.7, 52, 50 - 4, 82, 1);
-    aEll(c, 50 + 4, 52, 50 + span * 0.7, 82, 1);
-    aPoly(c, [[46, 22], [34, 6], [48, 18]], 1);
-    aPoly(c, [[54, 22], [66, 6], [52, 18]], 1);
-  }],
-  ["Grasshopper", (c, r) => {
-    aEll(c, 20, 44, 70, 68, 1);
-    aEll(c, 66, 38, 90, 62, 1);
-    aPoly(c, [[84, 42], [98, 32], [92, 46]], 1);
-    const hop = 20 + r() * 10;
-    aPoly(c, [[40, 62], [30, 62 - hop], [44, 60]], 1);
-    aPoly(c, [[30, 62 - hop], [16, 88], [26, 88]], 1);
-    aPoly(c, [[56, 66], [48, 86], [58, 86]], 1);
-    aEll(c, 26, 34, 66, 50, 1);
-  }],
-  ["Rose", (c, r) => {
-    const turns = 2.2 + r() * 0.8;
-    for (let i = 0; i <= 110; i++) {
-      const t = i / 110, a = t * Math.PI * 2 * turns;
-      const rad = 4 + t * 24, th = 5 + t * 3;
-      const x = 50 + Math.cos(a) * rad, y = 36 + Math.sin(a) * rad;
-      aEll(c, x - th, y - th, x + th, y + th, 1);
-    }
-    aRect(c, 47, 62, 53, 96, 1);
-    aEll(c, 22, 66, 48, 80, 1);
-    aEll(c, 52, 76, 78, 90, 1);
-  }],
-  ["Daisy", (c, r) => {
-    const pet = 7 + ((r() * 3) | 0);
-    for (let i = 0; i < pet; i++) {
-      const a = (i / pet) * Math.PI * 2;
-      const x = 50 + Math.cos(a) * 22, y = 36 + Math.sin(a) * 22;
-      aEll(c, x - 13, y - 9, x + 13, y + 9, 1);
-    }
-    aEll(c, 40, 26, 60, 46, 1);
-    aRect(c, 47, 46, 53, 96, 1);
-    aEll(c, 24, 62, 48, 74, 1);
-  }],
-  ["Lotus", (c, r) => {
-    const w = 12 + r() * 5;
-    aPoly(c, [[50 - w, 84], [50, 34], [50 + w, 84]], 1);
-    aPoly(c, [[50 - w - 18, 84], [50 - 20, 44], [50 - 2, 84]], 1);
-    aPoly(c, [[50 + w + 18, 84], [50 + 20, 44], [50 + 2, 84]], 1);
-    aPoly(c, [[22, 86], [34, 50], [48, 86]], 1);
-    aPoly(c, [[78, 86], [66, 50], [52, 86]], 1);
-    aRect(c, 20, 82, 80, 92, 1);
-  }],
-  ["Bamboo", (c, r) => {
-    /* Two stalks, not one. A single 28-wide column came to the same 221 cells
-       every time and cleared the 130 floor only on the largest canvas, so this
-       family turned up about five times in twenty thousand levels. */
-    /* One stalk, and leaves that stay short. The previous version gave each
-       leaf a 44-unit span reaching the canvas edge, so four of them merged into
-       one wide band and the whole thing rasterised as a plus sign, wider than
-       it was tall. Bamboo has to read as vertical. */
-    const segs = 4 + ((r() * 2) | 0);
-    for (let i = 0; i < segs; i++) {
-      const y = 4 + (i / segs) * 90;
-      aRect(c, 36, y, 64, y + 90 / segs - 4, 1);
-    }
-    for (const [y, sd] of [[22, -1], [44, 1], [68, -1]])
-      aEll(c, 50 + sd * 18 - 14, y - 6, 50 + sd * 18 + 14, y + 6, 1);
-  }],
-  ["Fern", (c, r) => {
-    const fronds = 6 + ((r() * 3) | 0);
-    aRect(c, 47, 20, 53, 96, 1);
-    for (let i = 0; i < fronds; i++) {
-      const t = i / (fronds - 1), y = 22 + t * 60;
-      const len = 34 * (1 - t * 0.55);
-      aPoly(c, [[50, y], [50 - len, y + 10], [50 - len + 8, y + 16], [48, y + 10]], 1);
-      aPoly(c, [[50, y], [50 + len, y + 10], [50 + len - 8, y + 16], [52, y + 10]], 1);
-    }
-  }],
-  ["Pumpkin", (c, r) => {
-    const w = 34 + r() * 8;
-    aEll(c, 50 - w, 28, 50 + w, 92, 1);
-    aEll(c, 50 - w * 0.55, 28, 50 + w * 0.55, 92, 1);
-    aRect(c, 45, 12, 55, 32, 1);
-    aPoly(c, [[54, 18], [76, 8], [58, 26]], 1);
-  }],
-  ["Banana", (c, r) => {
-    /* Fatter than the first draft, which sat on the 130-cell floor at every
-       canvas size and so appeared eight times in twenty thousand levels. */
-    const curve = 34 + r() * 8;
-    for (let i = 0; i <= 40; i++) {
-      const a = Math.PI * 1.15 + (i / 40) * Math.PI * 0.8;
-      const x = 50 + Math.cos(a) * curve, y = 40 - Math.sin(a) * curve;
-      const th = 17 - Math.abs(i / 40 - 0.5) * 12;
-      aEll(c, x - th, y - th, x + th, y + th, 1);
-    }
-  }],
-  ["Lemon", (c, r) => {
-    const w = 32 + r() * 6;
-    aEll(c, 50 - w, 30, 50 + w, 84, 1);
-    aPoly(c, [[50 - w + 2, 50], [50 - w - 12, 57], [50 - w + 2, 64]], 1);
-    aPoly(c, [[50 + w - 2, 50], [50 + w + 12, 57], [50 + w - 2, 64]], 1);
-    aRect(c, 47, 20, 53, 34, 1);
-    aPoly(c, [[52, 24], [72, 16], [56, 30]], 1);
-    aEyes(c, 50, 56, 0, 10);
-  }],
-  ["Peach", (c, r) => {
-    const w = 32 + r() * 6;
-    aEll(c, 50 - w, 26, 50 + w, 92, 1);
-    aPoly(c, [[48, 34], [52, 34], [52, 88], [48, 88]], 0);
-    aRect(c, 47, 12, 53, 30, 1);
-    aPoly(c, [[52, 16], [78, 6], [56, 26]], 1);
-  }],
-  ["Avocado", (c, r) => {
-    const w = 28 + r() * 6;
-    aEll(c, 50 - w, 30, 50 + w, 94, 1);
-    aEll(c, 50 - w * 0.6, 12, 50 + w * 0.6, 48, 1);
-    aEll(c, 50 - 12, 56, 50 + 12, 80, 0);
-  }],
-  ["Chili", (c, r) => {
-    const bend = 16 + r() * 8;
-    for (let i = 0; i <= 40; i++) {
-      const t = i / 40, y = 28 + t * 62;
-      const x = 50 + Math.sin(t * Math.PI * 0.9) * bend;
-      const th = 13 - t * 9;
-      aEll(c, x - th, y - th, x + th, y + th, 1);
-    }
-    aRect(c, 44, 12, 56, 32, 1);
-    aPoly(c, [[38, 14], [62, 14], [50, 26]], 1);
-  }],
-  ["Bread Loaf", (c, r) => {
-    const w = 36 + r() * 6;
-    aEll(c, 50 - w, 26, 50 + w, 66, 1);
-    aRect(c, 50 - w, 46, 50 + w, 84, 1);
-    for (let i = 0; i < 3; i++) aPoly(c, [[36 + i * 12, 30], [44 + i * 12, 22], [46 + i * 12, 30]], 1);
-  }],
-  ["Croissant", (c, r) => {
-    const rad = 30 + r() * 6;
-    for (let i = 0; i <= 40; i++) {
-      const a = Math.PI * 0.15 + (i / 40) * Math.PI * 0.7;
-      const x = 50 - Math.cos(a) * rad, y = 76 - Math.sin(a) * rad;
-      const th = 15 - Math.abs(i / 40 - 0.5) * 14;
-      aEll(c, x - th, y - th, x + th, y + th, 1);
-    }
-    for (let i = 0; i <= 40; i++) {
-      const a = Math.PI * 0.15 + (i / 40) * Math.PI * 0.7;
-      const x = 50 + Math.cos(a) * rad, y = 76 - Math.sin(a) * rad;
-      const th = 15 - Math.abs(i / 40 - 0.5) * 14;
-      aEll(c, x - th, y - th, x + th, y + th, 1);
-    }
-  }],
-  ["Cheese", (c, r) => {
-    aPoly(c, [[10, 82], [10, 46], [90, 30], [90, 82]], 1);
-    aPoly(c, [[10, 46], [90, 30], [90, 42], [10, 58]], 1);
-    for (const [x, y, rad] of [[30, 66, 8], [54, 58, 10], [74, 68, 7]])
-      aEll(c, x - rad, y - rad, x + rad, y + rad, 0);
-  }],
-  ["Egg", (c, r) => {
-    const w = 28 + r() * 6;
-    aEll(c, 50 - w, 18, 50 + w, 94, 1);
-    aEll(c, 50 - w * 0.8, 12, 50 + w * 0.8, 56, 1);
-    aEyes(c, 50, 62, 0, 10);
-  }],
-  ["Kettle", (c, r) => {
-    aEll(c, 20, 36, 80, 88, 1);
-    aRect(c, 40, 20, 60, 40, 1);
-    aRect(c, 34, 14, 66, 24, 1);
-    aPoly(c, [[76, 46], [98, 30], [98, 40], [78, 58]], 1);
-    aEll(c, 14, 44, 34, 74, 1);
-    aEll(c, 20, 51, 30, 67, 0);
-  }],
-  ["Pan", (c, r) => {
-    aEll(c, 12, 40, 68, 84, 1);
-    aRect(c, 12, 40, 68, 62, 1);
-    aRect(c, 64, 44, 96, 54, 1);
-    if (r() < 0.6) aEll(c, 88, 42, 98, 56, 1);
-  }],
-  ["Spoon", (c, r) => {
-    const bowl = 20 + r() * 6;
-    aEll(c, 50 - bowl, 6, 50 + bowl, 6 + bowl * 2.2, 1);
-    aRect(c, 42, 44, 58, 96, 1);
-  }],
-  ["Jar", (c, r) => {
-    const w = 30 + r() * 6;
-    aEll(c, 50 - w, 34, 50 + w, 96, 1);
-    aRect(c, 50 - w, 46, 50 + w, 88, 1);
-    aRect(c, 50 - w * 0.55, 22, 50 + w * 0.55, 44, 1);   // neck
-    aRect(c, 50 - w * 0.8, 8, 50 + w * 0.8, 24, 1);      // lid, wider than the neck
-    aRect(c, 50 - w * 0.8, 24, 50 + w * 0.8, 30, 0);     // gap under the lid
-  }],
-  ["Barrel", (c, r) => {
-    const bulge = 14 + r() * 6;
-    aPoly(c, [[32, 12], [68, 12], [72 + bulge, 50], [68, 92], [32, 92], [28 - bulge, 50]], 1);
-    // hoops carved across, which is what separates a barrel from a box
-    aRect(c, 26 - bulge, 30, 74 + bulge, 36, 0);
-    aRect(c, 26 - bulge, 64, 74 + bulge, 70, 0);
-  }],
-  ["Chest", (c, r) => {
-    aEll(c, 10, 6, 90, 58, 1);
-    aRect(c, 10, 32, 90, 44, 1);
-    aRect(c, 14, 46, 86, 88, 1);
-    aRect(c, 8, 40, 92, 47, 0);      // the line the lid opens on
-    aRect(c, 44, 52, 56, 72, 0);     // lock plate
-    aRect(c, 10, 84, 90, 94, 1);
-  }],
-  ["Suitcase", (c, r) => {
-    aRect(c, 12, 30, 88, 88, 1);
-    aRect(c, 38, 14, 62, 34, 1);
-    aRect(c, 44, 20, 56, 32, 0);
-    aRect(c, 10, 48, 90, 56, 0);
-  }],
-  ["Backpack", (c, r) => {
-    aEll(c, 18, 18, 82, 60, 1);
-    aRect(c, 18, 38, 82, 90, 1);
-    aRect(c, 30, 62, 70, 84, 0);
-    aRect(c, 30, 6, 40, 26, 1);
-    aRect(c, 60, 6, 70, 26, 1);
-  }],
-  ["Glasses", (c, r) => {
-    const rad = 23 + r() * 5;
-    aEll(c, 4, 50 - rad, 4 + rad * 2, 50 + rad, 1);
-    aEll(c, 12, 50 - rad + 8, rad * 2 - 4, 50 + rad - 8, 0);
-    aEll(c, 96 - rad * 2, 50 - rad, 96, 50 + rad, 1);
-    aEll(c, 104 - rad * 2, 50 - rad + 8, 88, 50 + rad - 8, 0);
-    aRect(c, 4 + rad * 2 - 4, 42, 96 - rad * 2 + 4, 58, 1);
-    aRect(c, 2, 44, 14, 52, 1);
-    aRect(c, 86, 44, 98, 52, 1);
-  }],
-  ["Boot", (c, r) => {
-    const shaft = 30 + r() * 12;
-    aRect(c, 32, 90 - shaft - 26, 66, 74, 1);
-    aPoly(c, [[32, 68], [66, 68], [88, 84], [88, 92], [32, 92]], 1);
-    aRect(c, 28, 88, 90, 96, 1);
-  }],
-  ["Saw", (c, r) => {
-    const teeth = 6 + ((r() * 4) | 0);
-    aPoly(c, [[10, 26], [78, 26], [78, 58], [10, 44]], 1);
-    for (let i = 0; i < teeth; i++) {
-      const x = 12 + (i / teeth) * 64;
-      aPoly(c, [[x, 46], [x + 6, 62], [x + 11, 46]], 1);
-    }
-    aRect(c, 74, 18, 92, 44, 1);
-    aEll(c, 78, 24, 90, 38, 0);
-  }],
-  ["Wrench", (c, r) => {
-    const jaw = 11 + r() * 5;
-    aEll(c, 22, 4, 78, 50, 1);
-    aPoly(c, [[50 - jaw, 4], [50 + jaw, 4], [50 + jaw, 22], [50 - jaw, 22]], 0);
-    aEll(c, 38, 22, 62, 42, 0);
-    aRect(c, 38, 44, 62, 96, 1);
-  }],
-  ["Gear", (c, r) => {
-    const teeth = 7 + ((r() * 4) | 0), rad = 28;
-    aEll(c, 50 - rad, 50 - rad, 50 + rad, 50 + rad, 1);
-    for (let i = 0; i < teeth; i++) {
-      const a = (i / teeth) * Math.PI * 2;
-      const x = 50 + Math.cos(a) * (rad + 8), y = 50 + Math.sin(a) * (rad + 8);
-      aEll(c, x - 10, y - 10, x + 10, y + 10, 1);
-    }
-    aEll(c, 38, 38, 62, 62, 0);
-  }],
-  ["Bulb", (c, r) => {
-    const rad = 26 + r() * 5;
-    aEll(c, 50 - rad, 8, 50 + rad, 8 + rad * 2, 1);
-    aPoly(c, [[50 - rad + 6, 8 + rad * 1.7], [50 + rad - 6, 8 + rad * 1.7], [50 + 13, 74], [50 - 13, 74]], 1);
-    aRect(c, 50 - 14, 70, 50 + 14, 82, 1);
-    aRect(c, 50 - 14, 84, 50 + 14, 94, 1);
-    aEyes(c, 50, 34, 0, 9);
-  }],
-  ["Fan", (c, r) => {
-    const blades = 3 + ((r() * 2) | 0);
-    for (let i = 0; i < blades; i++) {
-      const a = (i / blades) * Math.PI * 2;
-      const x = 50 + Math.cos(a) * 24, y = 44 + Math.sin(a) * 24;
-      aEll(c, x - 18, y - 12, x + 18, y + 12, 1);
-    }
-    aEll(c, 42, 36, 58, 52, 1);
-    aRect(c, 46, 50, 54, 86, 1);
-    aRect(c, 28, 84, 72, 94, 1);
-  }],
-  ["Stone Arch", (c, r) => {
-    const arch = 22 + r() * 8;
-    aRect(c, 6, 40, 94, 54, 1);
-    aEll(c, 50 - arch - 14, 40, 50 + arch + 14, 40 + arch * 2, 1);
-    aEll(c, 50 - arch, 46, 50 + arch, 46 + arch * 2, 0);
-    aRect(c, 6, 54, 20, 92, 1);
-    aRect(c, 80, 54, 94, 92, 1);
-    for (let i = 0; i < 5; i++) aRect(c, 14 + i * 18, 24, 20 + i * 18, 42, 1);
-    aEyes(c, 50, 76, 22, 7);
-  }],
-  ["Tent", (c, r) => {
-    const w = 40 + r() * 6;
-    aPoly(c, [[50 - w, 88], [50, 12], [50 + w, 88]], 1);
-    aPoly(c, [[50 - 14, 88], [50, 44], [50 + 14, 88]], 0);
-    aRect(c, 50 - w - 4, 84, 50 + w + 4, 94, 1);
-  }],
-  ["Barn", (c, r) => {
-    const w = 38 + r() * 6;
-    aPoly(c, [[50 - w, 42], [50 - w * 0.6, 18], [50 + w * 0.6, 18], [50 + w, 42]], 1);
-    aRect(c, 50 - w, 40, 50 + w, 90, 1);
-    aRect(c, 50 - 14, 60, 50 + 14, 90, 0);
-    aRect(c, 50 - 2, 6, 50 + 2, 20, 1);
-    aEyes(c, 50, 34, 14, 6);
-  }],
-  ["Well", (c, r) => {
-    const w = 30 + r() * 6;
-    aRect(c, 50 - w, 52, 50 + w, 92, 1);
-    aRect(c, 50 - w - 6, 46, 50 + w + 6, 56, 1);
-    aPoly(c, [[50 - w - 8, 30], [50, 8], [50 + w + 8, 30]], 1);
-    aRect(c, 50 - w + 4, 28, 50 - w + 10, 52, 1);
-    aRect(c, 50 + w - 10, 28, 50 + w - 4, 52, 1);
-  }],
-  ["Watchtower", (c, r) => {
-    const w = 22 + r() * 6;
-    aRect(c, 50 - w, 26, 50 + w, 92, 1);
-    aRect(c, 50 - w - 7, 18, 50 + w + 7, 30, 1);
-    for (let i = 0; i < 4; i++) aRect(c, 50 - w - 6 + i * ((w * 2 + 12) / 4), 8, 50 - w - 1 + i * ((w * 2 + 12) / 4), 20, 1);
-    aRect(c, 50 - 8, 60, 50 + 8, 92, 0);
-    aEyes(c, 50, 44, 12, 6);
-  }],
-  ["Panda", (c, r) => {
-    const ear = 10 + r() * 5;
-    aEll(c, 26, 16, 26 + ear * 2, 16 + ear * 2, 1);
-    aEll(c, 74 - ear * 2, 16, 74, 16 + ear * 2, 1);
-    aEll(c, 24, 20, 76, 66, 1);
-    aEll(c, 32, 60, 68, 96, 1);
-    aRect(c, 18, 62, 34, 88, 1);
-    aRect(c, 66, 62, 82, 88, 1);
-    aEyes(c, 50, 38, 14, 6);
-  }],
-  ["Koala", (c, r) => {
-    const ear = 13 + r() * 6;
-    aEll(c, 14, 18, 14 + ear * 2, 18 + ear * 2, 1);
-    aEll(c, 86 - ear * 2, 18, 86, 18 + ear * 2, 1);
-    aEll(c, 28, 20, 72, 64, 1);
-    aEll(c, 42, 44, 58, 60, 1);
-    aEll(c, 34, 58, 66, 94, 1);
-    aEyes(c, 50, 36, 12, 5);
-  }],
-  ["Monkey", (c, r) => {
-    const ear = 11 + r() * 5;
-    aEll(c, 16, 26, 16 + ear * 2, 26 + ear * 2, 1);
-    aEll(c, 84 - ear * 2, 26, 84, 26 + ear * 2, 1);
-    aEll(c, 30, 16, 70, 58, 1);
-    aEll(c, 38, 36, 62, 56, 1);
-    aEll(c, 34, 54, 66, 92, 1);
-    if (r() < 0.7) aEll(c, 62, 66, 92, 90, 1);
-    aEyes(c, 50, 32, 11, 5);
-  }],
-  ["Lion", (c, r) => {
-    const mane = 24 + r() * 8;
-    aEll(c, 50 - mane, 50 - mane, 50 + mane, 50 + mane, 1);
-    for (let i = 0; i < 10; i++) {
-      const a = (i / 10) * Math.PI * 2;
-      const x = 50 + Math.cos(a) * mane, y = 50 + Math.sin(a) * mane;
-      aEll(c, x - 9, y - 9, x + 9, y + 9, 1);
-    }
-    aEll(c, 38, 40, 62, 66, 1);
-    aEyes(c, 50, 48, 10, 5);
-  }],
-  ["Giraffe", (c, r) => {
-    const neck = 8 + r() * 4;
-    aEll(c, 30, 62, 78, 92, 1);
-    aRect(c, 50 - neck, 22, 50 + neck, 70, 1);
-    aEll(c, 40, 8, 66, 30, 1);
-    aRect(c, 44, 2, 47, 12, 1);
-    aRect(c, 57, 2, 60, 12, 1);
-    aRect(c, 34, 86, 40, 98, 1);
-    aRect(c, 66, 86, 72, 98, 1);
-  }],
-  ["Cow", (c, r) => {
-    aEll(c, 22, 40, 78, 78, 1);
-    aEll(c, 60, 20, 90, 48, 1);
-    aPoly(c, [[62, 24], [52, 12], [66, 20]], 1);
-    aPoly(c, [[86, 24], [96, 12], [82, 20]], 1);
-    aRect(c, 28, 74, 35, 96, 1);
-    aRect(c, 62, 74, 69, 96, 1);
-    if (r() < 0.6) aEll(c, 30, 50, 46, 66, 0);
-  }],
-  ["Pig", (c, r) => {
-    const snout = 9 + r() * 4;
-    aEll(c, 22, 34, 78, 80, 1);
-    aEll(c, 50 - snout, 44, 50 + snout, 44 + snout * 1.6, 1);
-    aPoly(c, [[30, 36], [26, 20], [42, 30]], 1);
-    aPoly(c, [[70, 36], [74, 20], [58, 30]], 1);
-    aRect(c, 30, 76, 38, 94, 1);
-    aRect(c, 62, 76, 70, 94, 1);
-    aEyes(c, 50, 40, 13, 5);
-  }],
-  ["Rooster", (c, r) => {
-    const comb = 8 + r() * 5;
-    aEll(c, 30, 40, 74, 88, 1);
-    aEll(c, 52, 16, 80, 46, 1);
-    for (let i = 0; i < 3; i++) aEll(c, 56 + i * 8, 8, 56 + i * 8 + comb, 8 + comb, 1);
-    aPoly(c, [[78, 30], [94, 34], [78, 40]], 1);
-    aPoly(c, [[32, 44], [10, 24 + r() * 10], [16, 60]], 1);
-  }],
-  ["Flamingo", (c, r) => {
-    aEll(c, 32, 48, 74, 80, 1);
-    const bend = 12 + r() * 8;
-    for (let i = 0; i <= 30; i++) {
-      const t = i / 30, y = 14 + t * 40;
-      const x = 56 + Math.sin(t * Math.PI) * bend;
-      aEll(c, x - 5, y - 5, x + 5, y + 5, 1);
-    }
-    aEll(c, 48, 8, 68, 24, 1);
-    aPoly(c, [[48, 16], [34, 22], [50, 24]], 1);
-    aRect(c, 48, 78, 54, 98, 1);
-  }],
-  ["Bat", (c, r) => {
-    const span = 34 + r() * 10;
-    aEll(c, 40, 30, 60, 62, 1);
-    aPoly(c, [[42, 36], [50 - span, 28], [50 - span + 8, 48], [50 - span + 4, 44], [44, 58]], 1);
-    aPoly(c, [[58, 36], [50 + span, 28], [50 + span - 8, 48], [50 + span - 4, 44], [56, 58]], 1);
-    aPoly(c, [[42, 32], [40, 16], [50, 28]], 1);
-    aPoly(c, [[58, 32], [60, 16], [50, 28]], 1);
-  }],
-  ["Mouse", (c, r) => {
-    const ear = 14 + r() * 6;
-    aEll(c, 22, 26, 22 + ear * 2, 26 + ear * 2, 1);
-    aEll(c, 78 - ear * 2, 26, 78, 26 + ear * 2, 1);
-    aEll(c, 28, 30, 72, 82, 1);
-    aPoly(c, [[44, 74], [56, 74], [50, 88]], 1);
-    if (r() < 0.8) { aRect(c, 68, 70, 92, 78, 1); aEll(c, 84, 56, 98, 78, 1); }
-    aEyes(c, 50, 44, 11, 5);
-  }],
-  ["Hedgehog", (c, r) => {
-    aEll(c, 18, 42, 72, 84, 1);
-    const spikes = 9 + ((r() * 4) | 0);
-    for (let i = 0; i < spikes; i++) {
-      const t = i / (spikes - 1);
-      const x = 20 + t * 50, y = 46 + Math.sin(t * Math.PI) * -6;
-      aPoly(c, [[x - 7, y + 8], [x, y - 16 - r() * 6], [x + 7, y + 8]], 1);
-    }
-    aPoly(c, [[68, 54], [96, 66], [68, 78]], 1);
-    aEyes(c, 74, 62, 6, 4);
-  }],
-  ["Seahorse", (c, r) => {
-    const curl = 10 + r() * 6;
-    for (let i = 0; i <= 40; i++) {
-      const t = i / 40, y = 22 + t * 60;
-      const x = 50 + Math.sin(t * Math.PI * 1.5) * curl * (1 - t * 0.2);
-      const th = 9 - t * 3;
-      aEll(c, x - th, y - th, x + th, y + th, 1);
-    }
-    aEll(c, 40, 8, 64, 30, 1);
-    aPoly(c, [[40, 16], [26, 22], [42, 26]], 1);
-    aPoly(c, [[54, 20], [66, 10], [64, 26]], 1);
-  }],
-  ["Starfish", (c, r) => {
-    const arm = 34 + r() * 8, w = 13 + r() * 4;
-    aEll(c, 50 - w, 50 - w, 50 + w, 50 + w, 1);
-    for (let i = 0; i < 5; i++) {
-      const a = -Math.PI / 2 + (i / 5) * Math.PI * 2;
-      for (let t = 0; t <= 6; t++) {
-        const d = (t / 6) * arm, rad = w - (t / 6) * (w - 4);
-        const x = 50 + Math.cos(a) * d, y = 50 + Math.sin(a) * d;
-        aEll(c, x - rad, y - rad, x + rad, y + rad, 1);
-      }
-    }
-  }],
-  ["Jellyfish", (c, r) => {
-    aEll(c, 20, 14, 80, 58, 1);
-    aRect(c, 20, 40, 80, 52, 1);
-    const legs = 4 + ((r() * 3) | 0);
-    for (let i = 0; i < legs; i++) {
-      const x0 = 26 + (i / (legs - 1)) * 48;
-      for (let t = 0; t <= 14; t++) {
-        const y = 52 + (t / 14) * 40;
-        const x = x0 + Math.sin(t / 3 + i) * 5;
-        aEll(c, x - 4, y - 4, x + 4, y + 4, 1);
-      }
-    }
-  }],
-  ["Shark", (c, r) => {
-    aEll(c, 12, 44, 82, 76, 1);
-    aPoly(c, [[44, 46], [52, 16 + r() * 8], [62, 46]], 1);
-    aPoly(c, [[80, 50], [98, 32], [96, 74], [80, 68]], 1);
-    aPoly(c, [[34, 70], [40, 92], [54, 72]], 1);
-    aPoly(c, [[12, 58], [2, 52], [4, 66]], 1);
-    aEyes(c, 66, 54, 0, 7);
-  }],
-  ["Shrimp", (c, r) => {
-    const curve = 22 + r() * 8;
-    for (let i = 0; i <= 40; i++) {
-      const a = Math.PI * 0.15 + (i / 40) * Math.PI * 1.1;
-      const x = 50 + Math.cos(a) * curve, y = 48 + Math.sin(a) * curve;
-      const th = 11 - (i / 40) * 5;
-      aEll(c, x - th, y - th, x + th, y + th, 1);
-    }
-    aEll(c, 56, 16, 84, 42, 1);
-    aPoly(c, [[80, 22], [98, 10], [86, 30]], 1);
-  }],
-  ["Clam", (c, r) => {
-    const lift = 6 + r() * 6;
-    aEll(c, 12, 30 - lift, 88, 88, 1);
-    const ribs = 5 + ((r() * 3) | 0);
-    for (let i = 1; i < ribs; i++) {
-      const x = 12 + (i / ribs) * 76;
-      aPoly(c, [[x - 1, 40], [x + 1, 40], [50, 90]], 0);
-    }
-    aRect(c, 10, 84, 90, 94, 1);
-  }],
-  ["Ant", (c, r) => {
-    aEll(c, 12, 40, 40, 66, 1);
-    aEll(c, 42, 42, 62, 62, 1);
-    aEll(c, 62, 34, 94, 70, 1);
-    const legs = 3;
-    for (let i = 0; i < legs; i++) {
-      const x = 46 + i * 8;
-      aPoly(c, [[x, 58], [x - 10, 86], [x - 4, 86]], 1);
-      aPoly(c, [[x, 48], [x - 10, 20], [x - 4, 20]], 1);
-    }
-    aPoly(c, [[18, 42], [8, 20 + r() * 8], [22, 40]], 1);
-  }],
-  ["Dragonfly", (c, r) => {
-    const span = 30 + r() * 10;
-    aEll(c, 44, 10, 58, 26, 1);
-    aRect(c, 46, 24, 56, 92, 1);
-    aEll(c, 50 - span, 26, 50 - 6, 46, 1);
-    aEll(c, 50 + 6, 26, 50 + span, 46, 1);
-    aEll(c, 50 - span * 0.8, 48, 50 - 6, 64, 1);
-    aEll(c, 50 + 6, 48, 50 + span * 0.8, 64, 1);
-  }],
-  ["Caterpillar", (c, r) => {
-    const segs = 5 + ((r() * 3) | 0), rad = 13 + r() * 4;
-    for (let i = 0; i < segs; i++) {
-      const x = 16 + (i / (segs - 1)) * 68;
-      const y = 56 + Math.sin(i * 0.9) * 10;
-      aEll(c, x - rad, y - rad, x + rad, y + rad, 1);
-    }
-    aRect(c, 18, 18, 22, 34, 1);
-    aRect(c, 28, 18, 32, 34, 1);
-  }],
-  ["Scorpion", (c, r) => {
-    aEll(c, 32, 46, 68, 80, 1);
-    aEll(c, 18, 52, 40, 74, 1);
-    aPoly(c, [[22, 54], [4, 40], [18, 38], [26, 50]], 1);
-    aPoly(c, [[36, 54], [22, 34], [34, 32], [42, 48]], 1);
-    const tail = 8 + r() * 5;
-    for (let i = 0; i <= 12; i++) {
-      const t = i / 12, a = Math.PI * 0.5 - t * Math.PI * 0.9;
-      const x = 62 + Math.cos(a) * 26, y = 62 - Math.sin(a) * 34;
-      aEll(c, x - tail * 0.5, y - tail * 0.5, x + tail * 0.5, y + tail * 0.5, 1);
-    }
-  }],
-  ["Tulip", (c, r) => {
-    const w = 18 + r() * 8;
-    aPoly(c, [[50 - w, 26], [50 - w, 46], [50, 58], [50 + w, 46], [50 + w, 26], [50 + w * 0.4, 36], [50, 22], [50 - w * 0.4, 36]], 1);
-    aRect(c, 47, 54, 53, 94, 1);
-    aEll(c, 20, 60, 50, 76, 1);
-    aEll(c, 50, 70, 80, 86, 1);
-  }],
-  ["Sunflower", (c, r) => {
-    const pet = 10 + ((r() * 4) | 0);
-    for (let i = 0; i < pet; i++) {
-      const a = (i / pet) * Math.PI * 2;
-      const x = 50 + Math.cos(a) * 24, y = 40 + Math.sin(a) * 24;
-      aEll(c, x - 10, y - 10, x + 10, y + 10, 1);
-    }
-    aEll(c, 36, 26, 64, 54, 1);
-    aRect(c, 47, 52, 53, 96, 1);
-    aEll(c, 20, 66, 48, 80, 1);
-    aEyes(c, 50, 40, 0, 10);
-  }],
-  ["Palm Tree", (c, r) => {
-    const lean = r() * 8 - 4;
-    for (let i = 0; i <= 20; i++) {
-      const t = i / 20, y = 28 + t * 70;
-      aEll(c, 50 + lean * (1 - t) - STEM_MIN / 2, y - 6, 50 + lean * (1 - t) + STEM_MIN / 2, y + 6, 1);
-    }
-    for (const [dx, dy] of [[-1, -0.25], [1, -0.25], [-0.75, 0.35], [0.75, 0.35], [0, -1]]) {
-      aPoly(c, [[50 + lean, 28], [50 + lean + dx * 28, 28 + dy * 24], [50 + lean + dx * 20, 28 + dy * 24 + 13]], 1);
-    }
-  }],
-  ["Pine Tree", (c, r) => {
-    const tiers = 3 + ((r() * 2) | 0);
-    for (let i = 0; i < tiers; i++) {
-      const t = i / (tiers - 1);
-      const y0 = 8 + t * 50, w = 14 + t * 26;
-      aPoly(c, [[50 - w, y0 + 26], [50, y0], [50 + w, y0 + 26]], 1);
-    }
-    aRect(c, 44, 80, 56, 96, 1);
-  }],
-  ["Acorn", (c, r) => {
-    const cap = 12 + r() * 6;
-    aEll(c, 24, 34, 76, 92, 1);
-    aRect(c, 22, 24, 78, 24 + cap * 2, 1);
-    aEll(c, 22, 14, 78, 40, 1);
-    aRect(c, 47, 4, 53, 18, 1);
-  }],
-  ["Wheat", (c, r) => {
-    const grains = 5 + ((r() * 3) | 0);
-    aRect(c, 47, 46, 53, 96, 1);
-    for (let i = 0; i < grains; i++) {
-      const y = 10 + (i / grains) * 40;
-      aEll(c, 28, y, 50, y + 14, 1);
-      aEll(c, 50, y, 72, y + 14, 1);
-    }
-    aEll(c, 42, 2, 58, 20, 1);
-  }],
-  ["Strawberry", (c, r) => {
-    const w = 26 + r() * 8;
-    aPoly(c, [[50 - w, 34], [50 + w, 34], [50, 94]], 1);
-    aEll(c, 50 - w, 20, 50 + w, 50, 1);
-    aPoly(c, [[30, 22], [50, 8], [70, 22], [50, 30]], 1);
-    aRect(c, 48, 2, 52, 14, 1);
-  }],
-  ["Cherry", (c, r) => {
-    const gap = 4 + r() * 6;
-    aEll(c, 12, 54, 48 - gap, 92, 1);
-    aEll(c, 52 + gap, 54, 88, 92, 1);
-    for (let i = 0; i <= 16; i++) {
-      const t = i / 16;
-      aEll(c, 30 - 2 + t * 18, 58 - t * 46, 30 + 2 + t * 18, 62 - t * 46, 1);
-      aEll(c, 70 - 2 - t * 18, 58 - t * 46, 70 + 2 - t * 18, 62 - t * 46, 1);
-    }
-    aPoly(c, [[46, 12], [72, 4], [56, 20]], 1);
-  }],
-  ["Grapes", (c, r) => {
-    /* Left overlapping on purpose. Separating the berries needs a notch two
-       cells deep, and the geometry says that only happens when the circles stop
-       touching — at which point the bunch falls apart. The silhouette reads as
-       grapes from its taper and stem instead. */
-    const rad = 9 + r() * 3;
-    const rows = [[50], [40, 60], [30, 50, 70], [40, 60], [50]];
-    rows.forEach((xs, ri) => xs.forEach((x) => {
-      const y = 34 + ri * 15;
-      aEll(c, x - rad, y - rad, x + rad, y + rad, 1);
-    }));
-    aRect(c, 47, 12, 53, 34, 1);
-    aPoly(c, [[52, 16], [78, 8], [58, 26]], 1);
-  }],
-  ["Pineapple", (c, r) => {
-    const leaves = 4 + ((r() * 3) | 0);
-    aEll(c, 26, 34, 74, 94, 1);
-    for (let i = 0; i < leaves; i++) {
-      const t = i / (leaves - 1) - 0.5;
-      aPoly(c, [[50 + t * 20, 38], [50 + t * 40, 4], [50 + t * 20 + 8, 38]], 1);
-    }
-  }],
-  ["Watermelon", (c, r) => {
-    const rind = 6 + r() * 4;
-    aPoly(c, [[8, 30], [92, 30], [50, 94]], 1);
-    aEll(c, 8, 12, 92, 48, 1);
-    aRect(c, 6, 24, 94, 34, 1);
-    void rind;
-  }],
-  ["Carrot", (c, r) => {
-    const w = 16 + r() * 6;
-    aPoly(c, [[50 - w, 34], [50 + w, 34], [50, 96]], 1);
-    for (const dx of [-1, 0, 1]) aPoly(c, [[50 + dx * 8, 36], [50 + dx * 26, 4], [50 + dx * 8 + 10, 34]], 1);
-  }],
-  ["Corn", (c, r) => {
-    const w = 17 + r() * 5;
-    aEll(c, 50 - w, 10, 50 + w, 92, 1);
-    aPoly(c, [[50 - w, 44], [50 - w - 13, 70], [50 - w + 2, 86]], 1);
-    aPoly(c, [[50 + w, 44], [50 + w + 13, 70], [50 + w - 2, 86]], 1);
-  }],
-  ["Pizza Slice", (c, r) => {
-    aPoly(c, [[50, 92], [14, 18], [86, 18]], 1);
-    aRect(c, 12, 10, 88, 24, 1);
-    const bits = 3 + ((r() * 3) | 0);
-    for (let i = 0; i < bits; i++) {
-      const x = 32 + (i / bits) * 40, y = 40 + (i % 2) * 22;
-      aEll(c, x - 6, y - 6, x + 6, y + 6, 0);
-    }
-  }],
-  ["Pretzel", (c, r) => {
-    const th = 7 + r() * 3;
-    const ring = (cx0, cy0, rad) => {
-      for (let i = 0; i <= 40; i++) {
-        const a = (i / 40) * Math.PI * 2;
-        const x = cx0 + Math.cos(a) * rad, y = cy0 + Math.sin(a) * rad;
-        aEll(c, x - th, y - th, x + th, y + th, 1);
-      }
-    };
-    ring(32, 40, 18); ring(68, 40, 18); ring(50, 66, 20);
-  }],
-  ["Lollipop", (c, r) => {
-    const rad = 26 + r() * 6;
-    aEll(c, 50 - rad, 12, 50 + rad, 12 + rad * 2, 1);
-    aRect(c, 46, 12 + rad * 2 - 4, 54, 96, 1);
-    aEyes(c, 50, 38, 0, 11);
-  }],
-  ["Bottle", (c, r) => {
-    const neck = 8 + r() * 4;
-    aRect(c, 50 - neck, 8, 50 + neck, 34, 1);
-    aPoly(c, [[50 - neck, 32], [50 + neck, 32], [50 + 24, 52], [50 - 24, 52]], 1);
-    aRect(c, 26, 48, 74, 94, 1);
-    aRect(c, 50 - neck - 3, 4, 50 + neck + 3, 12, 1);
-  }],
-  ["Wine Glass", (c, r) => {
-    const bowl = 24 + r() * 6;
-    aEll(c, 50 - bowl, 8, 50 + bowl, 52, 1);
-    aRect(c, 50 - bowl, 6, 50 + bowl, 26, 1);
-    aRect(c, 50 - STEM_MIN / 2, 48, 50 + STEM_MIN / 2, 84, 1);
-    aEll(c, 26, 80, 74, 96, 1);
-  }],
-  ["Basket", (c, r) => {
-    const flare = 8 + r() * 6;
-    aPoly(c, [[26 - flare, 44], [74 + flare, 44], [66, 92], [34, 92]], 1);
-    aRect(c, 24 - flare, 40, 76 + flare, 50, 1);
-    aEll(c, 30, 10, 70, 50, 1);
-    aEll(c, 38, 20, 62, 56, 0);
-  }],
-  ["Ladder", (c, r) => {
-    const rungs = 4 + ((r() * 3) | 0);
-    aRect(c, 18, 6, 30, 96, 1);
-    aRect(c, 70, 6, 82, 96, 1);
-    for (let i = 0; i < rungs; i++) {
-      const y = 16 + (i / (rungs - 1)) * 68;
-      aRect(c, 24, y, 76, y + 9, 1);
-    }
-  }],
-  ["Hammer", (c, r) => {
-    const head = 16 + r() * 6;
-    aRect(c, 20, 12, 80, 12 + head, 1);
-    aPoly(c, [[20, 12], [10, 18], [20, 12 + head]], 1);
-    aRect(c, 44, 12 + head, 58, 96, 1);
-  }],
-  ["Scissors", (c, r) => {
-    /* Thicker than the first draft, which came to about 101 cells against a
-       130-cell floor and so never appeared. The ring holes are smaller too:
-       cutting them at the old size left almost no solid metal behind. */
-    const gap = 10 + r() * 6;
-    aPoly(c, [[50, 58], [50 - gap - 22, 6], [50 - gap - 4, 4], [50 + 9, 52]], 1);
-    aPoly(c, [[50, 58], [50 + gap + 22, 6], [50 + gap + 4, 4], [50 - 9, 52]], 1);
-    aEll(c, 20, 56, 52, 92, 1);
-    aEll(c, 29, 65, 43, 83, 0);
-    aEll(c, 48, 56, 80, 92, 1);
-    aEll(c, 57, 65, 71, 83, 0);
-  }],
-  ["Paintbrush", (c, r) => {
-    const w = 13 + r() * 5;
-    aPoly(c, [[50 - w - 4, 8], [50 + w + 4, 8], [50 + w, 34], [50 - w, 34]], 1);
-    aRect(c, 50 - w - 2, 32, 50 + w + 2, 46, 1);
-    aRect(c, 50 - w + 3, 44, 50 + w - 3, 96, 1);
-  }],
-  ["Ship Wheel", (c, r) => {
-    const rad = 32 + r() * 6;
-    aEll(c, 50 - rad, 50 - rad, 50 + rad, 50 + rad, 1);
-    aEll(c, 50 - rad + 8, 50 - rad + 8, 50 + rad - 8, 50 + rad - 8, 0);
-    aPoly(c, [[50, 24], [58, 50], [50, 76], [42, 50]], 1);
-    aEll(c, 45, 45, 55, 55, 1);
-  }],
-  ["Telescope", (c, r) => {
-    const w = 12 + r() * 5;
-    aPoly(c, [[8, 30 - w], [8, 30 + w], [70, 46 + w + 4], [70, 46 - w - 4]], 1);
-    aRect(c, 66, 40 - w - 6, 82, 54 + w + 6, 1);
-    aRect(c, 44, 58, 54, 94, 1);
-    aPoly(c, [[30, 96], [50, 62], [70, 96]], 1);
-  }],
-  ["Microphone", (c, r) => {
-    const w = 20 + r() * 6;
-    aEll(c, 50 - w, 8, 50 + w, 8 + w * 2.2, 1);
-    aRect(c, 50 - w, 24, 50 + w, 40, 1);
-    aRect(c, 44, 44, 56, 74, 1);
-    aEll(c, 28, 60, 72, 88, 1);
-    aEll(c, 36, 66, 64, 96, 0);
-    aRect(c, 44, 82, 56, 96, 1);
-    aEyes(c, 50, 22, 12, 5);
-  }],
-  ["Television", (c, r) => {
-    const w = 38 + r() * 6;
-    aRect(c, 50 - w, 18, 50 + w, 74, 1);
-    aRect(c, 50 - w + 8, 26, 50 + w - 8, 66, 0);
-    aRect(c, 40, 74, 60, 86, 1);
-    aRect(c, 20, 84, 80, 92, 1);
-    aRect(c, 50 - 3, 10, 50 + 3, 20, 1);
-  }],
-  ["Chair", (c, r) => {
-    const back = 8 + r() * 6;
-    aRect(c, 26, 6, 34 + back, 60, 1);
-    aRect(c, 26, 52, 82, 64, 1);
-    aRect(c, 28, 62, 38, 96, 1);
-    aRect(c, 70, 62, 80, 96, 1);
-    if (r() < 0.6) aRect(c, 26, 26, 34 + back + 26, 34, 1);
-  }],
-  ["Swan", (c, r) => {
-    const neck = 16 + r() * 8;
-    aEll(c, 22, 54, 82, 88, 1);
-    aRect(c, 50 - 4, 22, 50 + 4, 60, 1);
-    aEll(c, 50 - 9, 12, 50 + 9, 30, 1);
-    aPoly(c, [[50 + 8, 20], [50 + 20 + r() * 6, 24], [50 + 8, 28]], 1);
-    aPoly(c, [[30, 58], [58, 50], [66, 76], [34, 80]], 1);
-    if (r() < 0.6) aEll(c, 18, 70, 40, 86, 1);
-    void neck;
-  }],
-  ["Deer", (c, r) => {
-    const rack = 12 + r() * 10;
-    aEll(c, 38, 22, 62, 50, 1);
-    aPoly(c, [[44, 24], [40 - rack * 0.5, 6], [46, 20]], 1);
-    aPoly(c, [[56, 24], [60 + rack * 0.5, 6], [54, 20]], 1);
-    aPoly(c, [[38, 20], [30 - rack * 0.3, 10], [42, 18]], 1);
-    aPoly(c, [[62, 20], [70 + rack * 0.3, 10], [58, 18]], 1);
-    aEll(c, 34, 46, 66, 76, 1);
-    aRect(c, 38, 72, 44, 94, 1);
-    aRect(c, 56, 72, 62, 94, 1);
-  }],
-  ["Horse", (c, r) => {
-    aEll(c, 26, 44, 78, 74, 1);
-    aPoly(c, [[62, 46], [76, 20], [86, 26], [74, 50]], 1);
-    aEll(c, 72, 14, 90, 32, 1);
-    aPoly(c, [[60, 42], [66, 16], [72, 20]], 1);
-    aRect(c, 30, 70, 37, 94, 1);
-    aRect(c, 62, 70, 69, 94, 1);
-    if (r() < 0.7) aPoly(c, [[26, 48], [12, 56 + r() * 10], [26, 68]], 1);
-  }],
-  ["Squirrel", (c, r) => {
-    aEll(c, 30, 40, 62, 78, 1);
-    aEll(c, 34, 20, 58, 46, 1);
-    aPoly(c, [[38, 22], [36, 8], [46, 18]], 1);
-    aPoly(c, [[54, 22], [56, 8], [46, 18]], 1);
-    const bushy = 18 + r() * 10;
-    aEll(c, 58, 26, 58 + bushy + 12, 74, 1);
-    aRect(c, 34, 72, 58, 88, 1);
-    aEyes(c, 46, 32, 9, 4);
-  }],
-  ["Snake", (c, r) => {
-    const amp = 10 + r() * 8, th = 7 + r() * 3;
-    for (let i = 0; i <= 60; i++) {
-      const t = i / 60;
-      const y = 12 + t * 76;
-      const x = 50 + Math.sin(t * Math.PI * 2.4) * amp * (1 - t * 0.3);
-      aEll(c, x - th, y - th, x + th, y + th, 1);
-    }
-    aEll(c, 50 - amp - 10, 6, 50 - amp + 8, 22, 1);
-  }],
-  ["Duck", (c, r) => {
-    aEll(c, 24, 48, 80, 86, 1);
-    aEll(c, 54, 20, 82, 50, 1);
-    aPoly(c, [[80, 30], [96 + r() * 6, 34], [80, 40]], 1);
-    aPoly(c, [[34, 54], [62, 48], [56, 74], [32, 72]], 1);
-    if (r() < 0.6) aRect(c, 40, 84, 48, 94, 1);
-    aEyes(c, 66, 32, 0, 7);
-  }],
-  ["Sheep", (c, r) => {
-    const puff = 5 + r() * 3;
-    for (const [x, y] of [[34, 44], [50, 38], [66, 44], [30, 60], [50, 58], [70, 60], [40, 70], [60, 70]])
-      aEll(c, x - 14, y - 12, x + 14, y + 12, 1);
-    aEll(c, 60, 26, 84, 50, 1);
-    aRect(c, 38, 74, 45, 92, 1);
-    aRect(c, 58, 74, 65, 92, 1);
-    void puff;
-    aEyes(c, 72, 36, 7, 4);
-  }],
-  ["Snail Shell", (c, r) => {
-    const turns = 2.4 + r() * 0.8;
-    for (let i = 0; i <= 140; i++) {
-      const t = i / 140;
-      const a = t * Math.PI * 2 * turns;
-      const rad = 6 + t * 34;
-      const th = 5 + t * 4;
-      const x = 50 + Math.cos(a) * rad, y = 50 + Math.sin(a) * rad;
-      aEll(c, x - th, y - th, x + th, y + th, 1);
-    }
-  }],
-  ["Windmill Sail", (c, r) => {
-    const arm = 30 + r() * 10, w = 8 + r() * 4;
-    aEll(c, 50 - 9, 50 - 9, 50 + 9, 50 + 9, 1);
-    for (const [dx, dy] of [[1, 0], [0, 1], [-1, 0], [0, -1]]) {
-      const ex = 50 + dx * arm, ey = 50 + dy * arm;
-      aPoly(c, [[50, 50], [ex - dy * w, ey + dx * w], [ex + dy * w * 2, ey - dx * w * 2]], 1);
-    }
-  }],
-  ["Chess Piece", (c, r) => {
-    const bell = 14 + r() * 6;
-    aRect(c, 32, 84, 68, 94, 1);
-    aRect(c, 38, 76, 62, 86, 1);
-    aPoly(c, [[42, 46], [58, 46], [50 + bell, 78], [50 - bell, 78]], 1);
-    aEll(c, 40, 28, 60, 50, 1);
-    aEll(c, 44, 16, 56, 30, 1);
-  }],
-  ["Old Key", (c, r) => {
-    /* Sized up from the first draft, which filled about 74 cells and never
-       cleared the 130-cell floor, so this family could never appear at all. */
-    const bit = 14 + r() * 8;
-    aEll(c, 24, 4, 76, 50, 1);
-    aEll(c, 38, 17, 62, 37, 0);
-    aRect(c, 42, 44, 58, 94, 1);
-    aRect(c, 58, 62, 58 + bit, 74, 1);
-    aRect(c, 58, 80, 58 + bit * 0.75, 92, 1);
-  }],
-  ["Candle", (c, r) => {
-    const h = 30 + r() * 16;
-    aEll(c, 44, 8, 56, 26, 1);
-    aRect(c, 49, 24, 51, 32, 1);
-    aRect(c, 38, 30, 62, 30 + h + 24, 1);
-    aRect(c, 32, 30 + h + 22, 68, 30 + h + 32, 1);
-  }],
-  ["Mug", (c, r) => {
-    const handle = r() < 0.85;
-    aRect(c, 26, 30, 66, 84, 1);
-    aRect(c, 22, 26, 70, 34, 1);
-    if (handle) { aEll(c, 62, 40, 88, 70, 1); aEll(c, 68, 47, 80, 63, 0); }
-    if (r() < 0.6) { aEll(c, 30, 12, 40, 28, 1); aEll(c, 48, 10, 58, 26, 1); }
-  }],
-  ["Bucket", (c, r) => {
-    const flare = 6 + r() * 6;
-    aPoly(c, [[30 - flare, 34], [70 + flare, 34], [64, 92], [36, 92]], 1);
-    aRect(c, 26 - flare, 28, 74 + flare, 38, 1);
-    aEll(c, 34, 6, 66, 40, 1);
-    aEll(c, 41, 14, 59, 44, 0);
-  }],
-  ["Envelope", (c, r) => {
-    const flap = 26 + r() * 8;
-    /* Body first, then the flap as its own filled part on top. The seam pass
-       draws the line between them automatically — which is the whole point of
-       having it. Carving the V by hand instead removed the body and left a
-       chevron that read as an arrow, and drawing the fold as thin carved lines
-       put them under the minimum feature width, so they vanished entirely. */
-    aRect(c, 8, 24, 92, 80, 1);
-    aPoly(c, [[10, 26], [50, 26 + flap], [90, 26]], 1);
-  }],
-  ["Gemstone", (c, r) => {
-    const tw = 20 + r() * 10;
-    aPoly(c, [[50 - tw, 26], [50 + tw, 26], [50 + tw * 1.5, 40], [50, 90], [50 - tw * 1.5, 40]], 1);
-    aRect(c, 50 - tw, 22, 50 + tw, 30, 1);
-  }],
-  ["Feather", (c, r) => {
-    const w = 12 + r() * 8;
-    for (let i = 0; i <= 50; i++) {
-      const t = i / 50;
-      const y = 10 + t * 78;
-      const spread = Math.sin(t * Math.PI) * w;
-      aEll(c, 50 - spread, y - 3, 50 + spread, y + 3, 1);
-    }
-    aRect(c, 48, 10, 52, 94, 1);
-  }],
-  ["Leaf", (c, r) => {
-    const w = 20 + r() * 10;
-    aEll(c, 50 - w, 14, 50 + w, 80, 1);
-    aPoly(c, [[50 - w, 60], [50 + w, 20], [50 + w, 26], [50 - w, 66]], 0);
-    aRect(c, 48, 40, 52, 94, 1);
-  }],
-  ["Wave", (c, r) => {
-    const amp = 12 + r() * 8;
-    for (let i = 0; i <= 70; i++) {
-      const t = i / 70;
-      const x = 8 + t * 84;
-      const y = 50 + Math.sin(t * Math.PI * 2) * amp;
-      aEll(c, x - 7, y - 7, x + 7, y + 7, 1);
-    }
-    aEll(c, 66, 20, 92, 44, 1);
-  }],
-  ["Sunburst", (c, r) => {
-    /* The rays are drawn as overlapping discs along each spoke rather than one
-       disc at the tip. Detached tips were being dropped as stray islands, and
-       what survived sat right on the 130-cell floor. */
-    const rays = 8 + ((r() * 5) | 0), len = 20 + r() * 10;
-    aEll(c, 26, 26, 74, 74, 1);
-    for (let i = 0; i < rays; i++) {
-      const a = (i / rays) * Math.PI * 2;
-      for (let t = 0; t <= 6; t++) {
-        const d = 20 + (t / 6) * len;
-        const x = 50 + Math.cos(a) * d, y = 50 + Math.sin(a) * d;
-        const rad = 8 - (t / 6) * 3;
-        aEll(c, x - rad, y - rad, x + rad, y + rad, 1);
-      }
-    }
-  }],
   ["Cat", (c, r) => {
     const ear = 18 + r() * 12, hw = 20 + r() * 8, tail = r() < 0.75;
     aPoly(c, [[50 - hw, 30], [50 - hw + 3, 30 - ear], [50 - 2, 24]], 1);
@@ -1864,7 +411,6 @@ const ART_FAMILIES = [
     const bw = 12 + r() * 10;
     aPoly(c, [[50 - bw, 50], [50 + bw, 50], [50 + bw + 12, 94], [50 - bw - 12, 94]], 1);
     if (tail) { aRect(c, 62 + r() * 6, 60, 74 + r() * 6, 94, 1); aEll(c, 60, 84, 84, 97, 1); }
-    aEyes(c, 50, 34, hw * 0.45, 5);
   }],
   ["Dog", (c, r) => {
     const droop = 40 + r() * 22;
@@ -1875,7 +421,6 @@ const ART_FAMILIES = [
     const bw = 12 + r() * 8;
     aPoly(c, [[50 - bw, 50], [50 + bw, 50], [50 + bw + 10, 94], [50 - bw - 10, 94]], 1);
     if (r() < 0.6) aRect(c, 68, 66, 80, 94, 1);
-    aEyes(c, 50, 38, 11, 5);
   }],
   ["Bird", (c, r) => {
     aEll(c, 26, 32, 84, 78, 1);
@@ -1884,7 +429,6 @@ const ART_FAMILIES = [
     aPoly(c, [[14, 24 + hs * 0.4], [1, 30 + hs * 0.4], [14, 36 + hs * 0.4]], 1);
     aPoly(c, [[42, 40], [86 + r() * 10, 26], [66, 64]], 1);
     aPoly(c, [[70, 62], [98, 76 + r() * 12], [66, 78]], 1);
-    aEyes(c, 46, 30, 0, 7);
   }],
   ["Fish", (c, r) => {
     const bh = 22 + r() * 14;
@@ -1892,7 +436,6 @@ const ART_FAMILIES = [
     aPoly(c, [[60, 50], [98, 50 - bh - 8], [90, 50], [98, 50 + bh + 8]], 1);
     aPoly(c, [[26, 50 - bh + 4], [46, 50 - bh - 22], [54, 50 - bh + 4]], 1);
     if (r() < 0.6) aPoly(c, [[28, 50 + bh - 4], [46, 50 + bh + 20], [54, 50 + bh - 4]], 1);
-    aEyes(c, 34, 46, 0, 7);
   }],
   ["Tree", (c, r) => {
     const lobes = 2 + ((r() * 3) | 0);
@@ -1900,7 +443,7 @@ const ART_FAMILIES = [
       const cx = 24 + (52 / Math.max(lobes - 1, 1)) * i, w = 20 + r() * 16;
       aEll(c, cx - w, 8 + r() * 16, cx + w, 54 + r() * 14, 1);
     }
-    const tw = Math.max(4 + r() * 6, STEM_MIN / 2);
+    const tw = 4 + r() * 6;
     aRect(c, 50 - tw, 54, 50 + tw, 96, 1);
   }],
   ["Flower", (c, r) => {
@@ -1913,7 +456,6 @@ const ART_FAMILIES = [
     aEll(c, 38, 28, 62, 52, 1);
     aRect(c, 46, 46, 54, 96, 1);
     if (r() < 0.7) aEll(c, 22, 62, 50, 78, 1);
-    aEyes(c, 50, 34, 0, 10);
   }],
   ["Vessel", (c, r) => {
     const bowl = 22 + r() * 12, deep = 30 + r() * 18;
@@ -1939,7 +481,6 @@ const ART_FAMILIES = [
     pts.push([92, 82]);
     aPoly(c, pts, 1);
     aRect(c, 8, 78, 92, 94, 1);
-    aEyes(c, 50, 62, 18, 6);
   }],
   ["Rocket", (c, r) => {
     const w = 14 + r() * 8, nose = 2 + r() * 12;
@@ -1947,7 +488,6 @@ const ART_FAMILIES = [
     aPoly(c, [[50 - w, 46], [50 - w - 18, 82], [50 - w, 74]], 1);
     aPoly(c, [[50 + w, 46], [50 + w + 18, 82], [50 + w, 74]], 1);
     aPoly(c, [[50 - 12, 74], [50 + 12, 74], [50, 98]], 1);
-    aEyes(c, 50, 40, 0, 7);
   }],
   ["Mushroom", (c, r) => {
     const cap = 36 + r() * 12, st = 10 + r() * 8;
@@ -1960,7 +500,6 @@ const ART_FAMILIES = [
     aEll(c, 50 - cap, 8, 50 + cap, 68, 1);
     aRect(c, 0, 44, 100, 100, 0);
     aRect(c, 50 - st, 42, 50 + st, 94, 1);
-    aEyes(c, 50, 30, 15, 7);
   }],
   ["Butterfly", (c, r) => {
     const up = 34 + r() * 12, lo = 26 + r() * 12;
@@ -1979,818 +518,20 @@ const ART_FAMILIES = [
     aRect(c, 70, 50, 79, 50 + 14 + r() * 10, 1);
     aRect(c, 85, 50, 93, 50 + 10 + r() * 10, 1);
   }],
-
-  /* ── Everything below was added to end the repetition past level 200.
-     The generated pool had only twelve subjects, so an "endless" run showed
-     the same twelve over and over — less variety than the 73 hand-drawn
-     boards before it. Each family varies structurally (parts present or
-     absent, counts, poses), not just in scale, and each was checked to
-     survive the rasteriser without losing its distinguishing pieces. ── */
-
-  ["Rabbit", (c, r) => {
-    const earLean = r() < 0.5 ? 1 : -1, earH = 28 + r() * 14, earW = 10 + r() * 5;
-    // Ears reach well into the head; thin ears used to break off in the
-    // rasteriser and get culled, leaving an earless blob.
-    aEll(c, 36 - earLean * 4, 4, 36 + earW - earLean * 4, 4 + earH, 1);
-    aEll(c, 56 + earLean * 4, 4, 56 + earW + earLean * 4, 4 + earH, 1);
-    aEll(c, 32, 4 + earH - 8, 70, 64, 1);
-    const bw = 17 + r() * 8;
-    aEll(c, 50 - bw, 56, 50 + bw, 96, 1);
-    if (r() < 0.6) aEll(c, 62 + r() * 8, 74, 84 + r() * 8, 92, 1);
-    aEll(c, 39, 38, 47, 48, 0); aEll(c, 55, 38, 63, 48, 0);
-    if (r() < 0.6) aEll(c, 47, 50, 55, 57, 0);
-    aEyes(c, 50, 46, 11, 5);
-  }],
-
-  ["Owl", (c, r) => {
-    const tuft = r() < 0.65;
-    if (tuft) {
-      aPoly(c, [[26, 26], [32, 6], [42, 24]], 1);
-      aPoly(c, [[74, 26], [68, 6], [58, 24]], 1);
-    }
-    aEll(c, 20, 14, 80, 60, 1);
-    const bw = 20 + r() * 8;
-    aEll(c, 50 - bw, 46, 50 + bw, 92, 1);
-    if (r() < 0.7) { aEll(c, 50 - bw - 8, 54, 50 - bw + 6, 84, 1); aEll(c, 50 + bw - 6, 54, 50 + bw + 8, 84, 1); }
-    aRect(c, 40, 90, 46, 98, 1); aRect(c, 54, 90, 60, 98, 1);
-    aEll(c, 30, 26, 44, 42, 0); aEll(c, 56, 26, 70, 42, 0);
-    aPoly(c, [[46, 42], [54, 42], [50, 54]], 0);
-    aEyes(c, 50, 40, 14, 7);
-  }],
-
-  ["Bear", (c, r) => {
-    const er = 8 + r() * 5;
-    aEll(c, 26 - er, 10, 26 + er, 10 + er * 2, 1);
-    aEll(c, 74 - er, 10, 74 + er, 10 + er * 2, 1);
-    aEll(c, 28, 14, 72, 56, 1);
-    const bw = 22 + r() * 8;
-    aEll(c, 50 - bw, 48, 50 + bw, 96, 1);
-    if (r() < 0.55) { aEll(c, 50 - bw - 9, 58, 50 - bw + 5, 86, 1); aEll(c, 50 + bw - 5, 58, 50 + bw + 9, 86, 1); }
-    aEll(c, 37, 26, 45, 35, 0); aEll(c, 55, 26, 63, 35, 0);
-    aEll(c, 45, 40, 55, 50, 0);
-    aEyes(c, 50, 34, 12, 5);
-  }],
-
-  ["Fox", (c, r) => {
-    aPoly(c, [[28, 34], [22, 6], [46, 24]], 1);
-    aPoly(c, [[72, 34], [78, 6], [54, 24]], 1);
-    aEll(c, 28, 20, 72, 56, 1);
-    aPoly(c, [[42, 46], [58, 46], [50, 66]], 1);
-    const bw = 15 + r() * 8;
-    aEll(c, 50 - bw, 54, 50 + bw, 92, 1);
-    const tail = r() < 0.8;
-    if (tail) aEll(c, 62 + r() * 6, 62, 96, 90, 1);
-    aEll(c, 37, 30, 45, 39, 0); aEll(c, 55, 30, 63, 39, 0);
-    aEyes(c, 50, 36, 12, 5);
-  }],
-
-  ["Whale", (c, r) => {
-    const bh = 18 + r() * 10;
-    aEll(c, 6, 44 - bh, 74, 44 + bh, 1);
-    aPoly(c, [[66, 44], [98, 44 - bh - 10], [88, 44], [98, 44 + bh + 10]], 1);
-    if (r() < 0.7) aPoly(c, [[30, 44 + bh - 4], [40, 44 + bh + 16], [54, 44 + bh - 4]], 1);
-    const spout = r() < 0.6;
-    if (spout) { aRect(c, 26, 44 - bh - 18, 32, 44 - bh + 2, 1); aEll(c, 18, 6, 40, 22, 1); }
-    aEll(c, 16, 36, 25, 45, 0);
-  }],
-
-  ["Turtle", (c, r) => {
-    const sw = 26 + r() * 10;
-    aEll(c, 50 - sw, 24, 50 + sw, 78, 1);
-    aEll(c, 76, 34, 98, 56, 1);
-    const legs = r() < 0.5 ? 4 : 2;
-    aEll(c, 22, 62, 44, 88, 1);
-    aEll(c, 56, 62, 78, 88, 1);
-    if (legs === 4) { aEll(c, 20, 20, 40, 42, 1); aEll(c, 60, 20, 80, 42, 1); }
-    if (r() < 0.5) aRect(c, 8, 44, 26, 52, 1);
-    const pl = 2 + ((r() * 2) | 0);
-    for (let i = 0; i < pl; i++) { const x = 40 + i * 12; aEll(c, x - 6, 38, x + 6, 52, 0); }
-    aEll(c, 44, 58, 56, 70, 0);
-  }],
-
-  ["Crab", (c, r) => {
-    const bw = 24 + r() * 10;
-    aEll(c, 50 - bw, 34, 50 + bw, 74, 1);
-    // Arms first, so the claws are always joined to the body.
-    aRect(c, 22, 30, 50 - bw + 4, 40, 1);
-    aRect(c, 50 + bw - 4, 30, 78, 40, 1);
-    aEll(c, 6, 14, 32, 44, 1);
-    aEll(c, 68, 14, 94, 44, 1);
-    const legs = 2 + ((r() * 3) | 0);
-    for (let i = 0; i < legs; i++) {
-      const y = 52 + i * (30 / Math.max(legs, 1));
-      aRect(c, 4, y, 50 - bw + 6, y + 6, 1);
-      aRect(c, 50 + bw - 6, y, 96, y + 6, 1);
-    }
-    if (r() < 0.6) { aRect(c, 38, 24, 44, 36, 1); aRect(c, 56, 24, 62, 36, 1); }
-    aEll(c, 40, 44, 48, 53, 0); aEll(c, 54, 44, 62, 53, 0);
-  }],
-
-  ["Penguin", (c, r) => {
-    aEll(c, 32, 6, 68, 42, 1);
-    const bw = 20 + r() * 8;
-    aEll(c, 50 - bw, 32, 50 + bw, 88, 1);
-    if (r() < 0.8) { aEll(c, 50 - bw - 10, 42, 50 - bw + 4, 78, 1); aEll(c, 50 + bw - 4, 42, 50 + bw + 10, 78, 1); }
-    aPoly(c, [[30, 96], [46, 86], [46, 96]], 1);
-    aPoly(c, [[70, 96], [54, 86], [54, 96]], 1);
-    if (r() < 0.5) aPoly(c, [[44, 22], [30, 28], [44, 32]], 1);
-    aEll(c, 40, 18, 47, 26, 0); aEll(c, 55, 18, 62, 26, 0);
-    if (r() < 0.6) aEll(c, 42, 48, 58, 76, 0);
-    aEyes(c, 50, 28, 10, 5);
-  }],
-
-  ["Elephant", (c, r) => {
-    const earR = 16 + r() * 8;
-    aEll(c, 14, 16, 14 + earR * 2, 16 + earR * 2.4, 1);
-    aEll(c, 86 - earR * 2, 16, 86, 16 + earR * 2.4, 1);
-    aEll(c, 30, 12, 70, 58, 1);
-    const trunkX = 44 + r() * 12;
-    aRect(c, trunkX, 50, trunkX + 10, 92, 1);
-    if (r() < 0.6) aEll(c, trunkX - 6, 84, trunkX + 12, 96, 1);
-    aRect(c, 26, 56, 40, 92, 1);
-    aRect(c, 60, 56, 74, 92, 1);
-    aEll(c, 36, 26, 44, 35, 0); aEll(c, 58, 26, 66, 35, 0);
-    aEyes(c, 50, 34, 15, 5);
-  }],
-
-  ["Frog", (c, r) => {
-    aEll(c, 22, 10, 44, 32, 1);
-    aEll(c, 56, 10, 78, 32, 1);
-    const bw = 26 + r() * 10;
-    aEll(c, 50 - bw, 22, 50 + bw, 78, 1);
-    aEll(c, 6, 54, 34, 92, 1);
-    aEll(c, 66, 54, 94, 92, 1);
-    if (r() < 0.6) { aRect(c, 22, 84, 40, 92, 1); aRect(c, 60, 84, 78, 92, 1); }
-    aEll(c, 28, 16, 38, 27, 0); aEll(c, 62, 16, 72, 27, 0);
-    aEyes(c, 50, 26, 14, 6);
-  }],
-
-  ["Snail", (c, r) => {
-    const turns = 2 + ((r() * 2) | 0);
-    for (let i = 0; i < turns + 1; i++) {
-      const rad = 30 - i * (24 / (turns + 1));
-      aEll(c, 46 - rad, 40 - rad, 46 + rad, 40 + rad, 1);
-    }
-    aEll(c, 40, 56, 96, 84, 1);
-    aRect(c, 82, 32, 88, 62, 1);
-    if (r() < 0.6) aEll(c, 78, 22, 92, 36, 1);
-    aEll(c, 34, 28, 46, 40, 0);
-    if (r() < 0.7) aEll(c, 52, 40, 62, 50, 0);
-  }],
-
-  ["Bee", (c, r) => {
-    const bands = 3 + ((r() * 2) | 0);
-    const bw = 20 + r() * 8;
-    aEll(c, 50 - bw, 34, 50 + bw, 92, 1);
-    aEll(c, 34, 12, 66, 42, 1);
-    for (let i = 0; i < 2; i++) {
-      const s = i ? 1 : -1;
-      aEll(c, 50 + s * bw - 4, 26, 50 + s * (bw + 26), 56, 1);
-    }
-    if (r() < 0.6) { aRect(c, 40, 4, 44, 16, 1); aRect(c, 56, 4, 60, 16, 1); }
-    void bands;
-    const st = 2 + ((r() * 2) | 0);
-    for (let i = 0; i < st; i++) { const y = 52 + i * 14; aRect(c, 50 - bw + 5, y, 50 + bw - 5, y + 6, 0); }
-    aEll(c, 40, 20, 47, 28, 0); aEll(c, 54, 20, 61, 28, 0);
-  }],
-
-  ["Ladybug", (c, r) => {
-    const w = 28 + r() * 10;
-    aEll(c, 50 - w, 22, 50 + w, 94, 1);
-    aEll(c, 36, 6, 64, 32, 1);
-    if (r() < 0.7) { aRect(c, 34, 6, 40, 16, 1); aRect(c, 60, 6, 66, 16, 1); }
-    const legs = r() < 0.5 ? 3 : 2;
-    for (let i = 0; i < legs; i++) {
-      const y = 40 + i * (36 / Math.max(legs, 1));
-      aRect(c, 8, y, 50 - w + 4, y + 5, 1);
-      aRect(c, 50 + w - 4, y, 92, y + 5, 1);
-    }
-    const sp = 2 + ((r() * 3) | 0);
-    for (let i = 0; i < sp; i++) { const x = 50 + (i % 2 ? 1 : -1) * (12 + (i >> 1) * 6), y = 40 + i * 13; aEll(c, x - 5, y, x + 5, y + 10, 0); }
-  }],
-
-  ["Spider", (c, r) => {
-    const br = 16 + r() * 8;
-    aEll(c, 50 - br, 40 - br, 50 + br, 40 + br, 1);
-    aEll(c, 50 - br * 1.3, 52, 50 + br * 1.3, 52 + br * 2, 1);
-    const pairs = 3 + ((r() * 2) | 0);
-    for (let i = 0; i < pairs; i++) {
-      const y = 30 + i * (44 / pairs);
-      aPoly(c, [[50 - br, y], [6, y - 8], [6, y], [50 - br, y + 6]], 1);
-      aPoly(c, [[50 + br, y], [94, y - 8], [94, y], [50 + br, y + 6]], 1);
-    }
-    aEll(c, 42, 32, 49, 40, 0); aEll(c, 52, 32, 59, 40, 0);
-  }],
-
-  ["Octopus", (c, r) => {
-    const hr = 24 + r() * 8;
-    aEll(c, 50 - hr, 6, 50 + hr, 6 + hr * 1.8, 1);
-    // Thin, unevenly long arms with real gaps between them. Fat arms at close
-    // spacing merged into one slab and the octopus lost its tentacles.
-    const arms = 3 + ((r() * 3) | 0);
-    const span = hr * 1.05;
-    for (let i = 0; i < arms; i++) {
-      const x = 50 - span + ((span * 2) / Math.max(arms - 1, 1)) * i;
-      const len = 20 + r() * 26;
-      const top = 6 + hr * 1.3;
-      aRect(c, x - 3.5, top, x + 3.5, top + len, 1);
-      if (r() < 0.55) aEll(c, x - 6, top + len - 6, x + 6, top + len + 6, 1);
-    }
-    aEll(c, 39, 28, 47, 38, 0); aEll(c, 54, 28, 62, 38, 0);
-  }],
-
-  ["House", (c, r) => {
-    const bw = 26 + r() * 10;
-    aPoly(c, [[50 - bw - 8, 44], [50, 8], [50 + bw + 8, 44]], 1);
-    aRect(c, 50 - bw, 42, 50 + bw, 94, 1);
-    if (r() < 0.6) aRect(c, 50 + bw - 22, 14, 50 + bw - 12, 34, 1);
-    if (r() < 0.7) aRect(c, 44, 66, 58, 94, 1);
-    aRect(c, 50 - bw + 5, 52, 50 - bw + 18, 66, 0);
-    aRect(c, 50 + bw - 18, 52, 50 + bw - 5, 66, 0);
-    if (r() < 0.6) aEll(c, 42, 20, 58, 36, 0);
-  }],
-
-  ["Castle", (c, r) => {
-    const towers = 2 + ((r() * 2) | 0);
-    const gap = 78 / Math.max(towers - 1, 1);
-    for (let i = 0; i < towers; i++) {
-      const x = 11 + gap * i;
-      aRect(c, x - 9, 20 + r() * 10, x + 9, 94, 1);
-      if (r() < 0.6) aPoly(c, [[x - 11, 22], [x, 6], [x + 11, 22]], 1);
-    }
-    aRect(c, 14, 52, 86, 94, 1);
-    if (r() < 0.7) aRect(c, 42, 70, 58, 94, 1);
-    for (let i = 0; i < towers; i++) { const x = 11 + gap * i; aRect(c, x - 4, 40, x + 4, 52, 0); }
-    aRect(c, 24, 60, 34, 72, 0); aRect(c, 66, 60, 76, 72, 0);
-  }],
-
-  ["Lighthouse", (c, r) => {
-    const tw = 12 + r() * 6;
-    aPoly(c, [[50 - tw, 32], [50 + tw, 32], [50 + tw + 10, 94], [50 - tw - 10, 94]], 1);
-    aRect(c, 50 - tw - 4, 22, 50 + tw + 4, 34, 1);
-    aRect(c, 50 - tw + 2, 10, 50 + tw - 2, 24, 1);
-    if (r() < 0.6) aPoly(c, [[50 - tw, 12], [50, 2], [50 + tw, 12]], 1);
-    if (r() < 0.5) aRect(c, 24, 88, 76, 96, 1);
-    aRect(c, 50 - tw + 3, 12, 50 + tw - 3, 22, 0);
-    aRect(c, 50 - 5, 48, 50 + 5, 60, 0);
-  }],
-
-  ["Windmill", (c, r) => {
-    /* Four sails at right angles, which is what a windmill has — the old
-       version placed three or four at a random rotation, each a sliver thin
-       enough for the raster to eat, on a tower wide enough to be the whole
-       picture. Tower narrowed so the sails carry the shape. */
-    const tw = 8 + r() * 3;
-    aPoly(c, [[50 - tw, 40], [50 + tw, 40], [50 + tw + 7, 96], [50 - tw - 7, 96]], 1);
-    for (let i = 0; i < 4; i++) {
-      const a = (i / 4) * Math.PI * 2 + Math.PI / 4;   // the classic X, not a random rotation
-      const ca = Math.cos(a), sa = Math.sin(a);
-      const ex = 50 + ca * 34, ey = 34 + sa * 34;
-      aPoly(c, [[50 - sa * 5, 34 + ca * 5], [ex - sa * 7, ey + ca * 7], [ex + sa * 7, ey - ca * 7], [50 + sa * 5, 34 - ca * 5]], 1);
-    }
-    aEll(c, 42, 26, 58, 42, 1);
-  }],
-
-  ["Car", (c, r) => {
-    const cabin = r() < 0.6;
-    aRect(c, 8, 48, 92, 76, 1);
-    if (cabin) aPoly(c, [[26, 48], [36, 24], [66, 24], [76, 48]], 1);
-    else aRect(c, 30, 28, 72, 50, 1);
-    aEll(c, 16, 66, 38, 92, 1);
-    aEll(c, 62, 66, 84, 92, 1);
-    if (cabin) aPoly(c, [[32, 46], [39, 30], [61, 30], [68, 46]], 0);
-    else aRect(c, 35, 32, 67, 46, 0);
-    aEll(c, 22, 72, 32, 86, 0); aEll(c, 68, 72, 78, 86, 0);
-  }],
-
-  ["Train", (c, r) => {
-    aRect(c, 10, 40, 78, 76, 1);
-    aRect(c, 56, 18, 78, 44, 1);
-    const funnel = r() < 0.7;
-    if (funnel) { aRect(c, 20, 20, 32, 44, 1); aEll(c, 16, 12, 36, 26, 1); }
-    const wheels = 2 + ((r() * 2) | 0);
-    for (let i = 0; i < wheels; i++) {
-      const x = 16 + (60 / Math.max(wheels - 1, 1)) * i;
-      aEll(c, x - 11, 70, x + 11, 94, 1);
-    }
-    if (r() < 0.5) aRect(c, 80, 46, 94, 70, 1);
-    aRect(c, 61, 24, 73, 38, 0);
-    aRect(c, 18, 48, 32, 62, 0); aRect(c, 38, 48, 52, 62, 0);
-  }],
-
-  ["Plane", (c, r) => {
-    const sweep = r() < 0.5 ? 1 : 0.6;
-    aEll(c, 42, 6, 58, 88, 1);
-    aPoly(c, [[46, 34], [4, 52 * sweep + 26], [6, 62 * sweep + 26], [46, 54]], 1);
-    aPoly(c, [[54, 34], [96, 52 * sweep + 26], [94, 62 * sweep + 26], [54, 54]], 1);
-    aPoly(c, [[46, 74], [26, 88], [26, 94], [46, 88]], 1);
-    aPoly(c, [[54, 74], [74, 88], [74, 94], [54, 88]], 1);
-    if (r() < 0.5) aEll(c, 44, 2, 56, 18, 1);
-    aEll(c, 45, 20, 55, 32, 0);
-  }],
-
-  ["Sailboat", (c, r) => {
-    const sails = r() < 0.5 ? 2 : 1;
-    aPoly(c, [[8, 72], [92, 72], [78, 94], [22, 94]], 1);
-    aRect(c, 47, 10, 53, 74, 1);
-    aPoly(c, [[50, 12], [50, 68], [16, 68]], 1);
-    if (sails === 2) aPoly(c, [[52, 22], [52, 68], [86, 68]], 1);
-    if (r() < 0.4) aRect(c, 20, 66, 80, 74, 1);
-  }],
-
-  ["Balloon", (c, r) => {
-    const w = 26 + r() * 10;
-    aEll(c, 50 - w, 4, 50 + w, 4 + w * 2.2, 1);
-    aPoly(c, [[50 - w * 0.6, 4 + w * 1.9], [50 + w * 0.6, 4 + w * 1.9], [50 + 10, 78], [50 - 10, 78]], 1);
-    if (r() < 0.8) { aRect(c, 50 - 12, 76, 50 + 12, 94, 1); }
-    else { aRect(c, 46, 76, 54, 94, 1); }
-    for (let i = 0; i < 2; i++) aEll(c, 50 - w + 6 + i * (w - 4), 14, 50 - w + 16 + i * (w - 4), 4 + w * 1.7, 0);
-  }],
-
-  ["Anchor", (c, r) => {
-    const ring = 10 + r() * 5;
-    aEll(c, 50 - ring, 2, 50 + ring, 2 + ring * 2, 1);
-    aEll(c, 50 - ring + 4, 6, 50 + ring - 4, 2 + ring * 2 - 4, 0);
-    aRect(c, 44, 12, 56, 84, 1);
-    aRect(c, 24, 26, 76, 36, 1);
-    const flukeW = 28 + r() * 10;
-    aPoly(c, [[50 - flukeW, 52], [50 - flukeW + 10, 84], [50, 94], [50 - 10, 72]], 1);
-    aPoly(c, [[50 + flukeW, 52], [50 + flukeW - 10, 84], [50, 94], [50 + 10, 72]], 1);
-  }],
-
-  ["Umbrella", (c, r) => {
-    const scallops = 3 + ((r() * 3) | 0);
-    aEll(c, 6, 12, 94, 62, 1);
-    aRect(c, 0, 44, 100, 70, 0);
-    for (let i = 0; i < scallops; i++) {
-      const cx = 10 + (80 / Math.max(scallops - 1, 1)) * i;
-      aEll(c, cx - 12, 34, cx + 12, 56, 1);
-    }
-    aRect(c, 47, 44, 53, 90, 1);
-    if (r() < 0.7) aEll(c, 36, 82, 54, 96, 1);
-    aEll(c, 44, 84, 52, 94, 0);
-  }],
-
-  ["Lamp", (c, r) => {
-    const shadeW = 28 + r() * 10;
-    aPoly(c, [[50 - shadeW * 0.55, 10], [50 + shadeW * 0.55, 10], [50 + shadeW, 46], [50 - shadeW, 46]], 1);
-    aRect(c, 46, 44, 54, 82, 1);
-    const base = r() < 0.5;
-    if (base) aEll(c, 28, 76, 72, 96, 1);
-    else aPoly(c, [[30, 96], [70, 96], [60, 78], [40, 78]], 1);
-    aRect(c, 50 - shadeW * 0.7, 26, 50 + shadeW * 0.7, 36, 0);
-  }],
-
-  ["Teapot", (c, r) => {
-    const bw = 24 + r() * 10;
-    aEll(c, 50 - bw, 34, 50 + bw, 86, 1);
-    aPoly(c, [[50 + bw - 4, 44], [94, 30], [96, 40], [50 + bw - 2, 62]], 1);
-    aEll(c, 50 - bw - 18, 46, 50 - bw + 6, 74, 1);
-    aEll(c, 50 - bw - 10, 54, 50 - bw + 2, 66, 0);
-    aRect(c, 36, 26, 64, 38, 1);
-    if (r() < 0.7) aEll(c, 44, 16, 56, 30, 1);
-  }],
-
-  ["Cupcake", (c, r) => {
-    const swirls = 2 + ((r() * 2) | 0);
-    for (let i = 0; i < swirls; i++) {
-      const w = 30 - i * 7;
-      aEll(c, 50 - w, 10 + i * 14, 50 + w, 40 + i * 12, 1);
-    }
-    aPoly(c, [[24, 52], [76, 52], [66, 94], [34, 94]], 1);
-    if (r() < 0.5) aEll(c, 45, 2, 55, 14, 1);
-    for (let i = 0; i < 3; i++) aRect(c, 32 + i * 13, 58, 36 + i * 13, 88, 0);
-  }],
-
-  ["Donut", (c, r) => {
-    const outer = 34 + r() * 10, inner = 10 + r() * 7;
-    aEll(c, 50 - outer, 50 - outer, 50 + outer, 50 + outer, 1);
-    aEll(c, 50 - inner, 50 - inner, 50 + inner, 50 + inner, 0);
-    if (r() < 0.5) aEll(c, 50 - outer, 50 - outer, 50 + outer, 26, 1);
-  }],
-
-  ["Ice Cream", (c, r) => {
-    const scoops = 1 + ((r() * 3) | 0);
-    for (let i = 0; i < scoops; i++) {
-      const w = 24 - i * 3;
-      aEll(c, 50 - w, 6 + i * 16, 50 + w, 6 + i * 16 + w * 1.8, 1);
-    }
-    const coneTop = 12 + scoops * 18;
-    aPoly(c, [[50 - 22, coneTop], [50 + 22, coneTop], [50, 96]], 1);
-    for (let i = 0; i < 2; i++) aRect(c, 38 + i * 14, coneTop + 10, 44 + i * 14, coneTop + 26, 0);
-  }],
-
-  ["Apple", (c, r) => {
-    const w = 28 + r() * 10;
-    aEll(c, 50 - w, 22, 50 - 2, 92, 1);
-    aEll(c, 50 + 2, 22, 50 + w, 92, 1);
-    aEll(c, 50 - w * 0.8, 26, 50 + w * 0.8, 90, 1);
-    aRect(c, 47, 6, 53, 28, 1);
-    if (r() < 0.7) aEll(c, 52, 8, 78, 26, 1);
-    if (r() < 0.5) aEll(c, 50 + w - 12, 40, 50 + w + 6, 62, 0);
-    aEyes(c, 50, 54, 0, 9);
-  }],
-
-  ["Cactus", (c, r) => {
-    const tw = 11 + r() * 6;
-    aRect(c, 50 - tw, 12, 50 + tw, 96, 1);
-    const left = r() < 0.75, right = r() < 0.75;
-    if (left) { aRect(c, 18, 40, 50, 52, 1); aRect(c, 18, 24, 30, 48, 1); }
-    if (right) { aRect(c, 50, 54, 82, 66, 1); aRect(c, 70, 34, 82, 62, 1); }
-    if (!left && !right) { aRect(c, 22, 46, 50, 58, 1); aRect(c, 22, 30, 34, 54, 1); }
-    aRect(c, 50 - 3, 30, 50 + 3, 86, 0);
-  }],
-
-  ["Mountain", (c, r) => {
-    const peaks = 2 + ((r() * 2) | 0);
-    for (let i = 0; i < peaks; i++) {
-      const cx = 22 + (56 / Math.max(peaks - 1, 1)) * i;
-      const h = 14 + r() * 24;
-      aPoly(c, [[cx - 34, 94], [cx, h], [cx + 34, 94]], 1);
-    }
-    if (r() < 0.5) aRect(c, 4, 88, 96, 96, 1);
-  }],
-
-  ["Cloud", (c, r) => {
-    const lobes = 3 + ((r() * 3) | 0);
-    const base = 66;
-    for (let i = 0; i < lobes; i++) {
-      const cx = 14 + (72 / Math.max(lobes - 1, 1)) * i;
-      // Wide radius spread is what gives the top its bumps; uniform lobes
-      // merged into a straight edge.
-      const rad = 10 + r() * 22;
-      aEll(c, cx - rad, base - rad * 1.9, cx + rad, base + rad * 0.25, 1);
-    }
-    aRect(c, 18, base - 12, 82, base + 5, 1);
-    aEyes(c, 50, 52, 18, 7);
-  }],
-
-  ["Star", (c, r) => {
-    const pts = 5 + ((r() * 2) | 0) * 2;
-    const R = 46, ir = R * (0.36 + r() * 0.14);
-    const poly = [];
-    for (let i = 0; i < pts * 2; i++) {
-      const a = (i / (pts * 2)) * Math.PI * 2 - Math.PI / 2;
-      const rad = i % 2 ? ir : R;
-      poly.push([50 + Math.cos(a) * rad, 50 + Math.sin(a) * rad]);
-    }
-    aPoly(c, poly, 1);
-    aEyes(c, 50, 48, 0, 10);
-  }],
-
-  ["Heart", (c, r) => {
-    const w = 24 + r() * 8;
-    aEll(c, 50 - w * 2, 12, 50, 12 + w * 2, 1);
-    aEll(c, 50, 12, 50 + w * 2, 12 + w * 2, 1);
-    aPoly(c, [[50 - w * 2, 34], [50 + w * 2, 34], [50, 94]], 1);
-    aEyes(c, 50, 46, 0, 11);
-  }],
-
-  ["Moon", (c, r) => {
-    const R = 44, bite = 22 + r() * 12;
-    aEll(c, 50 - R, 50 - R, 50 + R, 50 + R, 1);
-    aEll(c, 50 - R + bite, 50 - R - 5, 50 + R + bite, 50 + R + 5, 0);
-    aEyes(c, 56, 40, 0, 9);
-  }],
-
-  ["Bell", (c, r) => {
-    const w = 26 + r() * 10;
-    aEll(c, 50 - w, 16, 50 + w, 82, 1);
-    aRect(c, 50 - w, 50, 50 + w, 80, 1);
-    aRect(c, 50 - w - 8, 76, 50 + w + 8, 88, 1);
-    if (r() < 0.7) aEll(c, 44, 88, 56, 98, 1);
-    if (r() < 0.6) aRect(c, 46, 6, 54, 20, 1);
-    aRect(c, 50 - w + 6, 60, 50 + w - 6, 70, 0);
-  }],
-
-  ["Gift", (c, r) => {
-    aRect(c, 12, 34, 88, 94, 1);
-    aRect(c, 8, 24, 92, 38, 1);
-    // Ribbon read as a hairline at this grid size, so the box looked like a
-    // plain slab. Notches are now wide enough to survive the rasteriser, and
-    // stop short of the base so the two halves stay joined.
-    aRect(c, 42, 20, 58, 33, 0);
-    aRect(c, 40, 44, 60, 60, 0);
-    aRect(c, 4, 44, 22, 58, 0);
-    aRect(c, 78, 44, 96, 58, 0);
-    const bow = 13 + r() * 8;
-    aEll(c, 50 - bow * 2, 22 - bow, 50 - 2, 27 + bow * 0.4, 1);
-    aEll(c, 50 + 2, 22 - bow, 50 + bow * 2, 27 + bow * 0.4, 1);
-  }],
-
-  ["Camera", (c, r) => {
-    aRect(c, 10, 32, 90, 84, 1);
-    aRect(c, 32, 20, 60, 34, 1);
-    // Corners cut away and the lens always hollow — a plain filled rectangle
-    // is indistinguishable from every other boxy subject.
-    aPoly(c, [[10, 32], [22, 32], [10, 44]], 0);
-    aPoly(c, [[90, 32], [78, 32], [90, 44]], 0);
-    aPoly(c, [[10, 84], [22, 84], [10, 72]], 0);
-    aPoly(c, [[90, 84], [78, 84], [90, 72]], 0);
-    const lens = 15 + r() * 7;
-    aEll(c, 50 - lens, 58 - lens, 50 + lens, 58 + lens, 1);
-    aEll(c, 50 - lens * 0.6, 58 - lens * 0.6, 50 + lens * 0.6, 58 + lens * 0.6, 0);
-    if (r() < 0.6) aRect(c, 68, 38, 84, 48, 0);
-  }],
-
-  ["Guitar", (c, r) => {
-    const lower = 26 + r() * 8, upper = lower * (0.66 + r() * 0.16);
-    aEll(c, 50 - lower, 52, 50 + lower, 96, 1);
-    aEll(c, 50 - upper, 26, 50 + upper, 66, 1);
-    aRect(c, 45, 4, 55, 40, 1);
-    if (r() < 0.7) aRect(c, 41, 0, 59, 12, 1);
-    if (r() < 0.6) aEll(c, 42, 58, 58, 74, 0);
-    aEll(c, 41, 56, 59, 74, 0);
-    aRect(c, 46, 14, 54, 22, 0);
-  }],
-
-  ["Book", (c, r) => {
-    aRect(c, 10, 12, 90, 82, 1);
-    aRect(c, 45, 10, 55, 78, 0);
-    aRect(c, 8, 78, 92, 94, 1);
-    // Page marks bite in from the outer edges only, so they can never cut a
-    // cover in half.
-    const pages = 2 + ((r() * 3) | 0);
-    for (let i = 0; i < pages; i++) {
-      const y = 26 + i * (44 / pages);
-      aRect(c, 4, y, 20, y + 5, 0);
-      aRect(c, 80, y, 96, y + 5, 0);
-    }
-  }],
-
-  ["Clock", (c, r) => {
-    const R = 36 + r() * 8;
-    aEll(c, 50 - R, 50 - R, 50 + R, 50 + R, 1);
-    aEll(c, 50 - R + 9, 50 - R + 9, 50 + R - 9, 50 + R - 9, 0);
-    // The hands must reach into the rim, otherwise they are a separate island
-    // and the largest-island cull deletes them.
-    aRect(c, 46, 50 - R + 4, 54, 54, 1);
-    aRect(c, 50, 46, 50 + R - 4, 54, 1);
-    if (r() < 0.6) { aRect(c, 28, 50 - R - 8, 40, 50 - R + 4, 1); aRect(c, 60, 50 - R - 8, 72, 50 - R + 4, 1); }
-    if (r() < 0.4) { aRect(c, 30, 50 + R - 4, 40, 50 + R + 8, 1); aRect(c, 60, 50 + R - 4, 70, 50 + R + 8, 1); }
-  }],
-
-  ["Hourglass", (c, r) => {
-    const w = 26 + r() * 10;
-    aRect(c, 50 - w - 6, 6, 50 + w + 6, 18, 1);
-    aRect(c, 50 - w - 6, 82, 50 + w + 6, 94, 1);
-    aPoly(c, [[50 - w, 16], [50 + w, 16], [50 + 5, 50], [50 - 5, 50]], 1);
-    aPoly(c, [[50 - w, 84], [50 + w, 84], [50 + 5, 50], [50 - 5, 50]], 1);
-    aPoly(c, [[50 - w + 5, 22], [50 + w - 5, 22], [50 + 3, 44], [50 - 3, 44]], 0);
-    aEyes(c, 50, 26, 0, 10);
-    aEyes(c, 50, 74, 0, 10);
-  }],
-
-  ["Robot", (c, r) => {
-    const hw = 18 + r() * 8;
-    aRect(c, 50 - hw, 14, 50 + hw, 42, 1);
-    const bw = 24 + r() * 8;
-    aRect(c, 50 - bw, 42, 50 + bw, 78, 1);
-    aRect(c, 50 - bw - 12, 46, 50 - bw, 72, 1);
-    aRect(c, 50 + bw, 46, 50 + bw + 12, 72, 1);
-    aRect(c, 50 - bw + 4, 78, 50 - 6, 96, 1);
-    aRect(c, 50 + 6, 78, 50 + bw - 4, 96, 1);
-    if (r() < 0.6) aRect(c, 47, 4, 53, 16, 1);
-    aEll(c, 50 - hw + 5, 20, 50 - 3, 32, 0); aEll(c, 50 + 3, 20, 50 + hw - 5, 32, 0);
-    aRect(c, 50 - bw + 7, 50, 50 + bw - 7, 66, 0);
-  }],
-
-  ["Ghost", (c, r) => {
-    const w = 28 + r() * 8;
-    aEll(c, 50 - w, 6, 50 + w, 6 + w * 1.8, 1);
-    aRect(c, 50 - w, 6 + w, 50 + w, 86, 1);
-    // Deep notches cut up from the bottom edge give the scalloped hem. Shallow
-    // ones vanished at this grid size and left a plain slab.
-    const waves = 2 + ((r() * 3) | 0);
-    const step = (w * 2) / waves;
-    for (let i = 1; i <= waves - 1; i++) {
-      const cx = 50 - w + step * i;
-      aPoly(c, [[cx - step * 0.34, 100], [cx, 52], [cx + step * 0.34, 100]], 0);
-    }
-    aEll(c, 50 - w * 0.62, 24, 50 - w * 0.14, 48, 0);
-    aEll(c, 50 + w * 0.14, 24, 50 + w * 0.62, 48, 0);
-  }],
-
-  ["Dino", (c, r) => {
-    const bw = 24 + r() * 8;
-    aEll(c, 50 - bw, 40, 50 + bw, 82, 1);
-    aEll(c, 8, 14, 44, 44, 1);
-    aRect(c, 20, 30, 40, 54, 1);
-    aPoly(c, [[50 + bw - 6, 50], [96, 74], [96, 84], [50 + bw - 6, 72]], 1);
-    aRect(c, 34, 74, 46, 96, 1);
-    aRect(c, 56, 74, 68, 96, 1);
-    if (r() < 0.6) for (let i = 0; i < 3; i++) aPoly(c, [[42 + i * 14, 42], [48 + i * 14, 26], [54 + i * 14, 42]], 1);
-    aEll(c, 16, 22, 25, 31, 0);
-  }],
-
-  ["Kite", (c, r) => {
-    const w = 30 + r() * 10;
-    aPoly(c, [[50, 4], [50 + w, 40], [50, 78], [50 - w, 40]], 1);
-    const tail = 2 + ((r() * 3) | 0);
-    for (let i = 0; i < tail; i++) {
-      const y = 78 + i * 7;
-      aEll(c, 46 - i * 2, y, 56 + i * 2, y + 8, 1);
-    }
-    aEll(c, 50 - 7, 30, 50 + 7, 46, 0);
-  }],
-
-  ["Pencil", (c, r) => {
-    const w = 17 + r() * 8;
-    aPoly(c, [[50 - w, 26], [50 + w, 26], [50, 2]], 1);
-    aRect(c, 50 - w, 24, 50 + w, 78, 1);
-    // Ferrule notches and a wider eraser keep it from reading as a bare bar.
-    aRect(c, 50 - w - 3, 76, 50 + w + 3, 96, 1);
-    aRect(c, 50 - w - 3, 74, 50 - w + 3, 82, 0);
-    aRect(c, 50 + w - 3, 74, 50 + w + 3, 82, 0);
-    if (r() < 0.6) { aPoly(c, [[50 - w, 20], [50 - w + 7, 20], [50 - w + 3, 10]], 0); aPoly(c, [[50 + w, 20], [50 + w - 7, 20], [50 + w - 3, 10]], 0); }
-  }],
-
-  ["Trophy", (c, r) => {
-    const w = 24 + r() * 8;
-    aEll(c, 50 - w, 8, 50 + w, 56, 1);
-    aRect(c, 50 - w, 8, 50 + w, 32, 1);
-    if (r() < 0.8) {
-      aEll(c, 50 - w - 18, 16, 50 - w + 4, 46, 1);
-      aEll(c, 50 - w - 10, 24, 50 - w + 2, 38, 0);
-      aEll(c, 50 + w - 4, 16, 50 + w + 18, 46, 1);
-      aEll(c, 50 + w - 2, 24, 50 + w + 10, 38, 0);
-    }
-    aRect(c, 44, 54, 56, 76, 1);
-    aRect(c, 28, 74, 72, 84, 1);
-    aRect(c, 20, 84, 80, 96, 1);
-    aRect(c, 50 - w + 6, 16, 50 + w - 6, 26, 0);
-  }],
-
-  ["Lantern", (c, r) => {
-    const w = 22 + r() * 8;
-    aRect(c, 50 - w - 7, 16, 50 + w + 7, 26, 1);
-    aRect(c, 50 - w, 24, 50 + w, 80, 1);
-    aRect(c, 50 - w - 7, 78, 50 + w + 7, 90, 1);
-    // Panes always cut out; the side posts keep top and base joined.
-    const panes = 1 + ((r() * 2) | 0);
-    for (let i = 0; i < panes; i++) {
-      const y0 = 32 + i * (44 / panes), y1 = y0 + 44 / panes - 6;
-      aRect(c, 50 - w + 6, y0, 50 + w - 6, y1, 0);
-    }
-    if (r() < 0.7) aEll(c, 50 - 11, 2, 50 + 11, 20, 1);
-  }],
-
-  ["Pyramid", (c, r) => {
-    const steps = 3 + ((r() * 3) | 0);
-    for (let i = 0; i < steps; i++) {
-      const w = 10 + (38 * (i + 1)) / steps;
-      const y0 = 90 - ((i + 1) * 78) / steps, y1 = 92 - (i * 78) / steps;
-      aRect(c, 50 - w, y0, 50 + w, y1, 1);
-    }
-    aRect(c, 44, 62, 56, 92, 0);
-  }],
-
-  ["Bicycle", (c, r) => {
-    const R = 22 + r() * 6;
-    aEll(c, 4, 68 - R, 4 + R * 2, 68 + R, 1);
-    aEll(c, 96 - R * 2, 68 - R, 96, 68 + R, 1);
-    aEll(c, 12, 68 - R + 8, 4 + R * 2 - 8, 68 + R - 8, 0);
-    aEll(c, 96 - R * 2 + 8, 68 - R + 8, 88, 68 + R - 8, 0);
-    // Bottom bar joins the two wheels. Without it the frame sometimes missed a
-    // wheel and half the bicycle was culled away.
-    aRect(c, 4 + R, 64, 96 - R, 72, 1);
-    aPoly(c, [[4 + R, 62], [48, 32], [58, 38], [4 + R + 10, 70]], 1);
-    aPoly(c, [[96 - R, 62], [48, 32], [58, 38], [96 - R - 10, 70]], 1);
-    if (r() < 0.6) aRect(c, 38, 26, 62, 34, 1);
-  }],
-
-  ["Dolphin", (c, r) => {
-    const bh = 16 + r() * 8;
-    aEll(c, 8, 44 - bh, 76, 44 + bh, 1);
-    aPoly(c, [[40, 44 - bh + 4], [54, 44 - bh - 22], [64, 44 - bh + 4]], 1);
-    aPoly(c, [[68, 44], [98, 26], [88, 44], [98, 66]], 1);
-    aPoly(c, [[26, 44 + bh - 4], [34, 44 + bh + 18], [48, 44 + bh - 2]], 1);
-    if (r() < 0.6) aEll(c, 2, 40, 20, 54, 1);
-    aEll(c, 16, 38, 25, 47, 0);
-  }],
 ];
 
-/* Subjects seen head-on, where the two halves really do match. Everything not
-   listed is drawn side-on (fish, car, train, guitar, crescent moon) and is
-   left exactly as rasterised. */
-const SYMMETRIC = new Set([
-  "Cat", "Dog", "Tree", "Flower", "Vessel", "Crown", "Rocket", "Mushroom",
-  "Butterfly", "Owl", "Bear", "Fox", "Frog", "Bee", "Ladybug", "Spider",
-  "Octopus", "Penguin", "Elephant", "Turtle", "Crab", "Rabbit", "House",
-  "Castle", "Lighthouse", "Balloon", "Umbrella", "Lamp", "Cupcake", "Donut",
-  "Ice Cream", "Apple", "Cactus", "Cloud", "Star", "Heart", "Bell", "Gift",
-  "Robot", "Ghost", "Kite", "Trophy", "Lantern", "Pyramid", "Hourglass",
-  "Clock", "Camera", "Book", "Plane", "Anchor", "Pencil",
-  /* The new head-on subjects. Anything drawn facing the viewer has to be
-     mirrored or the raster leaves one side a cell or two off, which reads as a
-     mistake rather than as a hand-drawn wobble. Side-on subjects (Swan, Horse,
-     Squirrel, Duck, Sheep, Snail Shell, Key, Mug, Bucket, Leaf, Wave, Snake)
-     are deliberately left out — mirroring those would make them meaningless. */
-  "Deer", "Windmill Sail", "Chess Piece", "Candle", "Envelope",
-  "Feather", "Sunburst", "Gemstone", "Windmill",
-  /* Head-on again. Side-on subjects are deliberately absent: mirroring a Shark,
-     Rooster, Flamingo, Shrimp, Seahorse, Cow, Hammer, Paintbrush, Telescope,
-     Scorpion, Ant, Chair, Cherry, Grapes or Palm Tree would destroy what makes
-     them readable. */
-  "Panda", "Koala", "Monkey", "Lion", "Pig", "Bat", "Mouse", "Starfish",
-  "Jellyfish", "Clam", "Dragonfly", "Tulip", "Sunflower", "Pine Tree", "Acorn",
-  "Wheat", "Strawberry", "Pineapple", "Watermelon", "Carrot", "Corn",
-  "Pretzel", "Lollipop", "Bottle", "Wine Glass", "Basket", "Ladder",
-  "Scissors", "Ship Wheel", "Microphone", "Television",
-  /* Head-on once more. Left out on purpose: Camel, Kangaroo, Goat, Llama,
-     Pelican, Lizard, Crocodile, Grasshopper, Banana, Croissant, Chili, Cheese,
-     Pan, Saw, Kettle and Boot all read by their profile, and mirroring any of
-     them would turn it into a meaningless blob. */
-  "Raccoon", "Wolf", "Peacock", "Eagle", "Beetle", "Moth", "Rose", "Daisy",
-  "Lotus", "Bamboo", "Fern", "Pumpkin", "Lemon", "Peach", "Avocado",
-  "Bread Loaf", "Egg", "Spoon", "Jar", "Barrel", "Chest", "Suitcase",
-  "Backpack", "Glasses", "Wrench", "Gear", "Bulb", "Fan", "Stone Arch",
-  "Tent", "Barn", "Well", "Watchtower",
-]);
-
-const ART_ADJ = ["Little", "Broad", "Tall", "Round", "Slim", "Wide", "Bold", "Fine", "Grand", "Neat",
-                 "Quiet", "Bright", "Old", "Young", "Proud", "Soft", "Sharp", "Deep", "Pale", "Warm"];
-
-/* Picking a family at random let the same subject land on back-to-back levels
-   and left others unseen for ages. Walk a shuffled rotation instead: every
-   subject appears once before any repeats, and the order changes each lap. */
-function familyOrder(lap) {
-  const order = ART_FAMILIES.map((_, i) => i);
-  const r = mulberry32(lap * 6367 + 41);
-  for (let i = order.length - 1; i > 0; i--) {
-    const j = (r() * (i + 1)) | 0;
-    [order[i], order[j]] = [order[j], order[i]];
-  }
-  return order;
-}
+const ART_ADJ = ["Little", "Broad", "Tall", "Round", "Slim", "Wide", "Bold", "Fine", "Grand", "Neat"];
 
 function artMask(seed) {
-  const n = ART_FAMILIES.length;
-  const pos = ((seed % n) + n) % n;
-  const lap = Math.floor(seed / n);
   for (let attempt = 0; attempt < 12; attempt++) {
     const r = mulberry32(seed * 2654435761 + attempt * 97);
-    // Attempt 0 takes the rotation's turn. Retries step BACKWARDS, into
-    // subjects already used, because stepping forwards borrowed the next
-    // level's turn and that was the cause of almost every repeat in a row.
-    const [name, draw] = ART_FAMILIES[familyOrder(lap)[((pos - attempt) % n + n) % n]];
-    /* Drawn bigger than before. Detail is limited by how many cells a feature
-       spans, so an eye that could not read at 18 cells reads fine at 26 — and
-       the tiers allow up to 740 cells, so 430 was leaving room unused. More
-       resolution is the only thing that actually buys finer shapes. */
-    /* Drawn at the resolution the board now uses. Detail is a function of how
-       many cells a feature spans, so this is the only thing that actually buys
-       a finer shape — an eye that cannot read at 18 cells reads easily at 40. */
-    const size = 26 + ((r() * 9) | 0);
-
-    /* Draw twice. The first pass only measures where the drawing landed; the
-       second redraws it scaled to fill the grid. Shapes are written by hand
-       against a 0-100 canvas and most of them use nowhere near all of it, so
-       they were being rasterised at whatever fraction they happened to occupy —
-       grids ran from 19 cells to 33 for no reason but how the author placed the
-       coordinates. Fewer cells means a cat's ear is two pixels and a face has
-       nowhere to go. Filling the grid gives every shape, including every shape
-       added later, the most resolution its features can get.
-
-       The random values are captured on the first pass and replayed on the
-       second, so both passes draw the identical shape — a fresh r() would
-       redraw a different animal at the fitted scale. */
-    const tape = [];
-    const rec = () => { const v = r(); tape.push(v); return v; };
-    let c = ArtCanvas(size, 3);
-    draw(c, rec);
-
-    const ext = aExtent(c);
-    if (ext) {
-      const w = ext.x1 - ext.x0, h = ext.y1 - ext.y0;
-      if (w > 1 && h > 1) {
-        const k = Math.min(96 / w, 96 / h);
-        // cap the stretch: a drawing already close to full size gains nothing,
-        // and a large multiplier would push thin features past the grid anyway
-        const kk = Math.max(1, Math.min(k, 1.9));
-        let i = 0;
-        const play = () => tape[i++ % tape.length];
-        const c2 = ArtCanvas(size, 3);
-        c2.k = kk;
-        c2.ox = 50 - ((ext.x0 + ext.x1) / 2) * kk;
-        c2.oy = 50 - ((ext.y0 + ext.y1) / 2) * kk;
-        draw(c2, play);
-        if (aExtent(c2)) c = c2;
-      }
-    }
-
-    /* Smooth first, then seam. The other way round, aSmooth ran after the parts
-       had been separated and shaved the bridges holding them together back to a
-       single cell — a boot came out as a block and a foot joined by a thread.
-       Seaming last means the lines and the bridges are exactly as drawn.
-       Mirroring stays after the seams because the part map is indexed against
-       the unmirrored grid. */
-    let grid = aSmooth(aHarvest(c, 0.42));
-    grid = aRejoin(aSeams(c, grid));
-    if (SYMMETRIC.has(name)) grid = aMirror(grid);
-    const m = aTidy(grid);
+    const [name, draw] = ART_FAMILIES[(r() * ART_FAMILIES.length) | 0];
+    const size = 18 + ((r() * 9) | 0);
+    const c = ArtCanvas(size, 3);
+    draw(c, r);
+    const m = aTidy(aHarvest(c, 0.42));
     if (!m) continue;
-    if (m.cells.size < 200 || m.cells.size > 640) continue;
+    if (m.cells.size < 90 || m.cells.size > 430) continue;
     if (m.cols < 9 || m.rows < 9) continue;
     return { ...m, name: `${ART_ADJ[(seed * 7) % ART_ADJ.length]} ${name}`, procedural: true };
   }
@@ -2808,237 +549,24 @@ function step(idx, dx, dy, cols, rows) {
   return r * cols + c;
 }
 
-/* An exit lane. With deflectors on the board a lane is no longer a straight
-   ray: it turns 90° at each one, so reading a board becomes tracing a path
-   rather than sighting down a line.
-
-   A deflector reflects the direction vector — "/" sends (dx,dy) to (-dy,-dx),
-   "\" sends it to (dy,dx). That one rule covers all eight directions: a
-   diagonal running parallel to the mirror passes straight through, and a
-   perpendicular one is turned back.
-
-   Turning back can loop forever between two mirrors, so the walk remembers
-   every cell-and-direction it has been in. Revisiting one means the arrow can
-   never leave, and the caller gets null. */
-function exitLine(head, d, cols, rows, mirrors) {
+function exitLine(head, d, cols, rows) {
+  const D = DIRS[d];
   const out = [];
   let cur = head;
-  let dir = d;
-  const seen = mirrors && mirrors.size ? new Set() : null;
   for (;;) {
-    const D = DIRS[dir];
     cur = step(cur, D.dx, D.dy, cols, rows);
-    if (cur === null) return out;          // off the board — escaped
+    if (cur === null) return out;
     out.push(cur);
-    if (!seen) continue;
-    const m = mirrors.get(cur);
-    if (m) {
-      const key = cur * 8 + DIR_NAMES.indexOf(dir);
-      if (seen.has(key)) return null;      // caught in a loop, never escapes
-      seen.add(key);
-      const D2 = DIRS[dir];
-      dir = dirFromVec(m === "/" ? -D2.dy : D2.dy, m === "/" ? -D2.dx : D2.dx);
-      if (!dir) return null;
-    }
   }
 }
 
-const VEC_TO_DIR = (() => {
-  const m = new Map();
-  for (const n of DIR_NAMES) m.set(DIRS[n].dx * 3 + DIRS[n].dy, n);
-  return m;
-})();
-function dirFromVec(dx, dy) {
-  return VEC_TO_DIR.get(dx * 3 + dy) || null;
-}
-
-/* Where a piece's body would start, growing backwards from its head. Bodies are
-   always orthogonal, so a diagonal exit reports whichever of its two orthogonal
-   components is open. */
-function orthoBack(head, D, cols, rows) {
-  if (!(D.dx && D.dy)) return step(head, -D.dx, -D.dy, cols, rows);
-  return step(head, -D.dx, 0, cols, rows) ?? step(head, 0, -D.dy, cols, rows);
-}
-
-/* Everything the four-step tutorial does not cover. Each one turned up with no
-   announcement at all: the shield simply appeared in the corner, diagonals
-   just pointed a new way, sealed arrows faded out, deflectors bent a path.
-   Each gets one line, once, the first time the player meets it.
-
-   `when` is checked against the live board and run state, so a tip can be
-   triggered by something happening (a shield being earned) as well as by
-   something being present on the board. Listed roughly in the order they come
-   up in a normal run. */
-/* The guide and the one-time banners read from the same list. A banner shows
-   once and is gone forever, so a player who forgets what a deflector does, or
-   meets "rescue" for the second time three weeks later, has nowhere to look —
-   and a game that introduces nine separate ideas with no reference is one a
-   player gives up on rather than asks about. `title` and `how` are what the
-   guide shows; `text` is the banner. Keeping them in one place means the two
-   can never end up saying different things.
-
-   `art` names a tiny diagram drawn by GuideArt below: a picture of a deflector
-   turning an arrow teaches it faster than a sentence can. */
-const MECHANIC_TIPS = [
-  { key: "combo", title: "Combo", art: "combo",
-    how: "Every arrow you clear without a mistake adds to a run. The longer the run, the more each one scores. A single blocked tap resets it to zero.",
-    when: (c) => c.combo >= 3,
-    text: "Clearing arrows without a mistake builds a combo — each one in a row is worth more." },
-  { key: "shield", title: "Shield", art: "shield",
-    how: "A shield absorbs one mistake. Instead of losing a life you lose the shield, and your combo survives. You earn them by playing cleanly.",
-    when: (c) => c.shield,
-    text: "You earned a shield. It takes the hit for your next mistake instead of a life." },
-  { key: "diag", title: "Diagonal arrows", art: "diag",
-    how: "Most arrows leave straight up, down, left or right. A diagonal one leaves at forty-five degrees — its body still runs straight, only its way out is angled. Hold it to see the path.",
-    when: (c) => c.pieces.some((p) => DIAG_NAMES.includes(p.dir)),
-    text: "Arrows can travel diagonally now. Hold one to trace where it will go." },
-  { key: "seal", title: "Sealed arrows", art: "seal",
-    how: "A faded arrow is sealed and cannot be tapped. It opens by itself the moment the one arrow it is waiting on leaves the board. Find that one first.",
-    when: (c) => c.pieces.some((p) => p.needs !== undefined),
-    text: "Faded arrows are sealed shut. One opens only after the arrow it waits on has gone." },
-  { key: "mirror", title: "Deflectors", art: "mirror",
-    how: "A bar sitting on the board turns any arrow that reaches it ninety degrees. The arrow then carries on in the new direction, so its way out bends. Hold the arrow to trace the whole path.",
-    when: (c) => c.mirrors.size > 0,
-    text: "A bar turns an arrow ninety degrees. Its way out bends — hold it to follow the path." },
-
-  /* One tip per goal, shown the first time that goal appears. A level that
-     quietly asks something different from the last one, with no explanation,
-     reads as the game being broken rather than as a new idea — the player taps
-     the way they always have and fails for a reason nobody told them. */
-  { key: "goal-par", title: "Goal: taps", art: "goal",
-    how: "The board counts every tap, including ones that hit a blocked arrow. Clear it within the limit shown in the header. An undo does not give the tap back.",
-    when: (c) => c.goal.kind === "par",
-    text: "This one counts taps. You have a few to spare — a blocked arrow spends one too." },
-  { key: "goal-time", title: "Goal: time", art: "goal",
-    how: "A countdown runs while you play. Reaching zero ends the board the same way running out of lives does.",
-    when: (c) => c.goal.kind === "time",
-    text: "The clock is running on this board. Clear it before time is up." },
-  { key: "goal-chain", title: "Goal: chain", art: "goal",
-    how: "You need one unbroken run of that many arrows at some point in the board. It does not have to be the whole level — one clean stretch is enough.",
-    when: (c) => c.goal.kind === "chain",
-    text: "This board wants a chain: clear that many arrows in a row without a single mistake." },
-  { key: "goal-rescue", title: "Goal: rescue", art: "goal",
-    how: "One arrow is buried and marked. Getting that one off the board is what wins; the others matter only as far as they block it.",
-    when: (c) => c.goal.kind === "rescue",
-    text: "One arrow is marked. Free that one to win — the rest are only in its way." },
-  { key: "goal-flawless", title: "Goal: flawless", art: "goal",
-    how: "No mistakes at all. You still have lives, so a slip does not end the board — but it does cost the rank. Trace each path to the edge before you tap.",
-    when: (c) => c.goal.kind === "flawless",
-    text: "No mistakes allowed on this one. Trace each path to the edge before you tap." },
-  { key: "gridlock", title: "Gridlock", art: "grid",
-    how: "A separate mode with its own rounds. The board is a full rectangle with no picture in it, which leaves far fewer arrows able to move on the first turn — it is the harder game, and it does not add to your collection.",
-    when: (c) => c.gridlock,
-    text: "Gridlock is a full board with no picture in it — fewer ways to start, and far less room to guess." },
-];
-
-/* One place that turns a goal into what the player sees, so the banner, the
-   HUD and the win card can never disagree about what a level is asking. */
-function goalLabel(goal) {
-  if (!goal) return null;
-  switch (goal.kind) {
-    case "par": return { short: `${goal.taps} taps`, full: `Clear it in ${goal.taps} taps` };
-    case "time": return { short: `${goal.secs}s`, full: `Clear it in ${goal.secs} seconds` };
-    case "chain": return { short: `chain ${goal.chain}`, full: `Build a chain of ${goal.chain}` };
-    case "rescue": return { short: "rescue", full: "Free the marked arrow" };
-    case "flawless": return { short: "flawless", full: "Clear it without a mistake" };
-    default: return null;
-  }
-}
-
-/* Did the board meet what it asked? Read at the moment it clears. */
-function goalMet(goal, r) {
-  if (!goal || goal.kind === "clear") return true;
-  switch (goal.kind) {
-    case "par": return r.taps <= goal.taps;
-    case "time": return r.elapsed <= goal.secs;
-    case "chain": return r.peakChain >= goal.chain;
-    case "rescue": return r.rescued;
-    case "flawless": return r.mistakes === 0;
-    default: return true;
-  }
-}
-
-/* A small picture per guide entry. A deflector bending an arrow is understood
-   from one glance at the bend; the same thing in a sentence is read twice. */
-function GuideArt({ kind, C }) {
-  const W = 72, H = 40, w = 3.2;
-  const line = (d, col, extra = {}) => (
-    <path d={d} stroke={col} strokeWidth={w} strokeLinecap="round" strokeLinejoin="round" fill="none" {...extra} />
-  );
-  const head = (x, y, rot) => (
-    <path d={`M ${x - 5} ${y - 4} L ${x} ${y} L ${x - 5} ${y + 4}`} transform={`rotate(${rot} ${x} ${y})`}
-          stroke={C.ink} strokeWidth={w} strokeLinecap="round" strokeLinejoin="round" fill="none" />
-  );
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} width={W} height={H} aria-hidden="true">
-      {kind === "diag" && (<>{line(`M 10 30 L 40 30`, C.ink)}{head(46, 24, -45)}{line(`M 40 30 L 45 25`, C.ink)}</>)}
-      {kind === "seal" && (<>{line(`M 8 14 L 30 14`, C.ink)}{head(34, 14, 0)}{line(`M 8 28 L 30 28`, C.sealed)}{head(34, 28, 0)}</>)}
-      {kind === "mirror" && (<>
-        {line(`M 8 12 L 44 12 L 44 30`, C.ink)}{head(44, 34, 90)}
-        {line(`M 38 6 L 50 18`, C.sealed)}
-      </>)}
-      {kind === "combo" && (<>{line(`M 8 20 L 22 20`, C.go)}{line(`M 28 20 L 42 20`, C.go)}{line(`M 48 20 L 62 20`, C.go)}</>)}
-      {kind === "shield" && (<>{line(`M 36 8 L 50 14 L 50 24 L 36 34 L 22 24 L 22 14 Z`, C.flow)}</>)}
-      {kind === "goal" && (<>{line(`M 12 20 L 30 20`, C.ink)}{head(34, 20, 0)}{line(`M 44 12 L 60 12 M 44 20 L 60 20 M 44 28 L 54 28`, C.muted)}</>)}
-      {kind === "grid" && (<>
-        {[0, 1, 2].map((r) => [0, 1, 2, 3].map((c2) => (
-          <rect key={`${r}${c2}`} x={10 + c2 * 13} y={6 + r * 11} width={9} height={7} rx={2} fill={C.line} />
-        )))}
-      </>)}
-    </svg>
-  );
-}
-
-/* The cheapest thing that satisfies the shape of a level. Never played: the
-   boot screen renders instead, and a real board replaces this before the app
-   is interactive. */
-const BOOT_SETUP = {
-  mask: { cols: 3, rows: 3, cells: new Set([1, 3, 4, 5, 7]), name: "", procedural: false },
-  pieces: [], tier: { name: "", hearts: 3, hints: 1, undos: 1 }, tierIndex: 0,
-  stepInTier: 0, mirrors: new Map(), hearts: 3, hints: 1, undos: 1,
-  goal: { kind: "clear" },
-};
-
-const EMPTY_MIRRORS = new Map();
-
-/* Scatter deflectors across the shape. They sit on cells that hold no arrow,
-   spaced apart so a board reads as a few landmarks rather than confetti. */
-function placeMirrors(mask, count) {
-  const out = new Map();
-  if (!count) return out;
-  const { cols, rows, cells } = mask;
-  const pool = [...cells].filter((c) => {
-    const x = c % cols, y = Math.floor(c / cols);
-    return x > 0 && y > 0 && x < cols - 1 && y < rows - 1;
-  });
-  let guard = 0;
-  while (out.size < count && pool.length && guard++ < 400) {
-    const c = pool[(RND() * pool.length) | 0];
-    if (out.has(c)) continue;
-    const x = c % cols, y = Math.floor(c / cols);
-    let tooClose = false;
-    for (const o of out.keys()) {
-      if (Math.abs((o % cols) - x) + Math.abs(Math.floor(o / cols) - y) < 4) { tooClose = true; break; }
-    }
-    if (tooClose) continue;
-    out.set(c, RND() < 0.5 ? "/" : "\\");
-  }
-  return out;
-}
-
-function buildBoard(mask, { maxLen, coverage, tightness, pieces: target, diag }, mirrors) {
-  const MIR = mirrors && mirrors.size ? mirrors : null;
-  // Diagonals arrive gradually: `diag` is how many of the four are in play at
-  // this tier, so early boards stay purely orthogonal and later ones open up.
-  const EXITS = ORTHO_NAMES.concat(DIAG_NAMES.slice(0, Math.max(0, Math.min(4, diag | 0))));
+function buildBoard(mask, { maxLen, coverage, tightness, pieces: target }) {
   const { cols, rows, cells } = mask;
   const occupied = new Map();
   const laneLoad = new Map(); // cell -> how many placed arrows must pass through it
   const pieces = [];
-  // Deflector cells are part of the shape but hold no arrow.
-  const all = MIR ? [...cells].filter((c) => !MIR.has(c)) : [...cells];
-  const free0 = all.length;
-  const fillTarget = Math.round(free0 * coverage);
+  const all = [...cells];
+  const fillTarget = Math.round(cells.size * coverage);
   const BANDS = [[0.6, 0.9], [0.9, 1.2], [1.2, 1.6], [1.6, 2.2]];
   // average snake length needed to cover the shape in `target` arrows
   const avgLen = Math.min(maxLen, Math.max(3.2, (fillTarget / Math.max(target || 40, 6)) * 1.45));
@@ -3071,27 +599,12 @@ function buildBoard(mask, { maxLen, coverage, tightness, pieces: target, diag },
       }
     }
     let options = [];
-    for (const d of EXITS) {
-      const lane = exitLine(head, d, cols, rows, MIR);
-      if (lane === null) continue;              // bends into a loop, never escapes
-      // A deflected lane can curve back onto the cell it started from. The
-      // arrow would then be blocked by its own head for ever, which no amount
-      // of play can clear.
-      if (MIR && lane.includes(head)) continue;
+    for (const d of DIR_NAMES) {
+      const lane = exitLine(head, d, cols, rows);
       if (lane.some((c) => occupied.has(c))) continue;
       const D0 = DIRS[d];
-      // A diagonal cell spans 1.41x the distance of an orthogonal one, so a
-      // 5-cell diagonal lane crosses as much board as a 7-cell straight one.
-      // Comparing raw cell counts made diagonals lose every sort.
-      const span = lane.length * (D0.dx && D0.dy ? Math.SQRT2 : 1);
-      // How far the lane runs inside the shape before leaving it. Favouring
-      // this makes lanes follow the subject's own limbs, so a rocket fills
-      // with vertical runs and a fish with horizontal ones — the silhouette
-      // finally shapes the puzzle instead of just framing it.
-      let inShape = 0;
-      for (const c of lane) { if (!cells.has(c)) break; inShape++; }
-      const back = orthoBack(head, D0, cols, rows);
-      options.push({ d, len: span + inShape * 0.9, grow: back !== null && cells.has(back) && !occupied.has(back) });
+      const back = step(head, -D0.dx, -D0.dy, cols, rows);
+      options.push({ d, len: lane.length, grow: back !== null && cells.has(back) && !occupied.has(back) });
     }
     if (!options.length) {
       fails++;
@@ -3102,7 +615,7 @@ function buildBoard(mask, { maxLen, coverage, tightness, pieces: target, diag },
     options.sort((a, b) => b.len - a.len);
     const chosen = RND() < tightness ? options[0] : options[(RND() * options.length) | 0];
     const D = DIRS[chosen.d];
-    const chosenLane = exitLine(head, chosen.d, cols, rows, MIR);
+    const chosenLane = exitLine(head, chosen.d, cols, rows);
     const ownLane = new Set(chosenLane);
 
     const body = [head];
@@ -3116,40 +629,26 @@ function buildBoard(mask, { maxLen, coverage, tightness, pieces: target, diag },
     const want = Math.max(1, Math.min(maxLen,
       Math.round(avgLen * squeeze * (band[0] + RND() * (band[1] - band[0])))));
 
-    /* The body grows backwards from the head. For an orthogonal exit that is
-       simply the opposite direction; for a diagonal one, straight back would
-       be a diagonal body segment, so take either of the two orthogonal
-       components instead. */
-    const backOpts = (D.dx && D.dy)
-      ? [{ dx: -D.dx, dy: 0 }, { dx: 0, dy: -D.dy }]
-      : [{ dx: -D.dx, dy: -D.dy }];
-    const okBack = (b) => {
-      const t = step(head, b.dx, b.dy, cols, rows);
-      if (t === null || !cells.has(t) || occupied.has(t) || ownLane.has(t)) return null;
-      return MIR && MIR.has(t) ? null : t;
-    };
-    const viable = backOpts.filter((b) => okBack(b) !== null);
-    const canGrow = viable.length > 0;
+    const back0 = step(head, -D.dx, -D.dy, cols, rows);
+    const canGrow = back0 !== null && cells.has(back0) && !occupied.has(back0) && !ownLane.has(back0);
     // a dot-sized arrow wastes a cell; hold out while there is still room
     if (want > 1 && !canGrow && fails < 200) {
       fails++;
       continue;
     }
-    if (want > 1 && canGrow) {
-      const b = viable[(RND() * viable.length) | 0];
-      const back = okBack(b);
-      {
+    if (want > 1) {
+      const back = step(head, -D.dx, -D.dy, cols, rows);
+      if (back !== null && cells.has(back) && !occupied.has(back) && !ownLane.has(back)) {
         body.push(back);
         used.add(back);
         let cur = back;
-        let run = { dx: b.dx, dy: b.dy };   // direction the body is travelling
+        let run = { dx: -D.dx, dy: -D.dy };   // direction the body is travelling
         while (body.length < want) {
           const open = [];
-          for (const nm of ORTHO_NAMES) {
+          for (const nm of DIR_NAMES) {
             const d = DIRS[nm];
             const nx = step(cur, d.dx, d.dy, cols, rows);
             if (nx === null || !cells.has(nx) || occupied.has(nx) || used.has(nx) || ownLane.has(nx)) continue;
-            if (MIR && MIR.has(nx)) continue;
             open.push({ nx, d });
           }
           if (!open.length) break;
@@ -3163,12 +662,6 @@ function buildBoard(mask, { maxLen, coverage, tightness, pieces: target, diag },
         }
       }
     }
-    // Same hazard for the body: a bent lane crossing its own tail would block
-    // the arrow permanently. Cheap to check, and a rejected piece just retries.
-    if (MIR && body.some((c) => ownLane.has(c))) {
-      fails++;
-      continue;
-    }
     const id = pieces.length;
     body.forEach((c) => occupied.set(c, id));
     for (const c of chosenLane) laneLoad.set(c, (laneLoad.get(c) || 0) + 1);
@@ -3179,12 +672,9 @@ function buildBoard(mask, { maxLen, coverage, tightness, pieces: target, diag },
   return pieces;
 }
 
-function measureBoard(pieces, cols, rows, mirrors) {
-  // open must be present on every path: the caller multiplies it into the score,
-  // and one undefined turns the whole comparison into NaN, which silently makes
-  // the selector keep whichever board it built first.
-  if (!pieces.length) return { freedom: 1, forced: 0, open: 1 };
-  const lanes = pieces.map((p) => exitLine(p.cells[0], p.dir, cols, rows, mirrors) || []);
+function measureBoard(pieces, cols, rows) {
+  if (!pieces.length) return { freedom: 1, forced: 0 };
+  const lanes = pieces.map((p) => exitLine(p.cells[0], p.dir, cols, rows));
   const owner = new Map();
   pieces.forEach((p) => p.cells.forEach((c) => owner.set(c, p.id)));
   const alive = new Set(pieces.map((p) => p.id));
@@ -3196,38 +686,22 @@ function measureBoard(pieces, cols, rows, mirrors) {
   let sum = 0;
   let n = 0;
   let forced = 0;   // moments where the board allows almost no choice
-  let open = 1;     // how much of the board is free on the very first move
   while (alive.size) {
     const free = [...alive].filter(isFree);
-    if (!free.length) return { freedom: 1, forced: 0, open: 1 };
-    if (n === 0) open = free.length / alive.size;
+    if (!free.length) return { freedom: 1, forced: 0 };
     sum += free.length / alive.size;
     if (free.length <= 2) forced++;
     n++;
     alive.delete(free[(RND() * free.length) | 0]);
   }
-  /* `open` matters on its own. freedom is an average across the whole solve, so
-     a board that hands you twenty free arrows at the start and tightens later
-     scores the same as one that is taut throughout — and boards were opening
-     with 15 to 27 arrows free. The first third of every level was tapping with
-     nothing to decide. */
-  return n ? { freedom: sum / n, forced: forced / n, open } : { freedom: 1, forced: 0, open: 1 };
+  return n ? { freedom: sum / n, forced: forced / n } : { freedom: 1, forced: 0 };
 }
 
 
 /* Big artwork on an easy level would mean 150+ arrows. Resample the mask down
    to the tier's budget instead — the same subject, drawn with less detail. */
-/* No board may be wider or taller than this. What decides whether an arrow can
-   be tapped is not how many cells a board has but how many fit across the
-   screen: at 40 cells a phone gives each one about 9px, at 72 it gives 5px and
-   the arrows become untappable hairlines. Raising the cell budget let the
-   biggest shapes reach 76 cells across, so the budget alone is not enough —
-   the dimension has to be capped directly. */
-const MAX_DIM = 30;
-
 function fitMask(mask, maxCells) {
-  const overDim = mask.cols > MAX_DIM || mask.rows > MAX_DIM;
-  if (!overDim && (!maxCells || mask.cells.size <= maxCells)) return mask;
+  if (!maxCells || mask.cells.size <= maxCells) return mask;
 
   const sample = (k) => {
     const c2 = Math.max(5, Math.round(mask.cols * k));
@@ -3247,21 +721,13 @@ function fitMask(mask, maxCells) {
 
   // downsampling thickens edges, so one pass usually lands over budget.
   // correct against the measured result instead of trusting the estimate.
-  // start from whichever constraint bites harder — the cell budget or the
-  // dimension cap
-  let k = Math.min(
-    maxCells ? Math.sqrt(maxCells / mask.cells.size) : 1,
-    MAX_DIM / Math.max(mask.cols, mask.rows)
-  );
+  let k = Math.sqrt(maxCells / mask.cells.size);
   let best = null;
-  for (let pass = 0; pass < 6; pass++) {
+  for (let pass = 0; pass < 5; pass++) {
     const r = sample(k);
-    const fits = (!maxCells || r.out.size <= maxCells) && r.c2 <= MAX_DIM && r.r2 <= MAX_DIM;
     if (r.out.size >= 18) best = r;
-    if (fits || r.out.size < 18) break;
-    const byCells = maxCells ? Math.sqrt((maxCells / r.out.size) * 0.97) : 1;
-    const byDim = MAX_DIM / Math.max(r.c2, r.r2);
-    k *= Math.min(byCells, byDim) * 0.99;
+    if (r.out.size <= maxCells || r.out.size < 18) break;
+    k *= Math.sqrt((maxCells / r.out.size) * 0.97);
   }
   if (!best || best.out.size < 18) return mask;
   const t = cropMask(best.out, best.c2, best.r2);
@@ -3269,321 +735,57 @@ function fitMask(mask, maxCells) {
 }
 
 
-// blow a hand-drawn shape up so the same outline holds far more arrows —
-// an 11x11 sketch only has room for a handful otherwise
-function scaleMask(mask, k) {
-  if (k <= 1) return mask;
-  const cols = mask.cols * k;
-  const rows = mask.rows * k;
-  const cells = new Set();
-  for (const i of mask.cells) {
-    const x = (i % mask.cols) * k;
-    const y = Math.floor(i / mask.cols) * k;
-    for (let dy = 0; dy < k; dy++) for (let dx = 0; dx < k; dx++) cells.add((y + dy) * cols + x + dx);
-  }
-  return { ...mask, cols, rows, cells };
-}
-
-// A shape hashes to one stable number, so the same drawing — or the same shared
-// code on someone else's phone — always produces the same puzzle.
-function maskSeed(m) {
-  let h = 2166136261;
-  h = Math.imul(h ^ m.cols, 16777619);
-  h = Math.imul(h ^ m.rows, 16777619);
-  for (const i of [...m.cells].sort((a, b) => a - b)) h = Math.imul(h ^ i, 16777619);
-  return (h >>> 0) || 1;
-}
-
-/* Gridlock: a solid rectangle instead of a picture.
-
-   Measured, the shapes carry about 0.43 cells of edge per cell of area against
-   0.18 for a solid rectangle of the same size — two and a half times as much
-   border. Every one of those border cells is a place an arrow can point
-   straight off the board, which is why a shape level always opens with ten to
-   sixteen arrows free however hard the generator is pushed, and why no amount
-   of tuning ever moved that number. The shape is the reason the game is easy,
-   and the shape is also the whole collection, so it stays.
-
-   This is the other half: no picture, no collectable, just the tightest board
-   the builder can produce. A solid grid is where the depth in this genre lives.
-
-   Seeded per run, unlike makeLevelFromMask which hashes the mask so a shared
-   board always rebuilds identically — here every run should be a new puzzle. */
-function makeGridlock(round, seed) {
-  /* Size grows only a little; the difficulty comes from packing. A bigger grid
-     has a longer border, and every border cell is another arrow that can point
-     straight out — measured, a 24x24 opened with more legal moves than a 14x14
-     did. Density is the dial that actually tightens a board. */
-  const n = 14 + Math.min(6, Math.floor(round / 8));       // 14x14 up to 20x20
-  const cells = new Set();
-  for (let i = 0; i < n * n; i++) cells.add(i);
-  const mask = { cols: n, rows: n, cells, name: "Gridlock", procedural: false, plain: true };
-  const idx = Math.min(TIERS.length - 1, 6 + Math.floor(round / 3));
-  const tier = TIERS[idx];
-  // named so the return below can report exactly which seed produced this
-  // board, whether it was passed in or invented here — a resume needs the
-  // real value, not just to know one existed
-  const usedSeed = (seed === undefined ? (Date.now() ^ (round * 2654435761)) : seed) >>> 0;
-  RND = mulberry32(usedSeed);
-  const weave = texturedTier(tier, (RND() * 1e9) | 0);
-  // pack it tighter every few rounds, which is what drives the opening down
-  /* Never below what the tier already asks for. The first version capped this
-     at 0.92 while the tiers it draws from run at 0.97 to 0.99, so it was
-     thinning the board out instead of packing it — the opposite of the intent,
-     and the reason later rounds were opening with more moves than early ones. */
-  weave.coverage = Math.max(weave.coverage || 0.6, Math.min(0.995, 0.9 + round * 0.004));
-  weave.tightness = Math.max(weave.tightness || 0.85, Math.min(1, 0.9 + round * 0.004));
-  const mirrors = placeMirrors(mask, weave.mirrors || 0);
-
-  /* Pick the board that opens with the fewest legal moves. On a shape this
-     scoring had nothing to work with; on a solid grid it does. */
-  let best = null, bestOpen = 1e9;
-  for (let i = 0; i < 14; i++) {
-    const pieces = buildBoard(mask, weave, mirrors);
-    if (pieces.length < 8) continue;
-    assignLocks(pieces, n, n, lockRatio(idx), mirrors);
-    const mb = measureBoard(pieces, n, n, mirrors);
-    if (mb.freedom >= 1) continue;                          // unsolvable
-    if (mb.open < bestOpen) { bestOpen = mb.open; best = pieces; }
-  }
-  RND = Math.random;   // every other generator restores this; leaving it seeded
-                       // makes the whole app deterministic from here on
-  if (!best) return null;
-  return { mask, pieces: best, tier, tierIndex: idx, stepInTier: 0, mirrors,
-           hearts: 3, hints: tier.hints, undos: tier.undos,
-           goal: { kind: "clear" }, gridlock: true, round, seed: usedSeed };
-}
-
 function makeLevelFromMask(rawMask, tierIdx = 7) {
   const idx = Math.max(0, Math.min(TIERS.length - 1, tierIdx | 0));
   const tier = TIERS[idx];
-  const norm = { ...rawMask, cells: new Set([...rawMask.cells].sort((a, b) => a - b)) };
-  RND = mulberry32(maskSeed(norm));
-  // pack a drawn shape as full as the tier allows before building
-  const room = norm.cells.size ? Math.sqrt(tier.maxCells / norm.cells.size) : 1;
-  const mask = fitMask(scaleMask(norm, Math.max(1, Math.min(4, Math.floor(room)))), tier.maxCells);
-  const chessWeight = idx >= HARD_TIER ? 0.9 : 0;
-  const weave = texturedTier(tier, maskSeed(norm));
-  const mirrors = placeMirrors(mask, weave.mirrors || 0);
+  const mask = fitMask(rawMask, tier.maxCells);
   let best = null;
-  /* Three candidates from the same generator are three near-identical boards,
-     so the scoring below had nothing to choose between and every weight change
-     was a no-op. Widen the pool: this runs once when a level opens. */
-  for (let i = 0; i < (mask.cells.size > 240 ? 6 : 8); i++) {
-    const pieces = buildBoard(mask, weave, mirrors);
+  for (let i = 0; i < (mask.cells.size > 240 ? 2 : 5); i++) {
+    const pieces = buildBoard(mask, tier);
     if (pieces.length < 3) continue;
-    const mb = measureBoard(pieces, mask.cols, mask.rows, mirrors);
+    const mb = measureBoard(pieces, mask.cols, mask.rows);
     const fill = pieces.reduce((a, p) => a + p.cells.length, 0) / mask.cells.size;
     // prefer the target openness, reward boards with more forced moments, and
     // heavily punish a board that leaves the shape half empty
-    const gap = Math.abs(mb.freedom - tier.freedom) - mb.forced * 0.6 + mb.open * 6.0 + Math.max(0, tier.coverage - 0.06 - fill) * 4
-      - (chessWeight ? chessScore(pieces, mask.cols, mask.rows, mirrors) * chessWeight : 0);
+    const gap = Math.abs(mb.freedom - tier.freedom) - mb.forced * 0.35 + Math.max(0, tier.coverage - 0.06 - fill) * 4;
     if (!best || gap < best.gap) best = { pieces, gap };
   }
-  if (!best) best = { pieces: buildBoard(mask, weave, mirrors), gap: 1 };
-  assignLocks(best.pieces, mask.cols, mask.rows, lockRatio(idx), mirrors);
-  RND = Math.random;
+  if (!best) best = { pieces: buildBoard(mask, tier), gap: 1 };
   return {
-    mask, pieces: best.pieces, tier, tierIndex: idx, stepInTier: 1, mirrors,
+    mask, pieces: best.pieces, tier, tierIndex: idx, stepInTier: 1,
     hearts: tier.hearts, hints: tier.hints, undos: tier.undos,
-    // A drawn board and the daily both come through here. Without this they
-    // carried no goal at all, so anything reading setup.goal.kind would throw —
-    // and a goal set by the author of a shared board is not something the
-    // player agreed to anyway. Clearing it is the goal.
-    goal: { kind: "clear" },
-  };
-}
-
-/* ── chess-style position evaluation ──────────────────────────────
-   From Hard upward a board should not just be tight, it should contain
-   real combinations: stretches where only one arrow is playable, so the
-   solution reads like a forced line rather than a pile of free choices.
-   We solve the board a few times and score how often the position forces
-   the player's hand, and how long those forced runs get.               */
-// Some arrows are sealed shut until a particular other arrow has left. Locks are
-// handed out along a real solve order — a sealed arrow always depends on one that
-// comes before it — so a board with locks stays solvable by construction.
-function assignLocks(pieces, cols, rows, ratio, mirrors) {
-  if (ratio <= 0 || pieces.length < 8) return;
-  const lanes = pieces.map((p) => exitLine(p.cells[0], p.dir, cols, rows, mirrors) || []);
-  const owner = new Map();
-  pieces.forEach((p) => p.cells.forEach((c) => owner.set(c, p.id)));
-  const alive = new Set(pieces.map((p) => p.id));
-  const isFree = (id) =>
-    lanes[id].every((c) => {
-      const o = owner.get(c);
-      return o === undefined || !alive.has(o);
-    });
-
-  const order = [];
-  while (alive.size) {
-    const free = [...alive].filter(isFree);
-    if (!free.length) return; // not a clean board — leave it alone
-    const pick = free[(RND() * free.length) | 0];
-    order.push(pick);
-    alive.delete(pick);
-  }
-
-  const byId = new Map(pieces.map((p) => [p.id, p]));
-  const first = Math.max(2, Math.floor(order.length * 0.22)); // the opening stays free
-  const room = order.length - first;
-  const want = Math.min(Math.round(order.length * ratio), room);
-  if (want < 1) return;
-  const stride = Math.max(1, Math.floor(room / want));
-  for (let n = 0, i = first; n < want && i < order.length; n++, i += stride) {
-    const p = byId.get(order[i]);
-    if (!p) continue;
-    const back = 1 + ((RND() * Math.min(i, 6)) | 0); // depends on a recent earlier arrow
-    p.needs = order[Math.max(0, i - back)];
-  }
-}
-
-function chessScore(pieces, cols, rows, mirrors) {
-  if (pieces.length < 6) return 0;
-  const lanes = pieces.map((p) => exitLine(p.cells[0], p.dir, cols, rows, mirrors) || []);
-  const owner = new Map();
-  pieces.forEach((p) => p.cells.forEach((c) => owner.set(c, p.id)));
-
-  let total = 0;
-  const RUNS = 3;
-  for (let r = 0; r < RUNS; r++) {
-    const alive = new Set(pieces.map((p) => p.id));
-    const isFree = (id) =>
-      lanes[id].every((c) => {
-        const o = owner.get(c);
-        return o === undefined || !alive.has(o);
-      });
-    let only = 0;      // positions with exactly one legal move
-    let near = 0;      // positions with two
-    let run = 0;
-    let bestRun = 0;
-    let states = 0;
-    while (alive.size) {
-      const free = [...alive].filter(isFree);
-      if (!free.length) return 0; // unsolvable ordering — never reward it
-      states++;
-      if (free.length === 1) { only++; run++; if (run > bestRun) bestRun = run; }
-      else { if (free.length === 2) near++; run = 0; }
-      alive.delete(free[(RND() * free.length) | 0]);
-    }
-    if (!states) return 0;
-    // a long forced line is worth far more than the same count scattered about
-    total += (only / states) + (near / states) * 0.4 + Math.min(bestRun, 8) / 8 * 0.6;
-  }
-  return total / RUNS;
-}
-
-// The first minute decides whether anyone plays a second one. Levels 1-4 are
-// deliberately small and open — a new player clears one in under a minute and
-// learns the rule by winning, not by reading. By level 5 the real curve begins.
-const INTRO = [
-  { cells: 0.30, pieces: 0.34, freedom: 2.1 },
-  { cells: 0.44, pieces: 0.48, freedom: 1.7 },
-  { cells: 0.60, pieces: 0.64, freedom: 1.4 },
-  { cells: 0.80, pieces: 0.82, freedom: 1.15 },
-];
-
-function introTier(tier, level) {
-  const f = INTRO[level - 1];
-  if (!f) return tier;
-  return {
-    ...tier,
-    maxCells: Math.max(40, Math.round(tier.maxCells * f.cells)),
-    pieces: Math.max(8, Math.round(tier.pieces * f.pieces)),
-    freedom: Math.min(0.34, tier.freedom * f.freedom),
-    tightness: Math.max(0.5, tier.tightness - 0.14),
   };
 }
 
 function makeLevel(level, seed) {
-  // a level number must always rebuild the same board — otherwise replaying it
-  // from the Levels list hands the player a different puzzle
-  RND = mulberry32(seed !== undefined ? seed : level * 9176 + 17);
-  const { tier: baseTier, index, step: stepInTier } = tierFor(level);
-  const tier = seed === undefined ? introTier(baseTier, level) : baseTier;
+  if (seed !== undefined) RND = mulberry32(seed);
+  const { tier, index, step: stepInTier } = tierFor(level);
   const raw =
     seed === undefined && level > CURATED_UNTIL
       ? artMask(level) || proceduralMask(level)
       : parseMask(curatedKey(seed !== undefined ? (seed % 9973) + 1 : level));
-  /* fitMask only ever shrinks, so a very compact shape built a board a fraction
-     of the usual size — the plain geometric ones came out at eight arrows where
-     their neighbours had forty. Scale those up.
+  const mask = fitMask(raw, tier.maxCells);
+  const tries = mask.cells.size > 240 ? 2 : mask.cells.size > 90 ? 4 : 7;
 
-     The test is an absolute floor, not a share of the tier budget: sizing
-     against the budget also caught perfectly ordinary shapes and grew the
-     average board by nearly half, which is more cells, more arrows and more to
-     draw on every frame. Only shapes below the floor are touched. */
-  /* Scale the shape up until it fills most of the tier's budget. This is what
-     separates a chunky board from a clean one: the silhouette is the same, but
-     drawn across four times as many cells it is traced by long thin arrows
-     rather than a handful of stubby ones. Arrow COUNT barely moves — the
-     generator divides the cells among roughly the same number of arrows, so
-     each one simply gets longer. */
-  let up = 1;
-  while (raw.cells.size * (up + 1) * (up + 1) <= tier.maxCells && up < 4) up++;
-  const mask = fitMask(up > 1 ? scaleMask(raw, up) : raw, tier.maxCells);
-  // Hard and above are judged like chess positions, and get extra candidate
-  // boards to choose from — the generator plays out more lines before deciding
-  const chessWeight = index >= HARD_TIER ? 0.9 : 0;
-  /* Two candidates is not a choice. Same reasoning as the curated builder
-     above: the scoring can only tighten a board if it has boards to compare. */
-  let tries = mask.cells.size > 240 ? 6 : mask.cells.size > 90 ? 8 : 10;
-  if (chessWeight && mask.cells.size <= 420) tries += 2;
-
-  const weave = texturedTier(tier, seed !== undefined ? seed : level);
-  const mirrors = placeMirrors(mask, weave.mirrors || 0);
   let best = null;
   for (let i = 0; i < tries; i++) {
-    const pieces = buildBoard(mask, weave, mirrors);
+    const pieces = buildBoard(mask, tier);
     if (pieces.length < 3) continue;
-    const mb = measureBoard(pieces, mask.cols, mask.rows, mirrors);
+    const mb = measureBoard(pieces, mask.cols, mask.rows);
     const fill = pieces.reduce((a, p) => a + p.cells.length, 0) / mask.cells.size;
     // prefer the target openness, reward boards with more forced moments, and
     // heavily punish a board that leaves the shape half empty
-    const gap = Math.abs(mb.freedom - tier.freedom) - mb.forced * 0.6 + mb.open * 6.0 + Math.max(0, tier.coverage - 0.06 - fill) * 4
-      - (chessWeight ? chessScore(pieces, mask.cols, mask.rows, mirrors) * chessWeight : 0);
+    const gap = Math.abs(mb.freedom - tier.freedom) - mb.forced * 0.35 + Math.max(0, tier.coverage - 0.06 - fill) * 4;
     if (!best || gap < best.gap) best = { pieces, gap };
   }
-  if (!best) best = { pieces: buildBoard(mask, weave, mirrors), gap: 1 };
-  assignLocks(best.pieces, mask.cols, mask.rows, lockRatio(index), mirrors);
+  if (!best) best = { pieces: buildBoard(mask, tier), gap: 1 };
   RND = Math.random;
 
-  /* `level` rides along on the returned board so a caller that only has the
-     setup object in hand (not the arguments that built it) can still rebuild
-     the identical board later — used for resuming a level after the app was
-     killed mid-play, where only the saved setup, not the original call, is
-     available. */
-  return { mask, pieces: best.pieces, tier, tierIndex: index, stepInTier, mirrors,
-           hearts: tier.hearts, hints: tier.hints, undos: tier.undos,
-           goal: goalFor(level, index, best.pieces, mask), level };
-}
-
-/* Every board was woven the same way — same coverage, same snake-length spread,
-   same tightness — so two levels of the same tier played identically even in
-   different shapes. A seeded texture varies the weave while the tier keeps
-   owning difficulty, and the board-selection loop below still scores every
-   candidate against the tier's freedom target. */
-const TEXTURES = [
-  { name: "dense",    coverage: +0.00, lenMul: 1.00, tightness: +0.00 },
-  { name: "open",     coverage: -0.07, lenMul: 0.95, tightness: -0.06 },
-  { name: "long",     coverage: +0.00, lenMul: 1.45, tightness: +0.03 },
-  { name: "swarm",    coverage: -0.02, lenMul: 0.60, tightness: -0.03 },
-  { name: "tangled",  coverage: -0.03, lenMul: 1.15, tightness: -0.10 },
-];
-
-function texturedTier(tier, seed) {
-  const t = TEXTURES[Math.abs(seed * 2654435761 + 17) % TEXTURES.length];
-  return {
-    ...tier,
-    coverage: Math.max(0.72, Math.min(0.99, tier.coverage + t.coverage)),
-    tightness: Math.max(0.45, Math.min(0.97, tier.tightness + t.tightness)),
-    maxLen: Math.max(3, Math.round(tier.maxLen * t.lenMul)),
-    texture: t.name,
-  };
+  return { mask, pieces: best.pieces, tier, tierIndex: index, stepInTier, hearts: tier.hearts, hints: tier.hints, undos: tier.undos };
 }
 
 /* how many arrows a removal sets free — the heart of chain scoring */
-function countFreed(pieces, aliveSet, removedId, cols, rows, mirrors) {
+function countFreed(pieces, aliveSet, removedId, cols, rows) {
   const occBefore = new Map();
   const occAfter = new Map();
   pieces.forEach((p) => {
@@ -3594,7 +796,7 @@ function countFreed(pieces, aliveSet, removedId, cols, rows, mirrors) {
     });
   });
   const blocked = (p, occ) => {
-    for (const c of exitLine(p.cells[0], p.dir, cols, rows, mirrors) || []) {
+    for (const c of exitLine(p.cells[0], p.dir, cols, rows)) {
       const o = occ.get(c);
       if (o !== undefined && o !== p.id) return true;
     }
@@ -3710,7 +912,6 @@ const Store = (() => {
        ready: true,                                  // a rewarded ad is loaded
        showRewarded:      (kind) => Promise<boolean>, // true = watched fully
        showInterstitial:  ()     => Promise<void>,
-       hideBanner:        ()     => Promise<void>,    // called once ads are removed
        purchaseRemoveAds: ()     => Promise<boolean>,
        restorePurchases:  ()     => Promise<boolean>,
      };
@@ -3732,15 +933,6 @@ const Ads = {
     return false;
   },
   async interstitial() {
-    /* Ads.provider is window.ArrowAds, an object with showRewarded,
-       showInterstitial, hideBanner and so on — it has no setTimeout method,
-       so calling Ads.provider.setTimeout(...) threw a TypeError every single
-       time. The callback inside it called a bare showInterstitial(), which
-       does not exist anywhere else in this file either — it would have thrown
-       a ReferenceError even if it had been reached. Both errors were caught
-       by the empty catch below and swallowed, so the interstitial between
-       levels silently never appeared, with nothing in the console or on
-       screen to say why. */
     try {
       if (Ads.provider?.showInterstitial) await Ads.provider.showInterstitial();
     } catch {}
@@ -3757,11 +949,6 @@ const Ads = {
     } catch {}
     return false;
   },
-  async hideBanner() {
-    try {
-      if (Ads.provider?.hideBanner) await Ads.provider.hideBanner();
-    } catch {}
-  },
 };
 
 /* Deliberately quiet. The reviews of every rival in this genre are dominated by
@@ -3769,7 +956,6 @@ const Ads = {
    after a loss, and never during the tutorial. */
 const AD_EVERY_LEVELS = 8;
 const AD_MIN_GAP_MS = 210000;
-const AD_REMOVAL_GOAL = 30; // rewarded views to earn permanent ad removal, free
 
 /* ═══════════  shapes  ═══════════ */
 
@@ -3855,67 +1041,10 @@ const SHAPES = {
   keyArt: { name: "Key", rows: ["...#####...............", "..########.............", ".##########............", "#####..####............", "####....###############", "###.....###############", "###.....###############", "####...################", ".##########......###.##", ".#########.......###.##", "..#######........###.##", ".....##..........###.#.", "..................#...."] },
   mushroomArt: { name: "Mushroom", rows: ["......#########......", "....#############....", "..#################..", ".###################.", ".###################.", "#####################", "#####################", "#####################", ".......#######.......", ".......#######.......", ".......#######.......", ".......#######.......", ".......#######.......", ".......#######.......", ".......#######.......", ".......#######.......", ".......#######.......", ".......#######.......", ".......#######.......", "........#####........"] },
   rocketArt: { name: "Rocket", rows: [".......##.......", ".......##.......", "......####......", "......#####.....", ".....######.....", "....########....", "....########....", "....########....", "....########....", "....########....", "...##########...", "...##########...", "..############..", "..############..", ".##############.", ".##############.", "################", "##...######...##", "......####......", "......####......", ".......##.......", ".......##......."] },
-  owlArt: { name: "Owl", rows: ["..##......##...", ".####....####..", "..#############", ".##############", "###############", "###############", "##.####.####.##", "##.#..#.#..#.##", "##.####.####.##", "###############", "#######.#######", "######...######", "###############", "###############", ".#############.", ".#############.", "..###########..", "...#########...", "...###...###...", "..####...####.."] },
-  whaleArt: { name: "Whale", rows: ["...........###...", "..........####...", ".........#####...", "..#####..#####...", ".#########.......", "###############..", "#################", "#################", "#################", "#################", "#################", ".###############.", ".##############..", "..############...", "...#########.....", "....#######......", "...####..####....", "..####....####..."] },
-  cactusArt: { name: "Cactus", rows: ["......####......", "......####......", "###...####...###", "####..####..####", "####..####..####", "####..####..####", "####..####..####", "#############.##", "################", "################", "..####..####..##", "......####......", "......####......", "......####......", "......####......", "......####......", "....########....", "..############..", ".##############.", ".##############."] },
-  boltArt: { name: "Bolt", rows: ["........####", ".......#####", "......######", ".....#######", "....########", "...#########", "..#########.", ".#########..", "###########.", "############", "#########...", "########....", ".#######....", "..######....", "...#####....", "....####....", ".....###....", "......##....", "......##....", ".......#...."] },
-  crabArt: { name: "Crab", rows: ["##..........##..", "###........###..", ".###......###...", "..####..####....", "...##########...", "..############..", ".##############.", "################", "################", "##.##########.##", "##.##########.##", "################", ".##############.", "..############..", "..##..####..##..", ".###...##...###.", "###.........###.", "##...........##."] },
-  penguinArt: { name: "Penguin", rows: ["....######....", "...########...", "..##########..", "..##########..", "..#.######.#..", "..##########..", "...###..###...", "....######....", ".#############", "##############", "###########..#", "####....####..", "####....####..", "####....####..", "####....####..", "####....####..", "#####..#####..", "############..", ".##########...", "###......###.."] },
-  lighthouseArt: { name: "Lighthouse", rows: [".....####.....", "....######....", "...########...", "..##########..", "..#.######.#..", "..##########..", "...########...", "....######....", "....######....", "...########...", "...##....##...", "...########...", "...##....##...", "...########...", "..##########..", "..##########..", ".############.", ".############.", "##############", "##############"] },
-  bearArt: { name: "Bear", rows: [".###......###.", "####......####", "####......####", ".############.", "##############", "##############", "##.########.##", "##.########.##", "##############", "#####.##.#####", "######..######", "##############", ".############.", ".############.", "..##########..", "..####..####..", ".####....####.", ".###......###."] },
-  flowerArt: { name: "Flower", rows: ["....####....", "...######...", "..########..", "..########..", "###......###", "####....####", "####....####", "###......###", "..########..", "..########..", "...######...", "....####....", ".....##.....", ".....##.....", "..####......", ".#####......", ".....##.....", ".....##.....", "......#####.", "......#####.", ".....##.....", ".....##....."] },
-  cameraArt: { name: "Camera", rows: [".....######.....", ".....######.....", ".....######.....", "################", "################", "###..######..###", "##....####....##", "##...######...##", "##..########..##", "##..########..##", "##..########..##", "##...######...##", "##....####....##", "###..######..###", "################", "################"] },
-  boatArt: { name: "Sailboat", rows: [".......##.......", ".......###......", ".......####.....", ".......#####....", "....########....", "...#########....", "..##########....", ".###########....", ".......##.......", ".......##.......", "################", "################", ".##############.", "..############..", "...##########...", "....########...."] },
-  dinoArt: { name: "Dino", rows: ["...........#####", "..........######", "..........##.###", "..........######", "..........#####.", "..........####..", ".#####..######..", "..###########...", "..###########...", "#############...", "#############...", ".############...", ".###########....", ".##########.....", ".#####.####.....", ".####..####.....", ".####..####.....", "####...####.....", "####...#####...."] },
-  beeArt: { name: "Bee", rows: ["..##......##..", "..###....###..", "...##....##...", "....######....", "...########...", "..##########..", "..##########..", "##############", "##############", "##############", "##############", "##############", "##############", ".############.", ".############.", "..##########..", "...########...", "....######....", ".....####.....", "......##......"] },
-  castleArt: { name: "Castle", rows: ["##..##..##..##", "##..##..##..##", "##############", "##############", "##############", "##.###..###.##", "##.###..###.##", "##############", "##############", "##############", "##############", "#####....#####", "####......####", "####......####", "####......####", "####......####", "####......####", "##############", "##############"] },
-  ghostArt: { name: "Ghost", rows: ["....######....", "..##########..", ".############.", "##############", "##############", "##.##....##.##", "##.##....##.##", "##############", "##############", "##############", "##############", "##############", "##############", "##############", "##############", "##############", "###.###.###.##", "##..##..##..##"] },
-  iceArt: { name: "Ice Cream", rows: ["....######....", "..##########..", ".############.", "##############", "##############", "##############", "##############", ".############.", "..##########..", "..##########..", "...########...", "...########...", "....######....", "....######....", ".....####.....", ".....####.....", "......##......", "......##......"] },
-  turtleArt: { name: "Turtle", rows: ["....########....", "..############..", ".##############.", "################", "################", "###.########.###", "###.########.###", "################", "################", "################", "################", ".##############.", "..############..", "...##########...", "..############..", ".####......####.", ".###........###."] },
-  robotArt: { name: "Robot", rows: ["...##....##...", "...##....##...", "..##########..", ".############.", "##############", "##.##....##.##", "##.##....##.##", "##############", "####......####", "##############", "##############", "..##########..", "##############", "##############", "##############", "##############", "..##########..", "..####..####..", "..####..####..", "..####..####..", ".#####..#####."] },
-  balloonArt: { name: "Balloon", rows: ["....######....", "..##########..", ".############.", "##############", "##############", "##############", "##############", "##############", ".############.", ".############.", "..##########..", "...########...", "....######....", ".....####.....", "......##......", "......##......", ".....###......", "......###.....", ".....###......", "......##......"] },
-  foxArt: { name: "Fox", rows: ["##..........##", "###........###", "####......####", "##############", "##############", "##############", "##.########.##", "##.########.##", "##############", ".############.", ".############.", "..##########..", "..####..####..", "..##########..", "...########...", "....######....", ".....####.....", "......##......"] },
-  cupcakeArt: { name: "Cupcake", rows: ["......##......", ".....####.....", "...########...", "..##########..", ".############.", "##############", "##############", "##############", "##############", "##############", "##############", ".############.", ".############.", ".##.######.##.", ".##.######.##.", "..##########..", "..##########..", "...########...", "...########...", "....######...."] },
-  snailArt: { name: "Snail", rows: ["..........##..##..", "..........##..##..", "..........##..##..", "....######.####...", "..##########.##...", ".#############....", "##############....", "####......####....", "###..####..###....", "#########..###....", "###..####..###....", "####......####....", "##############....", ".#############....", "..################", "..################"] },
-  mountainArt: { name: "Mountain", rows: ["......##........", ".....####.......", ".....#####......", "....#######.....", "....########....", "...##########...", "...###########..", "..#############.", "..##############", ".###############", ".###############", "################", "################", "################", "################", "################"] },
-  teapotArt: { name: "Teapot", rows: ["......####......", ".....######.....", "...##########...", ".##############.", "################", "################", "##############..", "##############..", "##############..", "##############..", "###############.", "###############.", ".##############.", "..############..", "...##########...", "....########...."] },
-  keyholeArt: { name: "Keyhole", rows: ["....########....", "..############..", ".##############.", "################", "################", "###..######..###", "##....####....##", "##....####....##", "###..######..###", "################", "################", ".##############.", "..############..", "...##########...", "....########....", ".....######.....", "....########....", "...##########...", "..############..", "..############.."] },
-  appleArt: { name: "Apple", rows: [".......###....", ".......###....", "..###..###....", ".###########..", "##############", "##############", "##############", "##############", "##############", "##############", "##############", "##############", ".############.", ".############.", "..##########..", "..####..####..", ".####....####."] },
-  diceArt: { name: "Dice", rows: ["##############", "##############", "##############", "###.###.###.##", "###.###.###.##", "##############", "##############", "###.###.###.##", "###.###.###.##", "##############", "##############", "###.###.###.##", "###.###.###.##", "##############", "##############", "##############"] },
-  towerArt: { name: "Tower", rows: ["....########....", "...##########...", "..############..", "..############..", "...##########...", "....########....", "....########....", "....########....", "...##########...", "...##########...", "....########....", "....########....", "...##########...", "..############..", ".##############.", "################", "################", "################"] },
-  rabbitArt: { name: "Rabbit", rows: ["..##......##..", "..##......##..", "..###....###..", "..###....###..", "..####..####..", "..##########..", ".############.", "##############", "##############", "##############", "##.####.####.#", "##############", "#####.###.####", "######...#####", "##############", ".############.", ".############.", "..##########..", "..####...####.", ".####.....####"] },
-  frogArt: { name: "Frog", rows: ["..####....####..", ".######..######.", ".##.##....##.##.", ".######..######.", "..############..", ".##############.", "################", "################", "################", "###.########.###", "####........####", "################", ".##############.", "..############..", "###..######..###", "####........####", "##............##"] },
-  octopusArt: { name: "Octopus", rows: ["....########....", "..############..", ".##############.", "################", "##.##########.##", "##.##########.##", "################", "################", "################", "################", "##.##.####.##.##", "##.##.####.##.##", "##.##.####.##.##", "##.##.####.##.##", "##.##.####.##.##", "##.##.####.##.##"] },
-  dolphinArt: { name: "Dolphin", rows: [".......##.......", "......####......", ".....######.....", "....########....", "...##########...", "..############..", "###############.", "################", "################", "###############.", "##############..", ".############...", "..##########....", "...####..###....", "..####....###...", ".####......###.."] },
-  ladybugArt: { name: "Ladybug", rows: ["..##......##..", "...##....##...", "....######....", "...########...", "..##########..", ".############.", "##############", "###.####.#####", "###.####.#####", "##############", "####.##.######", "####.##.######", "##############", ".############.", ".############.", "..##########..", "...########...", "....######...."] },
-  spiderArt: { name: "Spider", rows: ["##..........##", ".##........##.", "..##......##..", "...########...", "..##########..", ".############.", "##############", "##.########.##", "##############", "##############", ".############.", "..##########..", "...########...", "..##......##..", ".##........##.", "##..........##"] },
-  sunArt: { name: "Sun", rows: ["......##......", "......##......", "...#######....", "....######....", "..##########..", ".############.", "##############", "##############", "##############", "##############", ".############.", "..##########..", "....######....", "...#######....", "......##......", "......##......"] },
-  moonArt: { name: "Moon", rows: ["......####....", "....########..", "...#########..", "..#####.......", ".#####........", ".####.........", "#####.........", "####..........", "####..........", "####..........", "#####.........", ".####.........", ".#####........", "..#####.......", "...#########..", "....########..", "......####...."] },
-  cloudArt: { name: "Cloud", rows: [".....######.....", "...##########...", "..############..", ".##############.", "################", "################", "################", "################", "################", ".##############.", "..############.."] },
-  starArt: { name: "Star", rows: ["......##......", "......##......", ".....####.....", ".....####.....", "##############", "##############", ".############.", "..##########..", "...########...", "...########...", "..##########..", "..###....###..", ".####....####.", ".###......###.", "###........###"] },
-  heartBigArt: { name: "Heartbeat", rows: ["..####....####..", ".######..######.", "################", "################", "################", "################", "################", ".##############.", ".##############.", "..############..", "...##########...", "....########....", ".....######.....", "......####......", ".......##......."] },
-  ringArt: { name: "Ring", rows: ["......##......", ".....####.....", "....##..##....", "...##....##...", "....######....", "..##########..", ".############.", "###........###", "###........###", "###........###", "###........###", "###........###", ".############.", "..##########..", "....######...."] },
-  giftArt: { name: "Gift", rows: ["..##......##..", ".####....####.", ".#####..#####.", "..############", "##############", "##############", "#####.##.#####", "##############", "##############", "#####.##.#####", "#####.##.#####", "#####.##.#####", "#####.##.#####", "#####.##.#####", "##############", "##############"] },
-  bellArt: { name: "Bell", rows: ["......##......", ".....####.....", "....######....", "...########...", "..##########..", "..##########..", ".############.", ".############.", "##############", "##############", "##############", "##############", "##############", "..##########..", "......##......", ".....####.....", "......##......"] },
-  lanternArt: { name: "Lantern", rows: ["......##......", "....######....", "..##########..", ".############.", "##############", "##.########.##", "##.########.##", "##.########.##", "##.########.##", "##.########.##", "##.########.##", "##############", ".############.", "..##########..", "....######....", "......##......"] },
-  windmillArt: { name: "Windmill", rows: ["..####.........", "..#####........", "..######.......", "..#######......", "#######........", "..#######......", "......####.....", "......####.....", ".....######....", ".....######....", ".....######....", ".....######....", "....########...", "....########...", "...##########..", "..############."] },
-  pyramidArt: { name: "Pyramid", rows: [".......##.......", "......####......", ".....######.....", ".....######.....", "....########....", "...##########...", "...##########...", "..############..", ".##############.", ".##############.", "################", "################", "################"] },
-  bridgeArt: { name: "Bridge", rows: ["....########....", "..############..", ".##############.", "###..######..###", "###..######..###", "###..######..###", "################", "################", "###.##.##.##.###", "###.##.##.##.###", "###.##.##.##.###", "###.##.##.##.###", "################", "################"] },
-  trainArt: { name: "Train", rows: ["....##........", "....##........", "..######......", "..######......", "..############", "..############", "###...##...###", "##############", "##############", "##.###..###.##", "##############", "..############", "..####..####..", "..####..####.."] },
-  carArt: { name: "Car", rows: [".....########.....", "....##########....", "...############...", "..##.########.##..", ".###.########.###.", "##################", "##################", "##################", "##################", "##################", "..####......####..", ".######....######.", ".######....######.", "..####......####.."] },
-  planeArt: { name: "Plane", rows: [".......##.......", ".......##.......", "......####......", "......####......", "......####......", "################", "################", "################", "......####......", "......####......", "......####......", "......####......", "....########....", "....########....", "..############.."] },
-  bikeArt: { name: "Bicycle", rows: ["..........####..", "..........####..", "....##########..", "...####.....##..", "..#####....###..", "..############..", ".###.####.####..", "####..##..#####.", "####..##..#####.", "####..##..#####.", ".###..##..####..", "..############..", "...##########..."] },
-  lampArt: { name: "Lamp", rows: ["....######....", "...########...", "..##########..", ".############.", "##############", "##############", ".############.", "..##########..", "......##......", "......##......", "......##......", "......##......", "......##......", "....######....", "..##########..", ".############."] },
-  bookArt: { name: "Book", rows: ["................", "..############..", ".##############.", "################", "###..######..###", "###..######..###", "###..######..###", "###..######..###", "###..######..###", "###..######..###", "################", ".##############.", "..############.."] },
-  pencilArt: { name: "Pencil", rows: ["..........####", ".........#####", "........######", ".......#####..", "......#####...", ".....#####....", "....#####.....", "...#####......", "..#####.......", ".#####........", "#####.........", "####..........", "###...........", "##............", "#............."] },
-  clockArt: { name: "Clock", rows: ["....########....", "..############..", ".##############.", "################", "###.##....##.###", "###.##....##.###", "###.########.###", "###.###..###.###", "###.###..###.###", "###.###..###.###", "################", ".##############.", "..############..", "....########....", "...##......##...", "..####....####.."] },
-  compassArt: { name: "Compass", rows: ["....########....", "..############..", ".##############.", "################", "################", "####..####..####", "####.######.####", "####.######.####", "####..####..####", "################", "################", ".##############.", "..############..", "....########...."] },
-  kiteArt: { name: "Kite", rows: [".......##.......", "......####......", ".....######.....", "....########....", "...##########...", "..############..", ".##############.", "################", ".##############.", "..############..", "...##########...", "....########....", ".....######.....", "......####......", ".......##.......", ".......##.......", "......####......", ".......##.......", "......####......"] },
-  donutArt: { name: "Donut", rows: ["....########....", "..############..", ".##############.", "################", "####........####", "###..........###", "###..........###", "###..........###", "###..........###", "####........####", "################", ".##############.", "..############..", "....########...."] },
 };
 
-const COLLECTABLE = ["Cat", "Dog", "Elephant", "Butterfly", "Umbrella", "Anchor", "Trophy", "Crown", "Tree", "Fish", "Bird", "Guitar", "Hourglass", "Key", "Mushroom", "Rocket", "Owl", "Whale", "Cactus", "Bolt", "Crab", "Penguin", "Lighthouse", "Bear", "Flower", "Camera", "Sailboat", "Dino", "Bee", "Castle", "Ghost", "Ice Cream", "Turtle", "Robot", "Balloon", "Fox", "Cupcake", "Snail", "Mountain", "Teapot", "Keyhole", "Apple", "Dice", "Tower", "Rabbit", "Frog", "Octopus", "Dolphin", "Ladybug", "Spider", "Sun", "Moon", "Cloud", "Star", "Heartbeat", "Ring", "Gift", "Bell", "Lantern", "Windmill", "Pyramid", "Bridge", "Train", "Car", "Plane", "Bicycle", "Lamp", "Book", "Pencil", "Clock", "Compass", "Kite", "Donut", "Grid", "Diamond", "Heart", "Cross"];
-const THUMB = { "Cat": "catArt", "Dog": "dogArt", "Elephant": "elephantArt", "Butterfly": "butterflyArt", "Umbrella": "umbrellaArt", "Anchor": "anchorArt", "Trophy": "trophyArt", "Crown": "crownArt", "Tree": "treeArt", "Fish": "fishArt", "Bird": "birdArt", "Guitar": "guitarArt", "Hourglass": "hourglassArt", "Key": "keyArt", "Mushroom": "mushroomArt", "Rocket": "rocketArt", "Owl": "owlArt", "Whale": "whaleArt", "Cactus": "cactusArt", "Bolt": "boltArt", "Crab": "crabArt", "Penguin": "penguinArt", "Lighthouse": "lighthouseArt", "Bear": "bearArt", "Flower": "flowerArt", "Camera": "cameraArt", "Sailboat": "boatArt", "Dino": "dinoArt", "Bee": "beeArt", "Castle": "castleArt", "Ghost": "ghostArt", "Ice Cream": "iceArt", "Turtle": "turtleArt", "Robot": "robotArt", "Balloon": "balloonArt", "Fox": "foxArt", "Cupcake": "cupcakeArt", "Snail": "snailArt", "Mountain": "mountainArt", "Teapot": "teapotArt", "Keyhole": "keyholeArt", "Apple": "appleArt", "Dice": "diceArt", "Tower": "towerArt", "Rabbit": "rabbitArt", "Frog": "frogArt", "Octopus": "octopusArt", "Dolphin": "dolphinArt", "Ladybug": "ladybugArt", "Spider": "spiderArt", "Sun": "sunArt", "Moon": "moonArt", "Cloud": "cloudArt", "Star": "starArt", "Heartbeat": "heartBigArt", "Ring": "ringArt", "Gift": "giftArt", "Bell": "bellArt", "Lantern": "lanternArt", "Windmill": "windmillArt", "Pyramid": "pyramidArt", "Bridge": "bridgeArt", "Train": "trainArt", "Car": "carArt", "Plane": "planeArt", "Bicycle": "bikeArt", "Lamp": "lampArt", "Book": "bookArt", "Pencil": "pencilArt", "Clock": "clockArt", "Compass": "compassArt", "Kite": "kiteArt", "Donut": "donutArt", "Grid": "square5", "Diamond": "diamond7", "Heart": "heart9", "Cross": "cross7" };
+const COLLECTABLE = ["Cat", "Dog", "Elephant", "Butterfly", "Umbrella", "Anchor", "Trophy", "Crown", "Tree", "Fish", "Bird", "Guitar", "Hourglass", "Key", "Mushroom", "Rocket", "Grid", "Diamond", "Heart", "Cross"];
+const THUMB = { Cat: "catArt", Dog: "dogArt", Elephant: "elephantArt", Butterfly: "butterflyArt", Umbrella: "umbrellaArt", Anchor: "anchorArt", Trophy: "trophyArt", Crown: "crownArt", Tree: "treeArt", Fish: "fishArt", Bird: "birdArt", Guitar: "guitarArt", Hourglass: "hourglassArt", Key: "keyArt", Mushroom: "mushroomArt", Rocket: "rocketArt", Grid: "square5", Diamond: "diamond7", Heart: "heart9", Cross: "cross7" };
 
 /* ═══════════  tiers  ═══════════ */
 
@@ -3923,26 +1052,10 @@ const THUMB = { "Cat": "catArt", "Dog": "dogArt", "Elephant": "elephantArt", "Bu
 /* Every hand-drawn shape, walked in a seeded order so nothing repeats until
    the whole set has been played. The old per-tier pools held 3-4 masks each,
    which meant the same silhouette returned every few levels. */
-/* Every name in COLLECTABLE has to be reachable, or its slot in the Collection
-   sits locked for ever and the player hunts something that cannot appear.
-   Grid, Diamond, Heart and Cross were listed as collectable and given
-   thumbnails, but their shapes were never in this pool, so no level ever used
-   them — four of the seventy-seven slots were unwinnable. */
 const ART_POOL = [
-  "square5", "diamond7", "heart9", "cross7",
   "catArt", "dogArt", "elephantArt", "butterflyArt", "umbrellaArt", "anchorArt",
   "trophyArt", "crownArt", "treeArt", "fishArt", "birdArt", "guitarArt",
-  "hourglassArt", "keyArt", "mushroomArt", "rocketArt", "owlArt", "whaleArt",
-  "cactusArt", "boltArt", "crabArt", "penguinArt", "lighthouseArt", "bearArt",
-  "flowerArt", "cameraArt", "boatArt", "dinoArt", "beeArt", "castleArt",
-  "ghostArt", "iceArt", "turtleArt", "robotArt", "balloonArt", "foxArt",
-  "cupcakeArt", "snailArt", "mountainArt", "teapotArt", "keyholeArt", "appleArt",
-  "diceArt", "towerArt", "rabbitArt", "frogArt", "octopusArt", "dolphinArt",
-  "ladybugArt", "spiderArt", "sunArt", "moonArt", "cloudArt", "starArt",
-  "heartBigArt", "ringArt", "giftArt", "bellArt", "lanternArt", "windmillArt",
-  "pyramidArt", "bridgeArt", "trainArt", "carArt", "planeArt", "bikeArt",
-  "lampArt", "bookArt", "pencilArt", "clockArt", "compassArt", "kiteArt",
-  "donutArt",
+  "hourglassArt", "keyArt", "mushroomArt", "rocketArt",
 ];
 
 function shuffledCycle(cycle) {
@@ -3975,108 +1088,23 @@ function curatedKey(level) {
   return order[(level - 1) % n];
 }
 
-/* Every level for eight hundred levels asked the same thing: empty the board.
-   One goal type, repeated. That is the whole of why the game runs out of
-   interest long before it runs out of levels — the boards change, the question
-   never does.
-
-   These six reuse what the game already tracks, so none of them needs a new
-   system: taps, the clock, the combo counter, the seal chain, the mistake
-   count. A tier cycles through them, so the next level asks something the last
-   one did not.
-
-   Every target here is derived from the board that was actually built, and the
-   audit checks each one is reachable — a goal that cannot be met is an
-   unwinnable level, which is worse than a boring one. */
-const GOALS = ["clear", "par", "time", "chain", "rescue", "flawless"];
-const ENDLESS_FROM = 800;   // where the tier table runs out and the goals take over
-
-function goalFor(level, tierIndex, pieces, mask) {
-  /* Introduced one at a time, with room between. Cycling all six from level
-     twelve meant a player met every one of them inside six levels — five new
-     ideas and five banners in five boards, which teaches none of them. Each
-     unlocks, then has a stretch to itself before the next arrives. */
-  const UNLOCK = [
-    [12, "flawless"],   // the gentlest: it only asks for care
-    [22, "par"],
-    [38, "chain"],
-    [58, "time"],
-    [80, "rescue"],
-  ];
-  const open = UNLOCK.filter(([at]) => level >= at).map(([, k]) => k);
-  if (!open.length) return { kind: "clear" };
-  // "clear" stays in the rotation so plain boards keep appearing
-  const pool = ["clear", ...open];
-  const kind = pool[(level + tierIndex) % pool.length];
-  const n = pieces.length;
-
-  /* Past the last tier every mechanical dial is already at its ceiling —
-     diagonals at four, deflectors at three, hearts at their floor — so level
-     800 and level 12,000 were the same level with a different picture. There
-     was nothing left to climb.
-
-     The goals are what climbs now. Each lap past the end tightens the target a
-     little: fewer spare taps, less time, a longer chain. It is bounded, because
-     an unreachable goal is an unwinnable level, and the goal test checks the
-     whole range. */
-  const past = Math.max(0, level - ENDLESS_FROM);
-  const lap = Math.min(1, past / 2400);   // full tightening by ~3200 levels
-  switch (kind) {
-    case "par":
-      // room for a few wasted taps, tightening as the tiers go up
-      /* Never below one tap per arrow plus a little: every arrow must be
-         tapped once, so a par under 1.0 is an unwinnable level. The endless
-         tightening walked straight past that into 0.96 before this floor. */
-      return { kind, taps: Math.ceil(n * Math.max(1.08, 1.35 - Math.min(0.2, tierIndex * 0.02) - lap * 0.2)) };
-    case "time":
-      /* Three seconds an arrow. The first draft allowed 2.1 and every single
-         timed level came out unwinnable against a competent pace of about 2.2 —
-         the limit has to leave room to read the board, or the goal is decoration
-         on a level you always fail. This is generous enough to finish without
-         rushing and tight enough that dawdling costs it. */
-      return { kind, secs: Math.max(60, Math.round(n * (3.0 - lap * 0.55))) };
-    case "chain": {
-      const want = Math.max(4, Math.min(20, Math.round(n * (0.18 + lap * 0.12))));
-      return { kind, chain: want };
-    }
-    case "rescue": {
-      // the arrow that has to wait longest is the one worth rescuing
-      let pick = 0, deep = -1;
-      pieces.forEach((p, i) => { const d = p.cells.length + (p.needs !== undefined ? 6 : 0); if (d > deep) { deep = d; pick = i; } });
-      return { kind, target: pieces[pick].id };
-    }
-    case "flawless":
-      return { kind, mistakes: 0 };
-    default:
-      return { kind: "clear" };
-  }
-}
-
-/* freedom is the difficulty target the board selector aims for: it builds
-   several candidate boards and keeps the one whose measured freedom is closest
-   to this. The original numbers all sat far BELOW anything a board could
-   actually reach, so "closest to target" collapsed into "as constrained as
-   possible" — an optimiser with no ceiling. Every new mechanic that allowed a
-   tighter board then ratcheted difficulty up on its own, unasked.
-   These values are what the original game measurably played at, tier by tier,
-   so the curve stays where it was and the target does real work from now on. */
 const TIERS = [
-  { name: "Warm Up", span: 2,     maxLen: 14, hearts: 3, hints: 3, undos: 3, coverage: 0.94, tightness: 0.80, freedom: 0.494, pieces: 32, maxCells: 188 , diag: 0 , mirrors: 0 },
-  { name: "Little Easy", span: 3,     maxLen: 15, hearts: 3, hints: 3, undos: 3, coverage: 0.95, tightness: 0.83, freedom: 0.426, pieces: 38, maxCells: 231 , diag: 0 , mirrors: 0 },
-  { name: "Easy", span: 4,     maxLen: 16, hearts: 3, hints: 3, undos: 2, coverage: 0.95, tightness: 0.85, freedom: 0.360, pieces: 44, maxCells: 275 , diag: 0 , mirrors: 0 },
-  { name: "Easy Plus", span: 5,     maxLen: 18, hearts: 3, hints: 2, undos: 2, coverage: 0.96, tightness: 0.87, freedom: 0.390, pieces: 49, maxCells: 319 , diag: 0 , mirrors: 0 },
-  { name: "Little Medium", span: 6,     maxLen: 19, hearts: 2, hints: 2, undos: 2, coverage: 0.96, tightness: 0.88, freedom: 0.438, pieces: 55, maxCells: 362 , diag: 1 , mirrors: 0 },
-  { name: "Medium", span: 8,     maxLen: 20, hearts: 2, hints: 2, undos: 2, coverage: 0.97, tightness: 0.90, freedom: 0.322, pieces: 62, maxCells: 406 , diag: 1 , mirrors: 0 },
-  { name: "Medium Plus", span: 10,     maxLen: 21, hearts: 2, hints: 2, undos: 2, coverage: 0.97, tightness: 0.91, freedom: 0.372, pieces: 70, maxCells: 450 , diag: 2 , mirrors: 1 },
-  { name: "Tricky", span: 12,     maxLen: 23, hearts: 2, hints: 2, undos: 1, coverage: 0.98, tightness: 0.92, freedom: 0.363, pieces: 77, maxCells: 494 , diag: 2 , mirrors: 1 },
-  { name: "Tough", span: 14,     maxLen: 25, hearts: 2, hints: 2, undos: 1, coverage: 0.98, tightness: 0.93, freedom: 0.369, pieces: 84, maxCells: 538 , diag: 2 , mirrors: 1 },
-  { name: "Hard", span: 17,     maxLen: 26, hearts: 2, hints: 1, undos: 1, coverage: 0.99, tightness: 0.94, freedom: 0.319, pieces: 91, maxCells: 588 , diag: 3 , mirrors: 2 },
-  { name: "Very Hard", span: 20,     maxLen: 27, hearts: 2, hints: 1, undos: 1, coverage: 0.99, tightness: 0.95, freedom: 0.315, pieces: 100, maxCells: 638 , diag: 3 , mirrors: 2 },
-  { name: "Super Hard", span: 24,     maxLen: 28, hearts: 2, hints: 1, undos: 1, coverage: 0.99, tightness: 0.96, freedom: 0.287, pieces: 109, maxCells: 694 , diag: 3 , mirrors: 2 },
-  { name: "Expert", span: 30,     maxLen: 29, hearts: 2, hints: 1, undos: 1, coverage: 0.99, tightness: 0.97, freedom: 0.315, pieces: 117, maxCells: 750 , diag: 4 , mirrors: 3 },
-  { name: "Elite", span: 36,     maxLen: 31, hearts: 2, hints: 1, undos: 1, coverage: 0.99, tightness: 0.98, freedom: 0.294, pieces: 128, maxCells: 806 , diag: 4 , mirrors: 3 },
-  { name: "Master", span: 45,     maxLen: 33, hearts: 2, hints: 1, undos: 1, coverage: 0.99, tightness: 0.99, freedom: 0.284, pieces: 138, maxCells: 862 , diag: 4 , mirrors: 3 },
-  { name: "Pro", span: Infinity,     maxLen: 35, hearts: 2, hints: 1, undos: 1, coverage: 0.99, tightness: 1.0, freedom: 0.267, pieces: 148, maxCells: 925 , diag: 4 , mirrors: 3 },
+  { name: "Warm Up", span: 2,     maxLen: 10, hearts: 3, hints: 3, undos: 3, coverage: 0.88, tightness: 0.66, freedom: 0.15, pieces: 20, maxCells: 150 },
+  { name: "Little Easy", span: 3,     maxLen: 11, hearts: 3, hints: 3, undos: 3, coverage: 0.89, tightness: 0.7, freedom: 0.1341, pieces: 24, maxCells: 180 },
+  { name: "Easy", span: 4,     maxLen: 12, hearts: 3, hints: 3, undos: 2, coverage: 0.9, tightness: 0.74, freedom: 0.1199, pieces: 28, maxCells: 210 },
+  { name: "Easy Plus", span: 5,     maxLen: 13, hearts: 3, hints: 2, undos: 2, coverage: 0.9, tightness: 0.78, freedom: 0.1072, pieces: 32, maxCells: 240 },
+  { name: "Little Medium", span: 6,     maxLen: 14, hearts: 3, hints: 2, undos: 2, coverage: 0.91, tightness: 0.81, freedom: 0.0958, pieces: 36, maxCells: 275 },
+  { name: "Medium", span: 8,     maxLen: 15, hearts: 3, hints: 2, undos: 2, coverage: 0.92, tightness: 0.84, freedom: 0.0857, pieces: 40, maxCells: 310 },
+  { name: "Medium Plus", span: 10,     maxLen: 16, hearts: 3, hints: 2, undos: 2, coverage: 0.92, tightness: 0.86, freedom: 0.0766, pieces: 45, maxCells: 345 },
+  { name: "Tricky", span: 12,     maxLen: 17, hearts: 3, hints: 2, undos: 1, coverage: 0.93, tightness: 0.88, freedom: 0.0685, pieces: 50, maxCells: 380 },
+  { name: "Tough", span: 14,     maxLen: 18, hearts: 3, hints: 2, undos: 1, coverage: 0.94, tightness: 0.9, freedom: 0.0612, pieces: 55, maxCells: 420 },
+  { name: "Hard", span: 17,     maxLen: 19, hearts: 3, hints: 1, undos: 1, coverage: 0.94, tightness: 0.92, freedom: 0.0547, pieces: 60, maxCells: 460 },
+  { name: "Very Hard", span: 20,     maxLen: 20, hearts: 3, hints: 1, undos: 1, coverage: 0.95, tightness: 0.94, freedom: 0.0489, pieces: 66, maxCells: 500 },
+  { name: "Super Hard", span: 24,     maxLen: 21, hearts: 3, hints: 1, undos: 1, coverage: 0.96, tightness: 0.95, freedom: 0.0437, pieces: 72, maxCells: 545 },
+  { name: "Expert", span: 30,     maxLen: 22, hearts: 3, hints: 1, undos: 1, coverage: 0.96, tightness: 0.96, freedom: 0.0391, pieces: 78, maxCells: 590 },
+  { name: "Elite", span: 36,     maxLen: 23, hearts: 3, hints: 1, undos: 1, coverage: 0.97, tightness: 0.97, freedom: 0.035, pieces: 85, maxCells: 635 },
+  { name: "Master", span: 45,     maxLen: 24, hearts: 3, hints: 1, undos: 1, coverage: 0.98, tightness: 0.98, freedom: 0.0312, pieces: 92, maxCells: 680 },
+  { name: "Pro", span: Infinity,     maxLen: 26, hearts: 3, hints: 1, undos: 1, coverage: 0.99, tightness: 1.0, freedom: 0.0279, pieces: 100, maxCells: 730 },
 ];
 const MEDAL = { 1: "#CD7F32", 2: "#AEB6C4", 3: "#FFC24B" };
 const TIER_HUE = ["#5FCB8A", "#4CC79B", "#3FBFD6", "#3EA8EE", "#3E9BF0", "#5580F2", "#6C7BF0", "#8470F2", "#9A6BF0", "#C07AD8", "#F0A93E", "#F2891B", "#F2761B", "#FF6A4A", "#FF3D9A", "#B14BFF"];
@@ -4084,12 +1112,9 @@ const TIER_HUE = ["#5FCB8A", "#4CC79B", "#3FBFD6", "#3EA8EE", "#3E9BF0", "#5580F
 /* arrow palettes — competitors are all monochrome navy, this is free differentiation */
 const PALETTES = {
   ink: { name: "Ink", base: "#1B2440" },
-  candy: { name: "Candy", right: "#2F7BF6", left: "#FF4D6A", up: "#8B5CF6", down: "#F59E0B",
-           upRight: "#06B6D4", downRight: "#EC4899", downLeft: "#F97316", upLeft: "#22C55E" },
-  forest: { name: "Forest", right: "#0E9F6E", left: "#0EA5E9", up: "#65A30D", down: "#EAB308",
-            upRight: "#14B8A6", downRight: "#3B82F6", downLeft: "#A3A635", upLeft: "#84CC16" },
-  sunset: { name: "Sunset", right: "#F2761B", left: "#E11D74", up: "#7C3AED", down: "#FBBF24",
-            upRight: "#F43F5E", downRight: "#A855F7", downLeft: "#FB923C", upLeft: "#D946EF" },
+  candy: { name: "Candy", right: "#2F7BF6", left: "#FF4D6A", up: "#8B5CF6", down: "#F59E0B" },
+  forest: { name: "Forest", right: "#0E9F6E", left: "#0EA5E9", up: "#65A30D", down: "#EAB308" },
+  sunset: { name: "Sunset", right: "#F2761B", left: "#E11D74", up: "#7C3AED", down: "#FBBF24" },
 };
 const PALETTE_KEYS = Object.keys(PALETTES);
 const toneFor = (dir, theme) => {
@@ -4124,18 +1149,7 @@ function parseMask(key) {
    rather than random, then cleaned so there are no spurs or holes. Level 200
    is the same shape for every player, everywhere. */
 
-const CURATED_UNTIL = 200;
-// Studio "quick pick" — a curated set of recognisable shapes so a casual player
-// can start a custom board with one tap instead of drawing on the 11x11 canvas.
-const QUICK_SHAPES = [
-  "heartBigArt", "starArt", "keyArt", "crownArt", "trophyArt", "ringArt",
-  "giftArt", "bellArt", "sunArt", "moonArt", "cloudArt", "donutArt",
-  "anchorArt", "umbrellaArt", "mushroomArt", "rocketArt",
-];
-const HARD_TIER = 9; // TIERS index where "Hard" begins — chess-style boards from here up
-const LOCK_TIER = 5; // "Medium" — sealed arrows start appearing here
-// how much of a board is sealed: a taste at Medium, a real constraint by Pro
-const lockRatio = (index) => (index < LOCK_TIER ? 0 : Math.min(0.26, 0.06 + (index - LOCK_TIER) * 0.02)); // hand-drawn art up to here, generated art beyond
+const CURATED_UNTIL = 44; // hand-drawn art up to here, generated art beyond
 const FORM_A = ["Twin", "Wide", "Tall", "Round", "Sharp", "Split", "Deep", "Open", "Half", "Broad"];
 const FORM_B = ["Bloom", "Arch", "Crest", "Drift", "Prism", "Wave", "Knot", "Spire", "Vault", "Ridge"];
 
@@ -4257,12 +1271,7 @@ function decodeMask(code) {
   const m = /^(\d+)x(\d+)-([A-Za-z0-9\-_]+)$/.exec((code || "").trim());
   if (!m) return null;
   const cols = +m[1], rows = +m[2];
-  /* Boards are far larger than when this cap was written — masks now reach the
-     seventies. Anything over the limit still SAVED fine but decoded to null,
-     so nearly half of a player's discovered shapes would quietly vanish from
-     the Collection. The ceiling is now above the largest mask the generator
-     can produce, with headroom. */
-  if (cols < 4 || rows < 4 || cols > 120 || rows > 120) return null;
+  if (cols < 4 || rows < 4 || cols > 40 || rows > 40) return null;  // artwork masks reach 26+
   let b64 = m[3].replace(/-/g, "+").replace(/_/g, "/");
   while (b64.length % 4) b64 += "=";
   try {
@@ -4301,207 +1310,72 @@ function tidyDrawing(cols, rows, cells) {
 const cx = (i, cols) => (i % cols) * U + U / 2;
 const cy = (i, cols) => Math.floor(i / cols) * U + U / 2;
 
+const W_BOARD = 11.5;
+const W_MINI = 8;
 
-/* A line-drawing needs ONE line weight. The board is drawn in cell units and
-   the SVG scales to fit the screen, so a stroke fixed in those units gets
-   thinner the bigger the board — a fourteen-cell board drew its arrows 2.7x
-   heavier than a forty-cell one, and the backdrop dots shrank to a third of a
-   pixel and vanished. Nothing about the game changes between those boards; the
-   drawing should not either.
-
-   These derive board-unit sizes from the on-screen size we actually want, so
-   the weight of a line is the same on every level. The pen does not change
-   because the paper got bigger. */
-const SCREEN_REF = 380;                 // a phone's CSS width
-const boardInk = (cols, rows) => {
-  const span = (Math.max(cols, rows) + VIEW_PAD * 2) * U;
-  const perPx = span / SCREEN_REF;      // board units in one screen pixel
-  return {
-    /* Capped against the CELL, not just the screen. An arrow has to sit inside
-       a 100-unit cell with its neighbours one cell away, so its thickness is a
-       fraction of that cell — screen-constant alone pushed it to 17% of a cell
-       on a big board where the original was 11.5%, and the arrows crowded each
-       other. Screen-constant below the cap, cell-bound above it. */
-    stroke: Math.min(2.4 * perPx, 0.12 * U),
-    dot: Math.min(1.25 * perPx, 0.05 * U),
-    /* Score pops and the tap ring were scaled by cols alone, but a board is
-       fitted by whichever side is longer. On a tall narrow board that made the
-       "+150" three and a half pixels tall — unreadable — while a wide board got
-       thirteen. Same screen size everywhere now. */
-    text: 13 * perPx,
-    rise: 26 * perPx,
-    ring: 20 * perPx,
-    // A tap zone may not spill into the next lane, or a tap becomes a guess
-    // between two arrows. Screen-constant up to that ceiling, capped after.
-    hit: (big) => Math.min((big ? 20 : 14) * perPx, (big ? 0.95 : 0.82) * U),
-  };
-};
-
-function piecePath(piece, cols, w = 9.6) {
+function piecePath(piece, cols) {
   const D = DIRS[piece.dir];
   const pts = [...piece.cells].reverse().map((i) => ({ x: cx(i, cols), y: cy(i, cols) }));
   const head = pts[pts.length - 1];
-  // nx/ny rather than dx/dy: on a diagonal, dx and dy are both 1, so scaling by
-  // them would push the stub and the tip 1.41x too far.
-  // Both lengths follow the stroke, so a one-cell arrow keeps its shape and the
-  // line always meets the back of the head at the same overlap.
-  if (pts.length === 1) pts.unshift({ x: head.x - D.nx * U * 0.34, y: head.y - D.ny * U * 0.34 });
-  const tip = { x: head.x + D.nx * U * 0.07, y: head.y + D.ny * U * 0.07 };
+  if (pts.length === 1) pts.unshift({ x: head.x - D.dx * 34, y: head.y - D.dy * 34 });
+  const tip = { x: head.x + D.dx * 7, y: head.y + D.dy * 7 };
   return `M ${pts[0].x} ${pts[0].y} ` + pts.slice(1).map((p) => `L ${p.x} ${p.y}`).join(" ") + ` L ${tip.x} ${tip.y}`;
 }
 
-/* The arrowhead is drawn in proportion to the line it caps. It used to be a
-   fixed size while the stroke scaled with the board, so on a large board the
-   head was barely wider than the line and the arrows read as plain strokes
-   with no direction at all. These ratios are the old numbers expressed against
-   the stroke weight they were originally tuned for. */
-function headChevron(piece, cols, w = 9.6) {
+function headChevron(piece, cols) {
   const i = piece.cells[0];
   const hx = cx(i, cols);
   const hy = cy(i, cols);
-  /* The head is measured against the CELL. Tying it to the stroke made it grow
-     with the line, and on a dense board a head half a cell wide ran into the
-     arrows around it. A cell is always 100 units, so an arrowhead sized from it
-     always fits its own square whatever the board. */
-  const back = U * 0.02, reach = U * 0.26, flare = U * 0.16;
-  return {
-    d: `M ${hx + back} ${hy - flare} L ${hx + reach} ${hy} L ${hx + back} ${hy + flare}`,
-    rot: `rotate(${DIRS[piece.dir].angle} ${hx} ${hy})`,
-  };
+  return { d: `M ${hx + 2} ${hy - 15} L ${hx + 25} ${hy} L ${hx + 2} ${hy + 15}`, rot: `rotate(${DIRS[piece.dir].angle} ${hx} ${hy})` };
 }
 
-/* The countdown owns its own clock. Holding `elapsed` in the play component
-   meant a state change twice a second, and every one of those re-rendered the
-   whole board — measured at about 188 SVG nodes for the arrows alone, none of
-   them memoised, for a number that only the header cares about. Now the board
-   is untouched while the clock runs and only this line updates.
-
-   The authoritative time stays in a ref on the parent, so the win check reads a
-   real elapsed time rather than whatever this last painted. */
-function Countdown({ secs, startedAt, onExpire, style }) {
-  const [left, setLeft] = useState(secs);
-  const fired = useRef(false);
-  useEffect(() => {
-    fired.current = false;
-    setLeft(secs);
-    const id = setInterval(() => {
-      const rem = secs - Math.floor((Date.now() - startedAt.current) / 1000);
-      setLeft(rem);
-      if (rem < 0 && !fired.current) { fired.current = true; onExpire(); }
-    }, 250);
-    return () => clearInterval(id);
-  }, [secs, startedAt, onExpire]);
-  return <div style={style}>{Math.max(0, left)}s left</div>;
-}
-
-/* Memoised, and the props are shaped so that memo can actually bail out.
-
-   Without this every state change re-rendered every arrow on the board — about
-   188 SVG nodes on a normal level — and a tap changes state several times. The
-   two things that used to defeat it were a `style` object literal and an
-   `onDown` built per piece per render: both are a new reference every time, so
-   a shallow compare never matched. `delay` and `dim` are primitives now, and
-   the handler takes the piece as an argument instead of being bound to it. */
-const Piece = React.memo(function Piece({ piece, cols, tone, width, className, delay, dim, hit, onDown }) {
-  const d = piecePath(piece, cols, width);
-  const chev = headChevron(piece, cols, width);
+function Piece({ piece, cols, tone, width, className, style, hit, onDown }) {
+  const d = piecePath(piece, cols);
+  const chev = headChevron(piece, cols);
   return (
-    <g className={className} style={{ "--d": `${delay}ms`, opacity: dim ? 0.85 : 1 }}>
+    <g className={className} style={style}>
       <path d={d} stroke={tone} strokeWidth={width} strokeLinecap="round" strokeLinejoin="round" fill="none" />
       <path d={chev.d} transform={chev.rot} stroke={tone} strokeWidth={width} strokeLinecap="round" strokeLinejoin="round" fill="none" />
       {onDown && (
-        <path d={d} data-piece={piece.id} stroke="transparent" strokeWidth={hit} strokeLinecap="round" strokeLinejoin="round" fill="none" pointerEvents="stroke" style={{ cursor: "pointer" }} onPointerDown={(e) => onDown(piece, e)} />
+        <path d={d} stroke="transparent" strokeWidth={hit} strokeLinecap="round" strokeLinejoin="round" fill="none" pointerEvents="stroke" style={{ cursor: "pointer" }} onPointerDown={onDown} />
       )}
     </g>
   );
-});
+}
 
 /* The head always exits straight, but the body should follow the bends behind
    it — so we draw one long path (body + exit lane) and slide a dash along it. */
-function departGeom(piece, cols, rows, mirrors, w = 9.6) {
+function departGeom(piece, cols, rows) {
   const D = DIRS[piece.dir];
   const pts = [...piece.cells].reverse().map((i) => ({ x: cx(i, cols), y: cy(i, cols) }));
   const head = pts[pts.length - 1];
-  // matches the stub piecePath draws, so a one-cell arrow does not change
-  // length the instant it starts to leave
-  if (pts.length === 1) pts.unshift({ x: head.x - D.nx * U * 0.34, y: head.y - D.ny * U * 0.34 });
+  if (pts.length === 1) pts.unshift({ x: head.x - D.dx * 34, y: head.y - D.dy * 34 });
 
   let bodyLen = 0;
   for (let i = 1; i < pts.length; i++) {
     bodyLen += Math.abs(pts[i].x - pts[i - 1].x) + Math.abs(pts[i].y - pts[i - 1].y);
   }
-  bodyLen += U * 0.07; // out to the chevron base
+  bodyLen += 7; // out to the chevron base
 
-  /* With deflectors the flight is no longer a straight run: walk the actual
-     lane cells so the arrow visibly turns where the lane turns, then carry on
-     past the last one to leave the board. */
-  const lane = exitLine(piece.cells[0], piece.dir, cols, rows, mirrors) || [];
-  const via = lane.map((i) => ({ x: cx(i, cols), y: cy(i, cols) }));
-  let travel = 0;
-  let prev = head;
-  for (const q of via) {
-    travel += Math.hypot(q.x - prev.x, q.y - prev.y);
-    prev = q;
-  }
-  // direction of the final leg, so the exit continues the way the lane ended
-  const lastD = via.length >= 2
-    ? (() => {
-        const a = via[via.length - 2], b = via[via.length - 1];
-        const L = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-        return { nx: (b.x - a.x) / L, ny: (b.y - a.y) / L };
-      })()
-    : { nx: D.nx, ny: D.ny };
-  const tailRun = 1.5 * U + bodyLen;
-  travel += tailRun;
-  const end = { x: prev.x + lastD.nx * tailRun, y: prev.y + lastD.ny * tailRun };
+  const lanes = exitLine(piece.cells[0], piece.dir, cols, rows).length;
+  const travel = (lanes + 1.5) * U + bodyLen;
+  const end = { x: head.x + D.dx * travel, y: head.y + D.dy * travel };
   const d =
     `M ${pts[0].x} ${pts[0].y} ` +
     pts.slice(1).map((q) => `L ${q.x} ${q.y}`).join(" ") +
-    via.map((q) => `L ${q.x} ${q.y}`).join(" ") +
     ` L ${end.x} ${end.y}`;
-  return { d, bodyLen, travel, D, lastD };
+  return { d, bodyLen, travel, D };
 }
 
-/* The guide line a player sights along. It used to be a straight ray, which is
-   wrong the moment a lane bends at a deflector — the arrow would fly somewhere
-   the guide never pointed. */
-function lanePath(head, dir, cols, rows, mirrors) {
-  const lane = exitLine(head, dir, cols, rows, mirrors) || [];
-  /* DOT_PAD alone, matching what its own comment says: "how far a lane guide
-     runs past the board edge." The formula also carried cols + rows, and the
-     SVG this draws into has overflow: visible — needed so a piece can fly off
-     the board during its own exit animation without being clipped mid-flight.
-     Nothing here clips the lane guide, so on a real board that overshoot is
-     40 to 54 cell-lengths, measured, more than twice the board's own width —
-     and every arrow's lane draws one, so the trace-all view is that many
-     lines each running off screen. The `last` point is already at the board
-     edge — exitLine stops there — so the guide only needs to carry a little
-     further to read as continuing off the board, not span it again. */
-  const far = DOT_PAD * U;
-  let d = `M ${cx(head, cols)} ${cy(head, cols)}`;
-  let last = { x: cx(head, cols), y: cy(head, cols) };
-  let prev = last;
-  for (const i of lane) {
-    const q = { x: cx(i, cols), y: cy(i, cols) };
-    d += ` L ${q.x} ${q.y}`;
-    prev = last; last = q;
-  }
-  // carry on past the final cell so the guide runs off the board
-  const dx = last.x - prev.x, dy = last.y - prev.y;
-  const L = Math.hypot(dx, dy) || 1;
-  d += ` L ${last.x + (dx / L) * far} ${last.y + (dy / L) * far}`;
-  return d;
-}
-
-function DepartingPiece({ piece, cols, rows, tone, mirrors, width }) {
-  const g = departGeom(piece, cols, rows, mirrors, width);
-  const chev = headChevron(piece, cols, width);
+function DepartingPiece({ piece, cols, rows, tone }) {
+  const g = departGeom(piece, cols, rows);
+  const chev = headChevron(piece, cols);
   return (
     <g className="dep-fade">
       <path
         d={g.d}
         stroke={tone}
-        strokeWidth={width}
+        strokeWidth={W_BOARD}
         strokeLinecap="round"
         strokeLinejoin="round"
         fill="none"
@@ -4511,12 +1385,12 @@ function DepartingPiece({ piece, cols, rows, tone, mirrors, width }) {
           "--off": `-${g.travel}px`,
         }}
       />
-      <g className="chev-out" style={{ "--tx": `${g.lastD.nx * g.travel}px`, "--ty": `${g.lastD.ny * g.travel}px` }}>
+      <g className="chev-out" style={{ "--tx": `${g.D.dx * g.travel}px`, "--ty": `${g.D.dy * g.travel}px` }}>
         <path
           d={chev.d}
           transform={chev.rot}
           stroke={tone}
-          strokeWidth={width}
+          strokeWidth={W_BOARD}
           strokeLinecap="round"
           strokeLinejoin="round"
           fill="none"
@@ -4526,86 +1400,18 @@ function DepartingPiece({ piece, cols, rows, tone, mirrors, width }) {
   );
 }
 
-// A mask drawn as one path instead of one rect element per cell. The Collection shows
-// dozens of thumbnails at once; at ~190 cells each that was thousands of DOM
-// nodes and made the tab hang. Paths are built once and cached by key.
-
-/* Discovered shapes are stored as encoded masks and drawn as thumbnails. The
-   grid decoded and re-traced all of them on every single render — at up to a
-   hundred and sixty shapes of several hundred cells each that is over two
-   megabytes of path data rebuilt each time the Collection tab so much as
-   re-renders, which is what made it stutter. The codes never change, so the
-   result is cached against the code itself. */
-const FOUND_PATH = new Map();
-function cachedFound(code) {
-  let hit = FOUND_PATH.get(code);
-  if (hit === undefined) {
-    const m = decodeMask(code);
-    // same merge as the Collection tiles: these are the bigger half of the
-    // screen, up to a hundred and sixty of them
-    hit = m ? { cols: m.cols, rows: m.rows, d: runPath(m, 0.14, 0.72) } : null;
-    FOUND_PATH.set(code, hit);
-  }
-  return hit;
-}
-
-const THUMB_PATH = new Map();
-/* Merge each row's consecutive cells into one rectangle.
-
-   A thumbnail is forty pixels square and holds a shape of a hundred and
-   seventy-odd cells, so each cell lands on about three pixels — but the path
-   was written one rectangle per cell, which came to 2,239 characters each and
-   168KB across the Collection. The dotted look those separate squares give is
-   what the tile is for, so this keeps it: cells that touch in a row become a
-   single wider rectangle, which is the same picture in a fraction of the path.
-   Nothing is approximated and nothing is lost. */
-function runPath(m, inset = 0.15, size = 0.7) {
-  let d = "";
-  for (let y = 0; y < m.rows; y++) {
-    let run = -1;
-    for (let x = 0; x <= m.cols; x++) {
-      const on = x < m.cols && m.cells.has(y * m.cols + x);
-      if (on && run < 0) run = x;
-      else if (!on && run >= 0) {
-        const w = (x - 1 - run) + size;
-        d += `M${run + inset} ${y + inset}h${w}v${size}h-${w}z`;
-        run = -1;
-      }
-    }
-  }
-  return d;
-}
-
-function cachedMask(shapeKey) {
-  let hit = THUMB_PATH.get(shapeKey);
-  if (!hit) {
-    const m = parseMask(shapeKey);
-    hit = { cols: m.cols, rows: m.rows, d: runPath(m) };
-    THUMB_PATH.set(shapeKey, hit);
-  }
-  return hit;
-}
-
 function ShapeThumb({ shapeKey, on }) {
-  const m = cachedMask(shapeKey);
+  const m = parseMask(shapeKey);
   return (
     <svg viewBox={`0 0 ${m.cols} ${m.rows}`} style={{ width: 40, height: 40 }}>
-      <path d={m.d} fill={on ? C.accent : C.line} />
+      {[...m.cells].map((i) => (
+        <rect key={i} x={(i % m.cols) + 0.15} y={Math.floor(i / m.cols) + 0.15} width={0.7} height={0.7} rx={0.2} fill={on ? C.accent : C.line} />
+      ))}
     </svg>
   );
 }
 
-/* The player's own day, not UTC. toISOString() gave the UTC date, so in
-   Pakistan the daily rolled over at 05:00 local — anyone playing after midnight
-   got yesterday's puzzle again and no credit for it. */
-const dayKey = (d) =>
-  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-const todayKey = () => dayKey(new Date());
-const yesterdayKey = () => {
-  const d = new Date();
-  d.setDate(d.getDate() - 1);
-  return dayKey(d);
-};
+const todayKey = () => new Date().toISOString().slice(0, 10);
 
 /* ═══════════  game  ═══════════ */
 
@@ -4613,13 +1419,7 @@ export default function ArrowEscapeV3() {
   const [mode, setMode] = useState("journey");
   const [level, setLevel] = useState(1);
   const [best, setBest] = useState(1);
-  /* A near-empty stand-in, not a real level. Building one here cost 58ms of
-     blocked main thread before the very first paint — and for anyone with a
-     saved level it was thrown away moments later when the real one loaded, so
-     they paid for two boards and saw neither. The boot screen below returns
-     before anything reads this, and the effect that loads the save always
-     applies a real level. */
-  const [setup, setSetup] = useState(() => BOOT_SETUP);
+  const [setup, setSetup] = useState(() => makeLevel(1));
   const [alive, setAlive] = useState(() => new Set(setup.pieces.map((p) => p.id)));
   const aliveRef = useRef(alive); // synchronous mirror — fast taps must not miss the last arrow
   const [history, setHistory] = useState([]);
@@ -4633,16 +1433,6 @@ export default function ArrowEscapeV3() {
   const [undosLeft, setUndosLeft] = useState(setup.undos);
   const [taps, setTaps] = useState(0);
   const [mistakes, setMistakes] = useState(0);
-  /* Whether a hint was taken, recorded directly. Gold used to infer this by
-     comparing hintsLeft against the tier's allowance — but a player can earn an
-     extra hint from an ad, so after taking one the counter was back at its
-     starting value and the hint went unnoticed. Anyone who watched an ad could
-     take a hint and still be awarded gold. */
-  const tookHint = useRef(false);
-  // no `elapsed` state: see Countdown above. The ref is the only clock.
-  const elapsedNow = useCallback(() => Math.floor((Date.now() - startedAt.current) / 1000), []);
-  const rescued = useRef(false);
-  const startedAt = useRef(0);
   const [flying, setFlying] = useState(new Map());
   const lastMiss = useRef({ id: -1, t: 0 });
   const scoreLog = useRef(new Map()); // what each arrow paid, so undo can refund
@@ -4653,14 +1443,7 @@ export default function ArrowEscapeV3() {
   const tutClears = useRef(0);
   const [pops, setPops] = useState([]);
   const [ring, setRing] = useState(null);
-  const [booted, setBooted] = useState(false); // first paint waits for saved settings
-  const [phase, setPhase] = useState("playing"); // playing | reveal | cleared | gameover
-  // The rank this clear earned (0 none, 1 bronze, 2 silver, 3 gold). Held in
-  // state so the reveal and the win card can both show it — until now it was
-  // computed inside the clear handler and thrown away, which is why the player
-  // was never told what they had earned.
-  const [earnedRank, setEarnedRank] = useState(0);
-  const revealTimer = useRef(null);
+  const [phase, setPhase] = useState("playing");
   const [heartPop, setHeartPop] = useState(false);
   const [screen, setScreen] = useState("home"); // home | play | studio | collection | settings
   const [grid, setGrid] = useState(false);
@@ -4672,39 +1455,22 @@ export default function ArrowEscapeV3() {
   const [theme, setTheme] = useState("ink");
   const [dark, setDark] = useState(true);
   const [coachSeen, setCoachSeen] = useState(true);
-  const [seenTips, setSeenTips] = useState({});
   const [ranks, setRanks] = useState({}); // shape name -> 1 bronze | 2 silver | 3 gold
   const [customs, setCustoms] = useState([]);
   const [found, setFound] = useState([]);
   const [stickers, setStickers] = useState([]);
   const [levelStars, setLevelStars] = useState({}); // level -> 1..3
   const [adsRemoved, setAdsRemoved] = useState(false);
-  const [adWatchCount, setAdWatchCount] = useState(0); // rewarded views toward free ad removal
-  const [watchingAd, setWatchingAd] = useState(false);
   const [adNote, setAdNote] = useState("");
   const adGate = useRef({ at: 0, since: 0 });
-  const advancing = useRef(false);   // one level advance at a time — the win overlay is tappable anywhere
-  const adBusy = useRef(false);      // one reward watch at a time, so one ad counts once
-  const adWatchRef = useRef(0);      // authoritative view count, immune to stale closures
-  const returnTo = useRef("home");   // which shell screen opened the board, for Back
   const [badges, setBadges] = useState([]);
   const [stats, setStats] = useState({ arrows: 0, flawRun: 0, noUndo: 0, bestChain: 0 });
   const [view, setView] = useState({ scale: 1, tx: 0, ty: 0 });
   const [snap, setSnap] = useState(false);
   const [levelKey, setLevelKey] = useState(0);
   const nextRef = useRef(null);
-  // a saved mid-level snapshot, read once at boot and consumed by whichever
-  // Continue/Play/Start button matches its mode — see the boot effect and
-  // the save-progress effect further down
-  const inProgressRef = useRef(null);
   const [streak, setStreak] = useState(0);
   const [dailyDone, setDailyDone] = useState(false);
-  const [gridRound, setGridRound] = useState(0);
-  const [gridBest, setGridBest] = useState(0);
-  const [guideOpen, setGuideOpen] = useState(false);
-  const [tipOpen, setTipOpen] = useState(false);
-  const lastDailyRef = useRef(null);   // the day the last daily was cleared
-  const peakCombo = useRef(0);        // highest chain reached on this board
   const press = useRef(null);
   const viewport = useRef(null);
   const ptrs = useRef(new Map());
@@ -4713,8 +1479,6 @@ export default function ArrowEscapeV3() {
   if (C.__dark !== dark) applyTheme(dark); // keep S and CSS in step with the theme
 
   const { mask, pieces, tier, tierIndex, stepInTier } = setup;
-  // Saved boards from before deflectors existed have no mirrors field.
-  const mirrors = setup.mirrors instanceof Map ? setup.mirrors : EMPTY_MIRRORS;
   const { cols, rows } = mask;
   const maxHearts = setup.hearts;
 
@@ -4771,90 +1535,6 @@ export default function ArrowEscapeV3() {
     };
   }, []);
 
-
-  /* Out of time ends the board the way running out of hearts does. */
-  const onExpire = useCallback(() => {
-    Snd.lose();
-    setPhase("gameover");
-  }, []);
-
-  const goalNow = useMemo(() => {
-    const g = setup.goal;
-    const L = goalLabel(g);
-    if (!L) return null;
-    if (g.kind === "time") return { clock: true };
-    if (g.kind === "par") return { text: `${taps} / ${g.taps} taps` };
-    if (g.kind === "chain") return { text: `best chain ${peakCombo.current} of ${g.chain}` };
-    if (g.kind === "flawless") return { text: mistakes === 0 ? "flawless so far" : "flawless — missed" };
-    return { text: L.full };
-  }, [setup.goal, taps, mistakes, combo]);
-
-  const goalOk = useMemo(() => {
-    const g = setup.goal;
-    if (!g || g.kind === "clear") return true;
-    if (g.kind === "par") return taps <= g.taps;
-    if (g.kind === "time") return true;   // the countdown colours itself
-    if (g.kind === "flawless") return mistakes === 0;
-    return true;
-  }, [setup.goal, taps, mistakes]);
-
-  /* Which mechanic on this board the player has not been shown yet. Only one
-     at a time — a board can introduce a diagonal and a deflector at once, and
-     two banners at once teaches neither. */
-  const activeTip = useMemo(() => {
-    // gridlock gets tips too: it is the one mode that introduces itself
-    if ((mode !== "journey" && mode !== "gridlock") || tut < 9) return null;
-    const ctx = { pieces, mirrors, shield, combo, goal: setup.goal || { kind: "clear" }, gridlock: !!setup.gridlock };
-    return MECHANIC_TIPS.find((t) => !seenTips[t.key] && t.when(ctx)) || null;
-  }, [mode, tut, pieces, mirrors, shield, combo, seenTips, setup.goal, setup.gridlock]);
-
-  // a new mechanic starts closed, whatever the player left the last one on
-  useEffect(() => { setTipOpen(false); }, [activeTip && activeTip.key]);
-
-  /* Warm the thumbnail cache once the app is idle.
-
-     The Collection decodes every mask and builds every path on its first open,
-     all in one synchronous render — measured at about 52ms of blocked main
-     thread for seventy-seven tiles plus the discovered grid. That is a visible
-     catch on the one screen whose whole job is to be looked at. Doing it while
-     nothing else is happening costs the player nothing and the screen opens
-     cold-start-free.
-
-     requestIdleCallback where it exists, a timeout where it does not — Safari
-     only shipped it recently and the Android WebView version varies by device.
-     Chunked, so a slow phone can still paint between batches. */
-  useEffect(() => {
-    if (!booted) return;
-    let stop = false;
-    /* The two grids are decoded by different functions and the codes are not
-       interchangeable, so each carries its own. Trying one and falling back to
-       the other does not work: the first throws on a code it does not
-       understand, and the catch then swallows the fallback with it. */
-    const work = [
-      ...COLLECTABLE.map((n) => THUMB[n]).filter(Boolean).map((c) => [c, cachedMask]),
-      ...found.map((f) => [f.c, cachedFound]),
-    ];
-    let i = 0;
-    const idle = window.requestIdleCallback || ((fn) => setTimeout(() => fn({ timeRemaining: () => 8 }), 220));
-    const step = (deadline) => {
-      if (stop) return;
-      while (i < work.length && (!deadline || deadline.timeRemaining() > 2)) {
-        const [code, build] = work[i++];
-        try { build(code); } catch { /* a code that will not decode just stays uncached */ }
-      }
-      if (i < work.length) idle(step);
-    };
-    idle(step);
-    return () => { stop = true; };
-  }, [booted, found]);
-
-  const dismissTip = useCallback(() => {
-    if (!activeTip) return;
-    const next = { ...seenTips, [activeTip.key]: true };
-    setSeenTips(next);
-    persistRef.current({ seenTips: next });
-  }, [activeTip, seenTips]);
-
   const occupancy = useMemo(() => {
     const m = new Map();
     pieces.forEach((p) => alive.has(p.id) && p.cells.forEach((c) => m.set(c, p.id)));
@@ -4863,54 +1543,14 @@ export default function ArrowEscapeV3() {
 
   const blockerOf = useCallback(
     (piece) => {
-      // sealed: the arrow it waits on is still on the board
-      if (piece.needs !== undefined && alive.has(piece.needs)) return piece.needs;
-      for (const c of exitLine(piece.cells[0], piece.dir, cols, rows, mirrors) || []) {
+      for (const c of exitLine(piece.cells[0], piece.dir, cols, rows)) {
         const o = occupancy.get(c);
         if (o !== undefined && o !== piece.id) return o;
       }
       return null;
     },
-    [occupancy, alive, cols, rows, mirrors]
+    [occupancy, cols, rows]
   );
-
-  // the dot grid never changes while a board is in play — rebuilding its few
-  // hundred nodes on every tap was the main source of stutter
-  /* The backdrop dots used to be one <circle> element per grid cell — over six
-     hundred nodes on a normal board, each one composited separately on every
-     frame of a pan, zoom or board animation. They are identical little discs,
-     so the whole field collapses into two paths: one for the dots inside the
-     shape, one for the fainter ones around it. Two nodes instead of six
-     hundred, drawn identically. */
-  const dotLayer = useMemo(
-    () => {
-      const disc = (x, y, r) =>
-        `M${x - r} ${y}a${r} ${r} 0 1 0 ${r * 2} 0a${r} ${r} 0 1 0 ${-r * 2} 0`;
-      /* Only the dots inside the shape. The surrounding ones marked out empty
-         space on a small board, but at this size they were over half of some
-         seventeen hundred discs and eighty kilobytes of path data for a strip
-         of decoration nobody reads. */
-      const dotR = boardInk(cols, rows).dot;
-      let inside = "";
-      for (const i of mask.cells) {
-        inside += disc((i % cols) * U + U / 2, Math.floor(i / cols) * U + U / 2, dotR);
-      }
-      return <path d={inside} fill={C.dot} />;
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [cols, rows, mask, dark]
-  );
-
-  /* One solid silhouette of the level's shape. runPath's defaults leave a gap
-     around each cell for the thumbnail look; at full size we want the cells to
-     meet so the picture reads as one figure rather than a mosaic. */
-  /* A hair of overlap on each cell. Laid out as exact 1x1 squares the edges
-     only touch, and a renderer can leave a faint seam along every shared edge —
-     a grid of hairlines across a figure that should read as one solid shape. */
-  const revealPath = useMemo(() => runPath(mask, -0.02, 1.04), [mask]);
-
-  // one line weight for this board, sized from how big it lands on screen
-  const ink = useMemo(() => boardInk(cols, rows), [cols, rows]);
 
   const progress = pieces.length ? ((pieces.length - alive.size) / pieces.length) * 100 : 0;
 
@@ -4921,14 +1561,11 @@ export default function ArrowEscapeV3() {
         const raw = await Store.get(SAVE_KEY);
         if (!raw) {
           setCoachSeen(false);
-          applySetup(makeLevel(1));   // first run — the placeholder is not playable
           return;
         }
         const p = JSON.parse(raw);
         setBest(p.best ?? 1);
         setBestScore(p.bestScore ?? 0);
-        setGridRound(p.gridRound ?? 0);
-        setGridBest(p.gridBest ?? 0);
         setZen(!!p.zen);
         setBigTouch(p.bigTouch !== false);
         setHaptics(p.haptics !== false);
@@ -4937,7 +1574,6 @@ export default function ArrowEscapeV3() {
         setTheme(p.theme || "ink");
         setDark(p.dark !== false);
         setCoachSeen(!!p.coachSeen);
-        setSeenTips(p.seenTips ?? {});
         setTut(p.tut ?? 0);
         // migrate the old flat list into bronze ranks
         setRanks(p.ranks ?? Object.fromEntries((p.collected ?? []).map((n) => [n, 1])));
@@ -4946,31 +1582,12 @@ export default function ArrowEscapeV3() {
         setStickers(p.stickers ?? []);
         setLevelStars(p.levelStars ?? {});
         setAdsRemoved(!!p.adsRemoved);
-        setAdWatchCount(Math.max(0, p.adWatchCount | 0));
-        adWatchRef.current = Math.max(0, p.adWatchCount | 0);
         setBadges(p.badges ?? []);
         setStats(p.stats ?? { arrows: 0, flawRun: 0, noUndo: 0, bestChain: 0 });
-        /* A streak has to be consecutive. The old code only ever added to it,
-           so a player could take a month off, play one daily, and continue
-           from where they left — the number was a count of days played, not a
-           streak. If the last daily was neither today nor yesterday, the run
-           is broken and starts over. */
-        const last = p.lastDaily;
-        const unbroken = last === todayKey() || last === yesterdayKey();
-        setStreak(unbroken ? p.streak ?? 0 : 0);
+        setStreak(p.streak ?? 0);
         setGrid(!!p.grid);
-        /* A save with 0 hearts is an attempt that had already ended — nothing
-           meaningful to hand back. Rather than also reconstruct which overlay
-           (out-of-lives, the reveal card) was on screen when it was saved,
-           resuming is only ever offered into a still-playing board; anything
-           else quietly falls back to today's fresh start, same as if there
-           were no saved progress at all. */
-        if (p.inProgress && p.inProgress.hearts > 0) inProgressRef.current = p.inProgress;
         setDailyDone(p.lastDaily === todayKey());
-        lastDailyRef.current = p.lastDaily ?? null;
-        // `>= 1`, not `> 1`: a save parked on level one fell through both
-        // branches and was left holding the placeholder board.
-        if (p.level >= 1) {
+        if (p.level > 1) {
           const st = makeLevel(p.level);
           setLevel(p.level);
           setSetup(st);
@@ -4983,8 +1600,6 @@ export default function ArrowEscapeV3() {
               }
       } catch {
         setCoachSeen(false);
-      } finally {
-        setBooted(true);
       }
     })();
   }, []);
@@ -4997,26 +1612,15 @@ export default function ArrowEscapeV3() {
     []
   );
 
-  // A level win can fire several of these back to back (badges+stats, then
-  // level/best, then levelStars) with no await between them. Each one used to
-  // read the save file, merge its own patch, and write — so calls fired in
-  // the same tick all read the SAME stale file, and only the last write
-  // survived, silently dropping every earlier patch (including level/best).
-  // Chaining every call onto one shared queue forces each read-modify-write
-  // to fully finish before the next one starts, so nothing gets clobbered.
-  const persistQueue = useRef(Promise.resolve());
-  const persist = useCallback((patch) => {
-    persistQueue.current = persistQueue.current.then(async () => {
+  const persist = useCallback(async (patch) => {
+    try {
+      let cur = {};
       try {
-        let cur = {};
-        try {
-          const raw = await Store.get(SAVE_KEY);
-          if (raw) cur = JSON.parse(raw);
-        } catch {}
-        await Store.set(SAVE_KEY, JSON.stringify({ ...cur, ...patch }));
+        const raw = await Store.get(SAVE_KEY);
+        if (raw) cur = JSON.parse(raw);
       } catch {}
-    });
-    return persistQueue.current;
+      await Store.set(SAVE_KEY, JSON.stringify({ ...cur, ...patch }));
+    } catch {}
   }, []);
 
   const persistRef = useRef(() => {});
@@ -5027,71 +1631,20 @@ export default function ArrowEscapeV3() {
     setTimeout(() => setAdNote(""), 2600);
   }, []);
 
-  /* Every reward goes through here. The native layer coalesces rapid taps into
-     a single ad, so without one shared gate three taps on "watch for a hint"
-     would collect three hints from one view. Returns null when a watch is
-     already running — the extra tap is simply ignored. */
-  /* Removing ads has to remove the banner too, not just the interstitials —
-     otherwise the one thing a paying player still sees is an ad. Runs on load
-     as well, so a restored purchase is honoured on the next launch. */
-  useEffect(() => {
-    if (adsRemoved) Ads.hideBanner();
-  }, [adsRemoved]);
-
-  const claimRewarded = useCallback(async (kind) => {
-    if (adBusy.current) return null;
-    adBusy.current = true;
-    setWatchingAd(true);
-    /* The game's audio is silenced for the ad and brought back in the finally,
-       not on the line after the await. Ads.rewarded swallows its own errors
-       today so the happy path is the only path — but if that ever changes, a
-       resume that sits after the await simply never runs, and the music is dead
-       for the rest of the session with nothing to show why. The finally is
-       already here; it costs nothing to use it. */
-    try {
-      Snd.suspend();
-      return await Ads.rewarded(kind);
-    } finally {
-      Snd.resume();
-      adBusy.current = false;
-      setWatchingAd(false);
-    }
-  }, []);
-
   /* A life back, on the same board — the one reward players actually want. */
   const watchForLife = useCallback(async () => {
-    /* Same trap as the hint button: with ads removed there is no ad to watch,
-       so the continue button was hidden entirely and the player who paid got
-       no second chance while a free player did. The ad was the price; once
-       paid, the life is simply given. */
-    if (adsRemoved) {
-      setHearts(1);
-      setPhase("playing");
-      Snd.shieldUp();
-      return;
-    }
-    const ok = await claimRewarded("life");
-    if (ok === null) return;
+    const ok = await Ads.rewarded("life");
     if (!ok) return flashNote("No ad available right now.");
     setHearts(1);
     setPhase("playing");
     Snd.shieldUp();
-  }, [flashNote, claimRewarded, adsRemoved]);
+  }, [flashNote]);
 
   const watchForHint = useCallback(async () => {
-    /* A player who removed ads has no ad to watch — and the button was simply
-       disabled for them, so paying for ad removal also took away every extra
-       hint. The ad was the price of the hint, not the hint itself; once it has
-       been paid for, the hint is simply given. */
-    if (adsRemoved) {
-      setHintsLeft((n) => n + 1);
-      return;
-    }
-    const ok = await claimRewarded("hint");
-    if (ok === null) return;
+    const ok = await Ads.rewarded("hint");
     if (!ok) return flashNote("No ad available right now.");
     setHintsLeft((n) => n + 1);
-  }, [flashNote, claimRewarded, adsRemoved]);
+  }, [flashNote]);
 
   const maybeInterstitial = useCallback(async () => {
     if (adsRemoved) return;
@@ -5102,44 +1655,26 @@ export default function ArrowEscapeV3() {
     g.since = 0;
     g.at = now;
     // awaited: the next board must not load underneath the ad
-    // try/finally for the same reason as claimRewarded above — a resume that
-    // only runs on success leaves the game silent for good if it ever does not
-    try { Snd.suspend(); await Ads.interstitial(); } finally { Snd.resume(); }
+    await Ads.interstitial();
   }, [adsRemoved]);
 
   /* ── level control ── */
-  /* `progress`, when given, is a saved in-progress snapshot (see the
-     save-progress effect below) — resuming a level after the app was killed
-     mid-play, rather than starting it fresh. It carries exactly what a fresh
-     start does not already produce on its own: which pieces are already gone
-     (as `history`, the same array undo already uses, so undo keeps working
-     unchanged after a resume), the remaining hearts/hints/undos, and the
-     scoring state those pieces earned. Every field below falls back to the
-     same fresh value as before when `progress` is absent, so no other caller
-     of applySetup is affected. */
-  const applySetup = useCallback((st, keepScore, progress) => {
+  const applySetup = useCallback((st, keepScore) => {
     setSetup(st);
     const fresh = new Set(st.pieces.map((p) => p.id));
-    if (progress) for (const id of progress.history) fresh.delete(id);
     aliveRef.current = fresh;
     setAlive(fresh);
-    setHistory(progress ? progress.history : []);
-    peakCombo.current = progress ? (progress.peakCombo || 0) : 0;
-    scoreLog.current = progress ? new Map(progress.scoreLog || []) : new Map();
-    setHearts(progress ? progress.hearts : st.hearts);
-    setHintsLeft(progress ? progress.hintsLeft : st.hints);
-    setUndosLeft(progress ? progress.undosLeft : st.undos);
-    setShield(progress ? !!progress.shield : false);
-    setFlow(progress ? progress.flow : 0);
-    setCombo(progress ? progress.combo : 0);
-    if (!keepScore) setScore(progress ? progress.score : 0);
-    setTaps(progress ? progress.taps : 0);
-    setMistakes(progress ? progress.mistakes : 0);
-    tookHint.current = progress ? !!progress.tookHint : false;
-    rescued.current = progress ? !!progress.rescued : false;
-    // the clock keeps running while the app is closed unless we wind it back
-    // by exactly how much progress had already elapsed when it was saved
-    startedAt.current = progress ? Date.now() - (progress.elapsedMs || 0) : Date.now();
+    setHistory([]);
+    scoreLog.current.clear();
+    setHearts(st.hearts);
+    setHintsLeft(st.hints);
+    setUndosLeft(st.undos);
+    setShield(false);
+    setFlow(0);
+    setCombo(0);
+    if (!keepScore) setScore(0);
+    setTaps(0);
+    setMistakes(0);
     setFlying(new Map());
     lastMiss.current = { id: -1, t: 0 };
     setBad(null);
@@ -5159,7 +1694,6 @@ export default function ArrowEscapeV3() {
   const startJourney = useCallback(
     (lvl, keepScore) => {
       setMode("journey");
-      setLevel(lvl); // whatever level is actually loading — replaying an old one must not silently advance from the wrong number later
       const pre = nextRef.current && nextRef.current.lvl === lvl ? nextRef.current.setup : makeLevel(lvl);
       nextRef.current = null;
       applySetup(pre, keepScore);
@@ -5167,24 +1701,12 @@ export default function ArrowEscapeV3() {
     [applySetup]
   );
 
-  /* The Levels list and the prebuilt-next-board path both call startJourney
-     directly, and both must always get a fresh board — replaying level 5
-     from the list while level 16 is mid-attempt should never surface level
-     16's leftovers. Resuming is only offered from the one place a player
-     would expect it: Continue, for the exact level they were already on. */
-  const resumeJourney = useCallback((lvl, progress) => {
-    setMode("journey");
-    setLevel(lvl);
-    applySetup(makeLevel(lvl), false, progress);
-  }, [applySetup]);
-
   const startCustom = useCallback(
     (mask) => {
       setMode("custom");
-      // shapes you draw yourself always run at the hardest settings — Studio is the pro arena
-      applySetup(makeLevelFromMask(mask, TIERS.length - 1), false);
+      applySetup(makeLevelFromMask(mask, tierFor(level).index), false);
     },
-    [applySetup]
+    [applySetup, level]
   );
 
   const saveCustom = useCallback(
@@ -5205,28 +1727,6 @@ export default function ArrowEscapeV3() {
     [persist, customs]
   );
 
-  /* Gridlock runs on its own counter, kept separately from the journey: it is a
-     different game on the same rules, and mixing its progress into the level
-     number would mean clearing a Gridlock round advanced the collection. */
-  const startGridlock = useCallback((round) => {
-    const r = round === undefined ? gridRound : round;
-    const st = makeGridlock(r);
-    if (!st) { flashNote("Could not build that board — try again."); return; }
-    setMode("gridlock");
-    applySetup(st);
-  }, [applySetup, gridRound, flashNote]);
-
-  /* Resuming Gridlock needs the exact seed a fresh start never fixes — every
-     other attempt at the same round is meant to be a different board.
-     makeGridlock now reports back whichever seed it actually used (passed in
-     or invented), so a resume replays that one instead of a new one. */
-  const resumeGridlock = useCallback((round, seed, progress) => {
-    const st = makeGridlock(round, seed);
-    if (!st) { startGridlock(round); return; }
-    setMode("gridlock");
-    applySetup(st, false, progress);
-  }, [applySetup, startGridlock]);
-
   const startDaily = useCallback(() => {
     setMode("daily");
     // the daily should keep pace with the player, not sit at one fixed tier
@@ -5234,147 +1734,38 @@ export default function ArrowEscapeV3() {
     applySetup(makeLevel(lvl, hashStr(todayKey())));
   }, [applySetup, level]);
 
-  // same board-recipe as startDaily above; today's date is the seed, so this
-  // only reconstructs correctly on the same day it was saved on — exactly
-  // when a resume is expected to happen
-  const resumeDaily = useCallback((lvl, progress) => {
-    setMode("daily");
-    applySetup(makeLevel(lvl, hashStr(todayKey())), false, progress);
-  }, [applySetup]);
-
-  // prebuild the next board during the celebration — no hitch on Next Level.
-  // Starting at "reveal" rather than "cleared" buys the extra second.
+  // prebuild the next board during the celebration — no hitch on Next Level
   useEffect(() => {
-    /* Not in gridlock: its next board comes from makeGridlock, so this built a
-       journey level that was thrown away — about 170ms of blocked main thread
-       during the win celebration, for nothing. */
-    if ((phase !== "reveal" && phase !== "cleared") || mode === "daily" || mode === "gridlock") return;
+    if (phase !== "cleared" || mode === "daily") return;
     const t = setTimeout(() => {
       nextRef.current = { lvl: level + 1, setup: makeLevel(level + 1) };
     }, 80);
     return () => clearTimeout(t);
   }, [phase, mode, level]);
 
-  /* Mirrors the last "playing" moment to disk so the app can pick a level
-     back up after being killed mid-play, rather than only remembering which
-     level number to start over on. Only for the three modes with a single
-     obvious place to offer a resume — Continue, Daily's Play, Gridlock's
-     Start. Custom boards, drawn in Studio and launched from a list rather
-     than a single "your current attempt" button, are left out rather than
-     bolted on to a flow that doesn't really have a resume point.
-
-     Everything reconstructible comes off `setup` itself wherever possible
-     (setup.level, setup.round, setup.seed) rather than from state a
-     particular mode might not keep in step — daily's clamped level, for one,
-     never touches the journey `level` state — so the saved snapshot can only
-     drift from what is actually on screen if `setup` itself is wrong. */
-  useEffect(() => {
-    if (!booted || phase !== "playing") return;
-    if (mode !== "journey" && mode !== "daily" && mode !== "gridlock") return;
-    // nothing left to resume into — this guards the same instant the tap
-    // handler's own explicit clear above does, so a fully-cleared board can
-    // never get re-saved by this effect running one tick after that clear
-    if (setup.pieces.length - history.length <= 0) return;
-    persist({
-      inProgress: {
-        mode,
-        level: setup.level,
-        round: setup.round,
-        seed: setup.seed,
-        history,
-        hearts, hintsLeft, undosLeft,
-        score, combo, flow, shield,
-        taps, mistakes,
-        tookHint: tookHint.current,
-        rescued: rescued.current,
-        peakCombo: peakCombo.current,
-        scoreLog: [...scoreLog.current],
-        elapsedMs: Date.now() - startedAt.current,
-        // daily's board is seeded from the calendar date, not stored on its
-        // own — a save from before midnight is yesterday's board, and
-        // dailyDone alone does not catch that (a new day starts false too)
-        dateKey: todayKey(),
-      },
-    });
-  }, [booted, phase, mode, setup, history, hearts, hintsLeft, undosLeft, score, combo, flow, shield, taps, mistakes, persist]);
-
-  // A replaying player should not have to sit through the reveal every time.
-  const skipReveal = useCallback(() => {
-    if (revealTimer.current) {
-      clearTimeout(revealTimer.current);
-      revealTimer.current = null;
-    }
-    setPhase("cleared");
-  }, []);
-
-  useEffect(() => () => { if (revealTimer.current) clearTimeout(revealTimer.current); }, []);
-
   const restart = useCallback(() => {
     if (mode === "daily") startDaily();
-    else if (mode === "gridlock") startGridlock(setup.round ?? gridRound);
     else if (mode === "custom") applySetup(makeLevelFromMask(setup.mask, setup.tierIndex), false);
     else startJourney(level);
-  }, [mode, level, startDaily, startGridlock, startJourney, applySetup, setup.mask, setup.round, gridRound]);
-
-  // Android hardware back / side-swipe: step back through the app instead of
-  // dropping straight out of the game
-  useEffect(() => {
-    let handle = null;
-    let dropped = false;
-    (async () => {
-      try {
-        const { App } = await import("@capacitor/app");
-        const h = await App.addListener("backButton", () => {
-          // step back one level of navigation, rather than always jumping home:
-          // the board returns to whichever screen opened it, shell screens go
-          // home, and only home itself exits.
-          if (screen === "play") setScreen(returnTo.current || "home");
-          else if (screen !== "home") setScreen("home");
-          else App.exitApp();
-        });
-        if (dropped) h.remove();
-        else handle = h;
-      } catch {
-        /* not running under Capacitor — nothing to hook */
-      }
-    })();
-    return () => {
-      dropped = true;
-      handle?.remove();
-    };
-  }, [screen]);
+  }, [mode, level, startDaily, startJourney, applySetup, setup.mask]);
 
   const nextLevel = useCallback(async () => {
-    // the whole win overlay is tappable, so an impatient player can fire this
-    // several times while the interstitial is still loading — one at a time.
-    if (advancing.current) return;
-    advancing.current = true;
-    try {
-      await maybeInterstitial();
-      if (mode === "custom") {
-        startJourney(level);
-        return;
-      }
-      if (mode === "daily") {
-        startJourney(level);
-        return;
-      }
-      if (mode === "gridlock") {
-        // stay in Gridlock and go one round deeper; gridRound was already
-        // advanced when the board cleared, so this reads the new value
-        startGridlock();
-        return;
-      }
-      const n = level + 1;
-      const b = Math.max(best, n);
-      setLevel(n);
-      setBest(b);
-      if (n >= b) persist({ level: n, best: b });
-      else persist({ best: b });
-      startJourney(n, true);
-    } finally {
-      advancing.current = false;
+    await maybeInterstitial();
+    if (mode === "custom") {
+      startJourney(level);
+      return;
     }
+    if (mode === "daily") {
+      startJourney(level);
+      return;
+    }
+    const n = level + 1;
+    const b = Math.max(best, n);
+    setLevel(n);
+    setBest(b);
+    if (n >= b) persist({ level: n, best: b });
+    else persist({ best: b });
+    startJourney(n, true);
   }, [mode, level, best, persist, startJourney, maybeInterstitial]);
 
   /* ── popups ── */
@@ -5434,14 +1825,10 @@ export default function ArrowEscapeV3() {
       buzz(10);
       lastMiss.current = { id: -1, t: 0 };
 
-      const freed = countFreed(pieces, alive, piece.id, cols, rows, mirrors);
+      const freed = countFreed(pieces, alive, piece.id, cols, rows);
       const nextCombo = combo + 1;
       const gain = (10 + freed * 15) * Math.min(nextCombo, 5);
       setCombo(nextCombo);
-      // the badge is for REACHING a twelve-chain; recording only the combo at
-      // the final tap meant a twenty-chain broken by one mistake counted as
-      // whatever short run happened to finish the board
-      peakCombo.current = Math.max(peakCombo.current, nextCombo);
       Snd.depart(nextCombo);
       setScore((s) => s + gain);
       scoreLog.current.set(piece.id, gain);
@@ -5472,25 +1859,14 @@ export default function ArrowEscapeV3() {
 
       const nextAlive = new Set(aliveRef.current);
       nextAlive.delete(piece.id);
-      if (setup.goal && setup.goal.kind === "rescue" && piece.id === setup.goal.target) rescued.current = true;
       aliveRef.current = nextAlive;
       const willClear = nextAlive.size === 0;
       setAlive(nextAlive);
 
       if (willClear) {
-        // nothing left to resume into — remove the saved snapshot from the
-        // tap before this one now, rather than leave it sitting there for a
-        // kill-before-advancing to resurrect a board that is already won
-        if (mode === "journey" || mode === "daily" || mode === "gridlock") persist({ inProgress: null });
         setTimeout(() => {
-          /* Gridlock has no picture to reveal — filling in a solid rectangle
-             says nothing, and the pause before the win card is dead time. */
-          setPhase(setup.gridlock ? "cleared" : "reveal");
+          setPhase("cleared");
           Snd.win();
-          /* The board is shaped like a picture, but until now the picture was
-             never shown — the board just emptied. Hold the filled silhouette
-             for a beat before the win card so the shape means something. */
-          if (!setup.gridlock) revealTimer.current = setTimeout(() => setPhase("cleared"), 1000);
           /* Bronze = cleared. Silver = no mistakes. Gold = flawless (no
              mistakes and no undo) on Hard or above. Gold is meant to
              be genuinely hard to earn. */
@@ -5499,21 +1875,13 @@ export default function ArrowEscapeV3() {
             arrows: stats.arrows + pieces.length,
             flawRun: mistakes === 0 ? stats.flawRun + 1 : 0,
             noUndo: undosLeft === setup.undos ? stats.noUndo + 1 : stats.noUndo,
-            bestChain: Math.max(stats.bestChain, peakCombo.current, nextCombo),
+            bestChain: Math.max(stats.bestChain, nextCombo),
           };
 
           const won = new Set(badges);
           won.add("first");
           if (nextStats.flawRun >= 5) won.add("flaw5");
-          /* streak + 1 assumed the run always continued. If the last daily was
-             not yesterday the run restarts at 1, so the badge has to read the
-             same number the streak itself will become. */
-          const dailyStreakNow = dailyDone
-            ? streak
-            : lastDailyRef.current === yesterdayKey()
-            ? streak + 1
-            : 1;
-          if (mode === "daily" && dailyStreakNow >= 7) won.add("streak7");
+          if (mode === "daily" && streak + 1 >= 7) won.add("streak7");
           if (mode === "journey" && tierIndex >= 9) won.add("hard");
           if (mode === "journey" && tierIndex >= 15) won.add("pro");
           if (nextStats.arrows >= 1000) won.add("k1");
@@ -5529,40 +1897,13 @@ export default function ArrowEscapeV3() {
           setStats(nextStats);
           setStickers(nextStickers);
 
-          /* Rank rules, rewritten.
-
-             Gold used to also require tierIndex >= 9, which starts at level 65
-             — so for the entire first 64 levels a perfect, undo-free clear
-             still capped at silver, and nothing told the player why. Gold is
-             now earnable anywhere: play it perfectly.
-
-             Bronze used to be granted for finishing at all, which made the
-             collection a record of attendance rather than of skill. It now
-             asks for a near-clean run; 0 means the shape is not collected and
-             the player can come back for it. */
-          /* Gold now also asks that you did not take a hint. Clearing without a
-             mistake or an undo was the whole bar, so a careful player earned
-             gold on almost every board and the collection filled itself. A hint
-             names the next move outright, and a flawless run that leaned on one
-             is not the same achievement. */
-          const usedHint = tookHint.current;
-          /* A cleared board is not automatically a won board any more. Missing
-             what the level asked costs the rank — the shape is still collected,
-             so the work is not thrown away, but it collects at nothing. */
-          const met = goalMet(setup.goal, {
-            taps, elapsed: elapsedNow(),
-            peakChain: peakCombo.current, rescued: rescued.current, mistakes,
-          });
-          const earned = !met ? 0 :
-            mistakes === 0 && undosLeft === setup.undos && !usedHint
+          const earned =
+            mistakes === 0 && undosLeft === setup.undos && tierIndex >= 9
               ? 3
-              : mistakes === 0 && undosLeft === setup.undos
-              ? 2
               : mistakes === 0
-              ? 1
-              : 0;
-          setEarnedRank(earned);
-          if (earned > 0 && mask.procedural) {
+              ? 2
+              : 1;
+          if (mask.procedural) {
             const at = found.findIndex((f) => f.n === mask.name);
             let nf = found;
             if (at >= 0) {
@@ -5575,7 +1916,7 @@ export default function ArrowEscapeV3() {
               persist({ found: nf });
             }
             if (earned === 3) won.add("gold");
-          } else if (earned > 0 && COLLECTABLE.includes(mask.name)) {
+          } else if (COLLECTABLE.includes(mask.name)) {
             if (earned === 3) won.add("gold");
             if ((ranks[mask.name] ?? 0) < earned) {
               const nr = { ...ranks, [mask.name]: earned };
@@ -5598,40 +1939,17 @@ export default function ArrowEscapeV3() {
             /* a drawn board is a one-off — leave journey progress alone */
           } else if (mode === "daily") {
             setStreak((st) => {
-              // already played today: unchanged. Played yesterday: the run
-              // continues. Anything else: this is day one of a new run.
-              const ns = dailyStreakNow;
-              lastDailyRef.current = todayKey();
+              const ns = dailyDone ? st : st + 1;
               persist({ streak: ns, lastDaily: todayKey() });
               return ns;
             });
             setDailyDone(true);
-          } else if (mode === "gridlock") {
-            /* Gridlock keeps its own counter and must not touch this one. It
-               was falling through to the branch below — neither custom nor
-               daily — so clearing a Gridlock round advanced the journey by a
-               level the player had never opened, skipping its shape entirely. */
           } else if (level >= best) {
             // only a level at the frontier moves progress forward; replaying
             // an old one must not drag the save back with it
             const bl = level + 1;
             setBest(bl);
             persist({ level: bl, best: bl });
-          }
-
-          // stars were being shown on the win screen but never written down,
-          // so the Levels list always read back empty — keep the best run.
-          if (mode === "gridlock" && met) {
-            // only a round that met what it asked counts as cleared
-            const nr = gridRound + 1;
-            setGridRound(nr);
-            if (nr > gridBest) setGridBest(nr);
-            persist({ gridRound: nr, gridBest: Math.max(nr, gridBest) });
-          }
-          if (mode === "journey" && (levelStars[level] ?? 0) < stars) {
-            const nextStars = { ...levelStars, [level]: stars };
-            setLevelStars(nextStars);
-            persist({ levelStars: nextStars });
           }
         }, 340);
       }
@@ -5647,52 +1965,17 @@ export default function ArrowEscapeV3() {
     (piece) => (e) => {
       if (phase !== "playing") return;
       e.preventDefault();
-
-      /* A cell is about ten pixels across on a phone, so a fingertip covers
-         several arrows at once and SVG hands us whichever happens to be drawn
-         last. That is a coin toss, and losing it costs a life.
-
-         Ask the browser for every arrow actually under the finger. If the one
-         it picked is blocked but another one there can move, the player
-         plainly meant that one. This never reveals anything or plays a move on
-         its own — it only settles which arrow an ambiguous tap refers to. */
-      let target = piece;
-      if (blockerOf(piece) !== null && typeof document.elementsFromPoint === "function") {
-        try {
-          for (const el of document.elementsFromPoint(e.clientX, e.clientY)) {
-            const id = el.getAttribute && el.getAttribute("data-piece");
-            if (id === null || id === undefined) continue;
-            const cand = pieces[+id];
-            if (cand && alive.has(cand.id) && blockerOf(cand) === null) {
-              target = cand;
-              break;
-            }
-          }
-        } catch {
-          /* elementsFromPoint unavailable or threw — keep the arrow SVG chose */
-        }
-      }
-
       const timer = setTimeout(() => {
         if (!press.current) return;
         press.current.held = true;
-        setHoldId(target.id);
+        setHoldId(piece.id);
         buzz(6);
         if (tut === 2) setTutStep(9);
       }, 180);
-      press.current = { piece: target, timer, held: false };
+      press.current = { piece, timer, held: false };
     },
-    [phase, tut, setTutStep, blockerOf, pieces, alive]
+    [phase, tut, setTutStep]
   );
-
-  /* A stable door onto a handler that is not stable. onPieceDown depends on
-     `alive`, which changes on every tap, so it is a new function every time —
-     and a changed function prop makes React.memo fail for every arrow on the
-     board. The ref always points at the current handler; this wrapper is
-     created once and never again, so the memo holds. */
-  const downRef = useRef(onPieceDown);
-  useEffect(() => { downRef.current = onPieceDown; }, [onPieceDown]);
-  const pieceDown = useCallback((piece, e) => downRef.current(piece)(e), []);
 
   // lock the document while a board is on screen — otherwise the page itself
   // scrolls and the browser swallows the pinch
@@ -5921,12 +2204,11 @@ export default function ArrowEscapeV3() {
     let bestFreed = -1;
     for (const x of pieces) {
       if (!alive.has(x.id) || blockerOf(x) !== null) continue;
-      const f = countFreed(pieces, alive, x.id, cols, rows, mirrors);
+      const f = countFreed(pieces, alive, x.id, cols, rows);
       if (f > bestFreed) { bestFreed = f; p = x; }
     }
     if (!p) return;
     setHintsLeft((h) => h - 1);
-    tookHint.current = true;
     setHintId(p.id);
     setTimeout(() => setHintId(null), 1900);
   }, [hintsLeft, phase, pieces, alive, blockerOf, cols, rows]);
@@ -5949,38 +2231,14 @@ export default function ArrowEscapeV3() {
     [phase === "cleared"]
   );
 
-  // Nothing is drawn until the saved theme is known — otherwise the app flashes
-  // its defaults and then repaints, which reads as a light/dark jitter on launch.
-  if (!booted) {
-    /* A blank rectangle reads as a broken app, not a loading one — and the app
-       sat on it for the time it took to read storage and build the saved board.
-       A mark that fades up says the same thing honestly, and because it is one
-       element with one animation it costs nothing to draw. */
-    return (
-      <div style={{ position: "fixed", inset: 0, background: C.bg, display: "grid", placeItems: "center" }}>
-        <style>{CSS}</style>
-        <div className="boot-mark" style={{ display: "grid", placeItems: "center", gap: 10 }}>
-          <svg viewBox="0 0 64 64" width={56} height={56} aria-hidden="true">
-            <path d="M 14 44 L 34 44 L 34 26" stroke={C.accent} strokeWidth={5}
-                  strokeLinecap="round" strokeLinejoin="round" fill="none" />
-            <path d="M 27 31 L 34 24 L 41 31" stroke={C.accent} strokeWidth={5}
-                  strokeLinecap="round" strokeLinejoin="round" fill="none" />
-          </svg>
-          <div style={{ fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 15,
-                        letterSpacing: "0.06em", color: C.muted }}>ARROW ESCAPE</div>
-        </div>
-      </div>
-    );
-  }
-
   /* ═══════════  PLAY SCREEN — full bleed, like a real puzzle app  ═══════════ */
   if (screen === "play") {
     return (
-      <div className="app-in" style={adsRemoved ? { ...S.playRoot, paddingBottom: "env(safe-area-inset-bottom, 0px)" } : S.playRoot}>
+      <div style={S.playRoot}>
         <style>{CSS}</style>
 
         <div style={S.hud} className="hud-in">
-          <button style={S.hudBtn} onClick={() => setScreen(returnTo.current || "home")} aria-label="Back">
+          <button style={S.hudBtn} onClick={() => setScreen("home")} aria-label="Back">
             <ChevLeft />
           </button>
           <button style={S.hudBtn} onClick={restart} aria-label="Restart">
@@ -5989,33 +2247,9 @@ export default function ArrowEscapeV3() {
 
           <div style={S.hudMid}>
             <div style={{ ...S.diffLabel, color: mode === "journey" ? TIER_HUE[tierIndex] ?? C.accent : C.accent }}>
-              {/* The shape's name used to live only in an aria-label, so a
-                  sighted player never learned what they were clearing and the
-                  Collection filled up with names they had never seen. */}
-              {mode === "custom" ? "Your board" : mask.name}
-              <span key={alive.size} style={S.leftCount} className="left-tick"> · {alive.size} left</span>
+              {mode === "custom" ? "Your board" : mode === "daily" ? "Daily" : tier.name}
+              <span style={S.leftCount}> · {alive.size} left</span>
             </div>
-            {/* What this board is asking, and how it is going. Without this the
-                goal exists only in the generator: the player taps the way they
-                always have and is told at the end they failed something nobody
-                mentioned. */}
-            {/* Always rendered, even when empty. A line that appears only on
-                goal boards makes the HUD two lines on one level and three on
-                the next, and the board below is flex-sized — so it jumps a
-                dozen pixels every time the goal changes. The same mistake the
-                shape name made when it was allowed to wrap. */}
-            {/* Only while the board is in play. Left mounted past the win it
-                would carry on counting behind the celebration and then fire
-                onExpire, turning a board the player had already cleared into a
-                loss. */}
-            {goalNow && goalNow.clock && phase === "playing" ? (
-              <Countdown secs={setup.goal.secs} startedAt={startedAt} onExpire={onExpire}
-                         style={{ ...S.goalLine, color: C.muted }} />
-            ) : (
-              <div style={{ ...S.goalLine, color: goalOk ? C.muted : C.danger }}>
-                {(goalNow && goalNow.text) || "\u00a0"}
-              </div>
-            )}
             <div style={S.hudHearts}>
               {shield && <span style={S.shieldTag}>🛡</span>}
               {zen ? (
@@ -6025,15 +2259,7 @@ export default function ArrowEscapeV3() {
                 </>
               ) : (
                 Array.from({ length: maxHearts }).map((_, i) => (
-                  <span
-                    key={i}
-                    /* maxHearts > 1: the warning means "down to your last one",
-                       not "this tier only grants one". On the one-heart tiers
-                       the old test was true from the first move, so the heart
-                       pulsed without pause for the whole level. */
-                    className={heartPop && i === hearts ? "hbreak" : hearts === 1 && maxHearts > 1 && i === 0 ? "heart-low" : ""}
-                    style={S.inl}
-                  >
+                  <span key={i} className={heartPop && i === hearts ? "hbreak" : ""} style={S.inl}>
                     <Heart on={i < hearts} />
                   </span>
                 ))
@@ -6042,23 +2268,24 @@ export default function ArrowEscapeV3() {
           </div>
 
           <button
-            style={S.hintPill}
+            style={{ ...S.hintPill, opacity: hintsLeft > 0 || !adsRemoved ? 1 : 0.4 }}
             onClick={hintsLeft > 0 ? useHint : watchForHint}
+            disabled={hintsLeft <= 0 && adsRemoved}
           >
             <Bulb />
-            <span style={S.hintTxt}>{hintsLeft > 0 ? hintsLeft : adsRemoved ? "+" : "▶"}</span>
+            <span style={S.hintTxt}>{hintsLeft > 0 ? hintsLeft : "▶"}</span>
           </button>
         </div>
 
-        {tut < 9 && mode === "journey" && level <= 4 && (
+        {tut < 9 && mode === "journey" && (
           <div style={S.tutBar} className="ovin">
             <span style={S.tutStep}>{tut + 1}/3</span>
             <span style={S.tutText}>
               {tut === 0
-                ? "Tap an arrow to send it off"
+                ? "Tap an arrow to send it off the board."
                 : tut === 1
-                ? "Its path must be clear — blocked costs a life"
-                : "Hold an arrow to trace its route"}
+                ? "An arrow only leaves if its path is clear all the way out — tapping a blocked one costs a life."
+                : "Hold an arrow to trace where it is aimed. Tap # to trace them all."}
             </span>
             <button style={S.tutSkip} onClick={() => setTutStep(9)}>Skip</button>
           </div>
@@ -6077,22 +2304,6 @@ export default function ArrowEscapeV3() {
           </button>
         )}
 
-        {tut >= 9 && coachSeen && activeTip && (
-          /* Tapping opens the full explanation in place. The banner was a dead
-             end: it taught once, vanished, and never said where to look again —
-             but sending the player to the guide screen would unmount the board
-             they are halfway through, and writing returnTo on the way out
-             leaves the back button pointing at the screen it is already on. The
-             answer is not to leave the board at all. */
-          <button style={S.coach} className="ovin" onClick={() => setTipOpen((v) => !v)}>
-            <span style={{ ...S.coachText, whiteSpace: tipOpen ? "normal" : undefined }}>
-              {tipOpen && activeTip.how ? activeTip.how : activeTip.text}
-            </span>
-            {!tipOpen && activeTip.how && <span style={S.coachMore}>More</span>}
-            <span style={S.coachX} onClick={(e) => { e.stopPropagation(); setTipOpen(false); dismissTip(); }}>✕</span>
-          </button>
-        )}
-
         <div style={S.topTrack}>
           <div style={{ ...S.topFill, width: `${progress}%` }} />
         </div>
@@ -6106,7 +2317,7 @@ export default function ArrowEscapeV3() {
           onPointerCancel={onViewUp}
         >
           <div
-            style={{ transform: `translate3d(${view.tx}px, ${view.ty}px, 0) scale(${view.scale})`, transformOrigin: "0 0", transition: snap ? "transform 320ms cubic-bezier(.22,.9,.26,1)" : "none", willChange: "transform", backfaceVisibility: "hidden", width: "100%", height: "100%", touchAction: "none" }}
+            style={{ transform: `translate(${view.tx}px, ${view.ty}px) scale(${view.scale})`, transformOrigin: "0 0", transition: snap ? "transform 240ms cubic-bezier(.4,0,.2,1)" : "none", width: "100%", height: "100%", touchAction: "none" }}
           >
             <svg
               key={levelKey}
@@ -6119,53 +2330,53 @@ export default function ArrowEscapeV3() {
                 pieces.map((p) => {
                   if (!alive.has(p.id)) return null;
                   const h = p.cells[0];
+                  const D = DIRS[p.dir];
+                  const far = (cols + rows + DOT_PAD * 2) * U;
                   return (
-                    <path
+                    <line
                       key={`ln${p.id}`}
-                      d={lanePath(h, p.dir, cols, rows, mirrors)}
+                      x1={cx(h, cols)}
+                      y1={cy(h, cols)}
+                      x2={cx(h, cols) + D.dx * far}
+                      y2={cy(h, cols) + D.dy * far}
                       stroke={toneFor(p.dir, theme)}
-                      strokeWidth={ink.stroke * 0.4}
-                      fill="none"
+                      strokeWidth={4.5}
                       opacity={0.3}
                     />
                   );
                 })}
 
               {/* dot field across the whole surface, not just the shape */}
-              {dotLayer}
-
-              {/* Deflectors. Drawn under the arrows so a piece passing over one
-                  still reads clearly, and as a bar on the diagonal the lane
-                  actually reflects around. */}
-              {mirrors.size > 0 &&
-                [...mirrors.entries()].map(([cell, kind]) => {
-                  const mx = cx(cell, cols), my = cy(cell, cols);
-                  const r = U * 0.33;
-                  const sx = kind === "/" ? r : -r;
-                  return (
-                    <g key={`mir${cell}`}>
-                      {/* Just the bar. A ring around it made the universal
-                          "prohibited" sign, which says the opposite of what a
-                          deflector does. The bar alone is the mirror; it only
-                          ever needed to be dark enough to see. */}
-                      <path
-                        d={`M ${mx - sx} ${my + r} L ${mx + sx} ${my - r}`}
-                        stroke={C.sealed} strokeWidth={ink.stroke * 1.15} strokeLinecap="round"
-                      />
-                    </g>
-                  );
-                })}
+              {Array.from({ length: (cols + DOT_PAD * 2) * (rows + DOT_PAD * 2) }).map((_, k) => {
+                const gx = (k % (cols + DOT_PAD * 2)) - DOT_PAD;
+                const gy = Math.floor(k / (cols + DOT_PAD * 2)) - DOT_PAD;
+                const inMask = gx >= 0 && gy >= 0 && gx < cols && gy < rows && mask.cells.has(gy * cols + gx);
+                return (
+                  <circle
+                    key={`d${k}`}
+                    cx={gx * U + U / 2}
+                    cy={gy * U + U / 2}
+                    r={inMask ? 3.8 : 3}
+                    fill={C.dot}
+                    opacity={inMask ? 1 : 0.55}
+                  />
+                );
+              })}
 
 
               {holdId !== null && alive.has(holdId) && pieces[holdId] && (() => {
                 const hp = pieces[holdId];
                 const h = hp.cells[0];
+                const D = DIRS[hp.dir];
+                const far = (cols + rows + DOT_PAD * 2) * U;
                 return (
-                  <path
-                    d={lanePath(h, hp.dir, cols, rows, mirrors)}
-                    fill="none"
+                  <line
+                    x1={cx(h, cols)}
+                    y1={cy(h, cols)}
+                    x2={cx(h, cols) + D.dx * far}
+                    y2={cy(h, cols) + D.dy * far}
                     stroke={toneFor(hp.dir, theme)}
-                    strokeWidth={ink.stroke * 1.5}
+                    strokeWidth={16}
                     strokeLinecap="round"
                     opacity={0.28}
                   />
@@ -6178,9 +2389,7 @@ export default function ArrowEscapeV3() {
                 const isBlk = bad?.blocker === p.id;
                 const isHint = hintId === p.id;
                 const isHeld = holdId === p.id;
-                const isSealed = p.needs !== undefined && alive.has(p.needs);
-                const tone = isBad || isBlk ? C.danger : isHint || isHeld ? C.accent : isSealed ? C.sealed : toneFor(p.dir, theme);
-                const quiet = isSealed && !isBad && !isBlk && !isHint && !isHeld;
+                const tone = isBad || isBlk ? C.danger : isHint || isHeld ? C.accent : toneFor(p.dir, theme);
                 const cls = isBad ? "shake" : isBlk ? "flash" : isHint ? "hint" : "settle";
                 return (
                   <Piece
@@ -6188,35 +2397,18 @@ export default function ArrowEscapeV3() {
                     piece={p}
                     cols={cols}
                     tone={tone}
-                    width={ink.stroke}
-                    hit={ink.hit(bigTouch)}
+                    width={W_BOARD}
+                    hit={bigTouch ? 78 : 52}
                     className={cls}
-                    /* keyed off the piece, not its position in the list: an
-                       arrow leaving shifts every later index, which changed the
-                       delay on every remaining arrow and defeated the memo for
-                       a value that only matters on the first frame */
-                    delay={(p.id % 17) * 18}
-                    dim={quiet}
-                    onDown={pieceDown}
+                    style={{ "--d": `${Math.min(idx, 11) * 14}ms` }}
+                    onDown={onPieceDown(p)}
                   />
                 );
               })}
 
-              {/* The scale and the animation have to sit on different elements.
-                  In SVG the transform attribute and the CSS transform property
-                  are one and the same, so animating transform on the scaled <g>
-                  replaced scale(100) with scale(.93): the silhouette shrank to a
-                  speck in the corner for the whole reveal, then snapped to full
-                  size when the animation ended. */}
-              {(phase === "reveal" || phase === "cleared") && (
-                <g transform={`scale(${U})`}>
-                  <path d={revealPath} className="reveal-fill" fill={TIER_HUE[tierIndex] ?? C.accent} />
-                </g>
-              )}
-
               {[...flying.entries()].map(([id, key]) =>
                 pieces[id] ? (
-                  <DepartingPiece key={`f${key}`} piece={pieces[id]} cols={cols} rows={rows} tone={C.accent} mirrors={mirrors} width={ink.stroke} />
+                  <DepartingPiece key={`f${key}`} piece={pieces[id]} cols={cols} rows={rows} tone={C.accent} />
                 ) : null
               )}
 
@@ -6226,10 +2418,10 @@ export default function ArrowEscapeV3() {
                   className="ring"
                   cx={cx(ring.cell, cols)}
                   cy={cy(ring.cell, cols)}
-                  r={ink.ring}
+                  r={cols * 5.5}
                   fill="none"
                   stroke={C.accent}
-                  strokeWidth={ink.stroke * 1.35}
+                  strokeWidth={cols * 0.9}
                 />
               )}
 
@@ -6241,10 +2433,10 @@ export default function ArrowEscapeV3() {
                   x={q.x}
                   y={q.y}
                   fill={q.hue}
-                  fontSize={ink.text}
+                  fontSize={cols * 3.6}
                   fontWeight={800}
                   textAnchor="middle"
-                  style={{ fontFamily: "Nunito, sans-serif", "--rise": `${ink.rise}px` }}
+                  style={{ fontFamily: "Nunito, sans-serif", "--rise": `${cols * 7}px` }}
                 >
                   {q.text}
                 </text>
@@ -6254,63 +2446,32 @@ export default function ArrowEscapeV3() {
           </div>
         </div>
 
-        <div style={S.playFoot}>
-          <div style={S.footGroup}>
-            <button style={{ ...S.footBtn, opacity: undosLeft > 0 && history.length ? 1 : 0.35 }} onClick={undo} disabled={undosLeft <= 0 || !history.length}>
-              <Undo />
-              <span style={S.footNum}>{undosLeft}</span>
-            </button>
-            <button 
-  style={S.gridToggle} 
-  onClick={() => { 
-    setGrid((prevGrid) => {
-      const nextGrid = !prevGrid;
-      persist({ grid: nextGrid });
-      return nextGrid;
-    }); 
-  }} 
-  aria-label="Toggle grid"
->
-  <Hash on={grid} />
-</button>
-          </div>
-          <div style={S.scoreWrap}>
-            <div key={score} style={S.scorePill} className="score-tick">{score.toLocaleString()}</div>
-            {combo >= 2 ? (
-              <div key={`c${combo}`} style={S.comboCap} className="combo-in">
-                {Math.min(combo, 5)}× chain
-              </div>
-            ) : (
-              <div style={S.scoreCap}>score</div>
-            )}
-          </div>
-          <div style={S.footGroup}>
-            <span style={S.footSpacer} aria-hidden="true" />
-            <button style={S.footBtn} onClick={cycleZoom}>
-              <Magnifier zoomed={view.scale > 1.01} />
-              {view.scale > 1.01 && <span style={S.footNum}>{Math.round(view.scale)}×</span>}
-            </button>
-          </div>
-        </div>
+        <button style={S.gridToggle} onClick={() => { setGrid((g) => !g); persist({ grid: !grid }); }} aria-label="Toggle grid">
+          <Hash on={grid} />
+        </button>
 
-        {phase === "reveal" && (
-          <div
-            style={{ position: "absolute", inset: 0, zIndex: 5 }}
-            onClick={skipReveal}
-            aria-hidden="true"
-          />
-        )}
+        <div style={S.playFoot}>
+          <button style={{ ...S.footBtn, opacity: undosLeft > 0 && history.length ? 1 : 0.35 }} onClick={undo} disabled={undosLeft <= 0 || !history.length}>
+            <Undo />
+            <span style={S.footNum}>{undosLeft}</span>
+          </button>
+          <div style={S.scorePill}>{score.toLocaleString()}</div>
+          <button style={S.footBtn} onClick={cycleZoom}>
+            <Magnifier zoomed={view.scale > 1.01} />
+            {view.scale > 1.01 && <span style={S.footNum}>{Math.round(view.scale)}×</span>}
+          </button>
+        </div>
 
         {phase === "gameover" && (
           <div style={S.overlay} className="ovin">
             <div style={S.ovCard}>
               <div style={{ ...S.ovTitle, color: C.danger }}>Out of lives</div>
               <div style={S.ovSub}>Tip: hold an arrow to see where it is aimed, or tap # for all of them.</div>
-              <button style={S.adBtn} onClick={watchForLife}>
-                {adsRemoved
-                  ? <>Continue · get a life back</>
-                  : <><span style={S.adPlay}>▶</span> Watch an ad · get a life back</>}
-              </button>
+              {!adsRemoved && (
+                <button style={S.adBtn} onClick={watchForLife}>
+                  <span style={S.adPlay}>▶</span> Watch an ad · get a life back
+                </button>
+              )}
               {adNote && <div style={S.adNote}>{adNote}</div>}
               <button style={S.primary} onClick={restart}>
                 Try again
@@ -6332,28 +2493,11 @@ export default function ArrowEscapeV3() {
             <div style={S.winTitle}>{clean ? "Flawless!" : "Level Completed!"}</div>
 
             <div style={S.winCard}>
-              {/* This card used to redraw the arrows the player had just spent
-                  the level removing. It now shows what they actually revealed. */}
-              <svg viewBox={`0 0 ${mask.cols} ${mask.rows}`} style={{ width: "100%", height: "auto", maxHeight: 190 }}>
-                <path d={setup.gridlock ? "" : revealPath} fill={TIER_HUE[tierIndex] ?? C.accent} />
+              <svg viewBox={`0 0 ${cols * U} ${rows * U}`} style={{ width: "100%", height: "auto" }}>
+                {pieces.map((p) => (
+                  <Piece key={p.id} piece={p} cols={cols} tone={toneFor(p.dir, theme)} width={W_MINI} />
+                ))}
               </svg>
-              <div style={S.winShapeName}>{mode === "custom" ? "Your board" : mask.name}</div>
-              {mode !== "custom" && (
-                <div style={{ ...S.winRank, color: earnedRank ? MEDAL[earnedRank] : C.muted }}>
-                  {earnedRank === 3 ? "GOLD" : earnedRank === 2 ? "SILVER" : earnedRank === 1 ? "BRONZE" : "NOT COLLECTED"}
-                </div>
-              )}
-              {mode !== "custom" && earnedRank < 3 && (
-                <div style={S.winNext}>
-                  {earnedRank === 0 && setup.goal && setup.goal.kind !== "clear" && goalLabel(setup.goal)
-                    ? goalLabel(setup.goal).full
-                    : earnedRank === 2
-                    ? "Clear it without a hint for Gold"
-                    : earnedRank === 1
-                    ? "Clear it without an undo for Silver"
-                    : "Clear it without a single mistake to collect it"}
-                </div>
-              )}
             </div>
 
             <div style={S.winStars}>
@@ -6368,9 +2512,7 @@ export default function ArrowEscapeV3() {
             </div>
 
             <button style={S.winBtn} onClick={(e) => { e.stopPropagation(); nextLevel(); }}>
-              {/* This read "Back to Journey" in every mode but journey — while
-                  in Gridlock the same button starts the next Gridlock round. */}
-              {mode === "journey" ? "Next Level" : mode === "gridlock" ? "Next Round" : "Back to Journey"}
+              {mode === "journey" ? "Next Level" : "Back to Journey"}
             </button>
             <button style={S.winGhost} onClick={(e) => { e.stopPropagation(); restart(); }}>
               Replay for a better score
@@ -6384,34 +2526,16 @@ export default function ArrowEscapeV3() {
 
   /* ═══════════  SHELL SCREENS  ═══════════ */
   return (
-    <div className="app-in" style={adsRemoved ? { ...S.page, padding: "calc(10px + env(safe-area-inset-top, 0px)) 14px calc(10px + env(safe-area-inset-bottom, 0px))" } : S.page}>
+    <div style={S.page}>
       <style>{CSS}</style>
 
       <div style={S.shellBody}>
         {screen === "home" && (
           <div style={S.home} className="screen-in">
-            <div
-              style={streak > 0
-                ? { ...S.streakChip, border: "1px solid rgba(255,194,75,0.35)", boxShadow: `0 2px 14px rgba(255,194,75,0.18), ${C.sh1}` }
-                : S.streakChip}
-            >
-              <StreakFlame on={streak > 0} />
-              <span style={S.streakCount}>{streak}</span>
-              {streak > 0 && (
-                <span style={S.streakGoal}>
-                  {streak >= 30 ? " · legend" : ` · ${[3, 7, 14, 30].find((t) => t > streak) - streak} to ${[3, 7, 14, 30].find((t) => t > streak)}`}
-                </span>
-              )}
-            </div>
+            <div style={S.streakChip}>🔥 {streak}</div>
 
             <div style={S.homeCards}>
-              <button style={{ ...S.homeCard, animationDelay: "40ms" }} className="card-in" onClick={() => {
-                returnTo.current = "home";
-                const p = inProgressRef.current;
-                if (p && p.mode === "daily" && !dailyDone && p.dateKey === todayKey()) { inProgressRef.current = null; resumeDaily(p.level, p); }
-                else startDaily();
-                setScreen("play");
-              }}>
+              <button style={{ ...S.homeCard, animationDelay: "40ms" }} className="card-in" onClick={() => { startDaily(); setScreen("play"); }}>
                 <div style={S.homeCardTitle}>Daily</div>
                 <div style={S.homeCardSub}>{todayKey().slice(5).replace("-", " / ")}</div>
                 <div style={S.homeCardArt}>
@@ -6429,31 +2553,6 @@ export default function ArrowEscapeV3() {
                 <div style={S.homeCardBtn}>Open</div>
               </button>
             </div>
-
-            {/* The measured reason this exists: a picture-shaped board carries
-                about 0.43 cells of edge per cell of area against 0.18 for a
-                solid rectangle, and every edge cell is somewhere an arrow can
-                point straight off the board. That is why a shape level always
-                opens with a dozen or more legal moves however hard the
-                generator is pushed. No picture here, so the board can actually
-                close up. */}
-            <button style={{ ...S.gridCard, animationDelay: "180ms" }} className="card-in"
-                    onClick={() => {
-                      returnTo.current = "home";
-                      const p = inProgressRef.current;
-                      if (p && p.mode === "gridlock" && p.round === gridRound) { inProgressRef.current = null; resumeGridlock(p.round, p.seed, p); }
-                      else startGridlock();
-                      setScreen("play");
-                    }}>
-              <div style={S.gridCardRow}>
-                <div>
-                  <div style={S.homeCardTitle}>Gridlock</div>
-                  <div style={S.homeCardSub}>Full board, no picture — fewer ways in</div>
-                </div>
-                <div style={S.gridRoundTag}>{gridRound > 0 ? `Round ${gridRound + 1}` : "Start"}</div>
-              </div>
-              {gridBest > 0 && <div style={S.gridBestTag}>Best run · {gridBest} rounds</div>}
-            </button>
 
             <div style={{ ...S.chapterCard, animationDelay: "150ms" }} className="card-in">
               {(() => {
@@ -6491,13 +2590,7 @@ export default function ArrowEscapeV3() {
               <div style={{ ...S.homeDiff, color: TIER_HUE[tierFor(best).index] ?? C.accent }}>{tierFor(best).tier.name}</div>
             </div>
 
-            <button style={{ ...S.continueBtn, animationDelay: "230ms" }} className="card-in" onClick={() => {
-              returnTo.current = "home";
-              const p = inProgressRef.current;
-              if (p && p.mode === "journey" && p.level === best) { inProgressRef.current = null; resumeJourney(p.level, p); }
-              else startJourney(best);
-              setScreen("play");
-            }}>
+            <button style={{ ...S.continueBtn, animationDelay: "230ms" }} className="card-in" onClick={() => { startJourney(best); setScreen("play"); }}>
               Continue
             </button>
             <div style={S.homeFoot}>Best {bestScore.toLocaleString()} · level {best}</div>
@@ -6535,7 +2628,7 @@ export default function ArrowEscapeV3() {
                           <button
                             key={n}
                             style={{ ...S.lvCell, borderColor: st ? ci.hue : "transparent" }}
-                            onClick={() => { returnTo.current = "levels"; startJourney(n); setScreen("play"); }}
+                            onClick={() => { startJourney(n); setScreen("play"); }}
                           >
                             <span style={S.lvNum}>{n}</span>
                             <span style={S.lvStars}>{st ? "★".repeat(st) : "·"}</span>
@@ -6584,12 +2677,15 @@ export default function ArrowEscapeV3() {
               <div style={{ ...S.colTitle, marginTop: 16 }}>Discovered shapes</div>
               <div style={S.foundGrid}>
                 {found.map((f) => {
-                  const m = cachedFound(f.c);
+                  const m = decodeMask(f.c);
                   if (!m) return null;
                   return (
                     <div key={f.n} style={{ ...S.foundItem, border: `2px solid ${MEDAL[f.r ?? 1]}` }}>
                       <svg viewBox={`0 0 ${m.cols} ${m.rows}`} style={{ width: 38, height: 38 }}>
-                        <path d={m.d} fill={C.accent} />
+                        {[...m.cells].map((i) => (
+                          <rect key={i} x={(i % m.cols) + 0.14} y={((i / m.cols) | 0) + 0.14}
+                                width={0.72} height={0.72} rx={0.2} fill={C.accent} />
+                        ))}
                       </svg>
                       <span style={S.foundName}>{f.n}</span>
                     </div>
@@ -6638,11 +2734,8 @@ export default function ArrowEscapeV3() {
           </div>
 
           <div style={S.tip}>
-            {/* These three lines described the old rules: bronze for merely
-                finishing, and gold gated behind Hard. Both changed — bronze now
-                asks for a near-clean run, and gold is earnable on any level. */}
-            <b>Bronze</b> — clear it without a single mistake. <b>Silver</b> — no
-            mistakes and no undo. <b>Gold</b> — no mistakes, no undo and no hint.
+            <b>Bronze</b> — clear the shape. <b>Silver</b> — clear it without a single mistake.
+            <b> Gold</b> — flawless at Hard or beyond: no mistakes and no undo.
             <br />
             Past level {CURATED_UNTIL} the game keeps inventing new shapes, and every one you
             clear is kept here. There is no end to them.
@@ -6651,7 +2744,7 @@ export default function ArrowEscapeV3() {
 
         {screen === "studio" && (
           <ShapeStudio
-            onPlay={(m) => { returnTo.current = "studio"; startCustom(m); setScreen("play"); }}
+            onPlay={(m) => { startCustom(m); setScreen("play"); }}
             saved={customs}
             onSave={saveCustom}
             onDelete={deleteCustom}
@@ -6659,32 +2752,6 @@ export default function ArrowEscapeV3() {
         )}
 
         {screen === "settings" && <div style={S.settings} className="screen-in">
-          {/* Put first, before any toggle. Nine separate ideas arrive over the
-              first eighty levels, each announced by a banner that shows once
-              and is then gone for good — so a player who forgets, or who meets
-              one again weeks later, had nowhere at all to look it up. */}
-          <button style={S.guideHead} onClick={() => setGuideOpen((v) => !v)}>
-            <span style={S.guideHeadText}>How to play</span>
-            <span style={S.guideChev}>{guideOpen ? "−" : "+"}</span>
-          </button>
-          {guideOpen && (
-            <div style={S.guideBody}>
-              <div style={S.guideRule}>
-                Tap an arrow to send it off the board. It can only leave if nothing stands
-                in its way. Clear every arrow to finish.
-              </div>
-              {MECHANIC_TIPS.filter((t) => t.how).map((t) => (
-                <div key={t.key} style={S.guideRow}>
-                  <div style={S.guideArt}><GuideArt kind={t.art} C={C} /></div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={S.guideTitle}>{t.title}</div>
-                    <div style={S.guideHow}>{t.how}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
           <Toggle label="Zen mode" hint="No lives, no losing — just solve" on={zen} onChange={(v) => { setZen(v); persist({ zen: v }); }} />
           <Toggle label="Large touch targets" hint="Easier to hit the arrow you mean" on={bigTouch} onChange={(v) => { setBigTouch(v); persist({ bigTouch: v }); }} />
           <Toggle label="Vibration" hint="Buzz on taps and mistakes" on={haptics} onChange={(v) => { setHaptics(v); persist({ haptics: v }); }} />
@@ -6707,84 +2774,35 @@ export default function ArrowEscapeV3() {
               ))}
             </div>
           </div>
-          {/* The whole card, not just its button. Hiding only the button left
-              the heading and its description sitting there with nothing to act
-              on — an advert for something the player cannot do. The free route
-              below says the same thing and does work. */}
-          {!adsRemoved && Ads.provider?.billing && (
+          {!adsRemoved && (
             <div style={S.buyRow}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <span style={S.buyName}>Remove ads</span>
-                <span style={S.buyHint}>No banner, no ads between levels. Reward videos stay available.</span>
+                <span style={S.buyHint}>No ads between levels. Reward videos stay available.</span>
               </div>
               <button
                 style={S.buyBtn}
                 onClick={async () => {
                   const ok = await Ads.buyRemoveAds();
                   if (ok) { setAdsRemoved(true); persist({ adsRemoved: true }); }
-                  else flashNote("That didn't go through. Nothing was charged.");
+                  else flashNote("Purchases aren't set up yet.");
                 }}
               >
                 Buy
               </button>
             </div>
           )}
-          {!adsRemoved && (
-            <div style={S.watchRow}>
-              <div style={S.watchTop}>
-                {/* "Or" only makes sense next to the Buy card above it, and
-                    that card is hidden until billing exists. */}
-                <span style={S.buyName}>{Ads.provider?.billing ? "Or watch your way there" : "Remove ads by watching"}</span>
-                <span style={S.watchCount}>{Math.min(adWatchCount, AD_REMOVAL_GOAL)} / {AD_REMOVAL_GOAL}</span>
-              </div>
-              <span style={S.buyHint}>
-                {Ads.provider?.billing
-                  ? "Every full view counts. Free, no purchase needed."
-                  : "Every full view counts. No banner and no ads between levels once you get there."}
-              </span>
-              <div style={S.chapTrack}>
-                <div style={{ ...S.chapFill, width: `${Math.min(100, (adWatchCount / AD_REMOVAL_GOAL) * 100)}%`, background: C.go }} />
-              </div>
-              <button
-                style={{ ...S.buyBtn, width: "100%", marginTop: 10, background: C.go, opacity: watchingAd ? 0.6 : 1 }}
-                disabled={watchingAd}
-                onClick={async () => {
-                  const watched = await claimRewarded("removeAdsProgress");
-                  if (watched === null) return;
-                  if (!watched) { flashNote("No ad available right now."); return; }
-                  const n = adWatchRef.current + 1;
-                  adWatchRef.current = n;
-                  setAdWatchCount(n);
-                  if (n >= AD_REMOVAL_GOAL) {
-                    setAdsRemoved(true);
-                    persist({ adsRemoved: true, adWatchCount: n });
-                    flashNote("Ads removed — thank you.");
-                  } else {
-                    persist({ adWatchCount: n });
-                  }
-                }}
-              >
-                {watchingAd ? "Loading ad…" : "Watch ad"}
-              </button>
-            </div>
-          )}
           {adsRemoved && <div style={S.buyDone}>Ads removed — thank you.</div>}
-          {/* Same gate as Buy: with no billing there is nothing that could ever
-              be restored, so the button can only answer "nothing to restore" —
-              which reads as a lost purchase rather than as a feature that does
-              not exist yet. */}
-          {Ads.provider?.billing && (
-            <button
-              style={S.restoreBtn}
-              onClick={async () => {
-                const ok = await Ads.restore();
-                if (ok) { setAdsRemoved(true); persist({ adsRemoved: true }); flashNote("Purchase restored."); }
-                else flashNote("Nothing to restore.");
-              }}
-            >
-              Restore purchases
-            </button>
-          )}
+          <button
+            style={S.restoreBtn}
+            onClick={async () => {
+              const ok = await Ads.restore();
+              if (ok) { setAdsRemoved(true); persist({ adsRemoved: true }); flashNote("Purchase restored."); }
+              else flashNote("Nothing to restore.");
+            }}
+          >
+            Restore purchases
+          </button>
           {adNote && <div style={S.adNote}>{adNote}</div>}
 
           <div style={S.themeRow}>
@@ -6925,27 +2943,7 @@ function ShapeStudio({ onPlay, saved, onSave, onDelete }) {
 
   return (
     <div style={S.settings} className="screen-in">
-      <div style={S.colTitle}>Quick shapes</div>
-      <div style={S.quickGrid}>
-        {QUICK_SHAPES.map((key) => {
-          const m = cachedMask(key);
-          return (
-            <button
-              key={key}
-              style={S.quickBtn}
-              onClick={() => onPlay(parseMask(key))}
-              aria-label={`Play ${SHAPES[key].name}`}
-            >
-              <svg viewBox={`0 0 ${m.cols} ${m.rows}`} style={{ width: 34, height: 34 }}>
-                <path d={m.d} fill={C.accent} />
-              </svg>
-              <span style={S.quickName}>{SHAPES[key].name}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      <div style={{ ...S.colTitle, marginTop: 16 }}>Draw your own</div>
+      <div style={S.colTitle}>Draw a shape</div>
       <div style={S.studioGrid}>
         {Array.from({ length: N * N }).map((_, i) => (
           <button
@@ -6978,12 +2976,13 @@ function ShapeStudio({ onPlay, saved, onSave, onDelete }) {
                 <div key={code} style={S.savedItem}>
                   <button style={S.savedBtn} onClick={() => onPlay(m)} aria-label="Play saved shape">
                     <svg viewBox={`0 0 ${m.cols} ${m.rows}`} style={{ width: 44, height: 44 }}>
-                      <path d={runPath(m, 0.12, 0.76)} fill={C.accent} />
+                      {[...m.cells].map((i) => (
+                        <rect key={i} x={(i % m.cols) + 0.12} y={((i / m.cols) | 0) + 0.12}
+                              width={0.76} height={0.76} rx={0.22} fill={C.accent} />
+                      ))}
                     </svg>
                   </button>
-                  <button style={S.savedX} onClick={() => onDelete(code)} aria-label="Delete">
-                    <span style={S.savedXDot}>✕</span>
-                  </button>
+                  <button style={S.savedX} onClick={() => onDelete(code)} aria-label="Delete">✕</button>
                 </div>
               );
             })}
@@ -7007,8 +3006,6 @@ function ShapeStudio({ onPlay, saved, onSave, onDelete }) {
         Anything you draw becomes a real puzzle — the board is generated inside your
         shape and is always solvable. Send the code to a friend and they play the
         exact same board.
-        <br />
-        Studio boards are built at <b>Pro</b> — the hardest settings in the game.
       </div>
     </div>
   );
@@ -7017,7 +3014,10 @@ function ShapeStudio({ onPlay, saved, onSave, onDelete }) {
 function MaskIcon({ mask, colour, size = 40 }) {
   return (
     <svg viewBox={`0 0 ${mask.cols} ${mask.rows}`} style={{ width: size, height: size, display: "block" }}>
-      <path d={runPath(mask, 0.12, 0.76)} fill={colour} />
+      {[...mask.cells].map((i) => (
+        <rect key={i} x={(i % mask.cols) + 0.12} y={((i / mask.cols) | 0) + 0.12}
+              width={0.76} height={0.76} rx={0.24} fill={colour} />
+      ))}
     </svg>
   );
 }
@@ -7052,7 +3052,7 @@ function Toggle({ label, hint, on, onChange }) {
         <span style={S.tglHint}>{hint}</span>
       </span>
       <span style={{ ...S.tglTrack, background: on ? C.accent : C.line }}>
-        <span style={{ ...S.tglKnob, transform: `translate3d(${on ? 18 : 0}px, 0, 0)` }} />
+        <span style={{ ...S.tglKnob, transform: `translateX(${on ? 18 : 0}px)` }} />
       </span>
     </button>
   );
@@ -7121,30 +3121,13 @@ const HomeIcon = () => (
     <path d="M3.5 10.5L12 3.5l8.5 7M5.5 9.5V20h13V9.5" stroke={C.accent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
-/* Two-tone so it reads as lit rather than flat: a warm gold body with a
-   brighter core, the same on/off language Heart and Star already use in this
-   file. Unlit (streak 0) drops to a quiet outline — a flame icon that always
-   looks lit regardless of the actual streak would be decorative, not
-   informative; this one reflects the number next to it. */
-const StreakFlame = ({ on }) => (
-  <svg width="18" height="18" viewBox="0 0 24 24">
-    <path
-      d="M12.4 2.4C12.4 2.4 7.6 7.9 7.6 12.9C7.6 16.1 9.7 18.7 12.3 18.7C15.2 18.7 17.5 16.2 17.2 13C17 10.7 15.2 9.6 15.5 7.2C15.7 5.5 14.4 3.5 12.4 2.4Z"
-      fill={on ? C.gold : "none"} stroke={on ? "none" : C.muted} strokeWidth="1.6" strokeLinejoin="round"
-    />
-    {on && (
-      <path
-        d="M12.7 9.6C12.7 9.6 10.9 12.1 10.9 13.9C10.9 15.2 11.8 16.1 12.9 16.1C14.1 16.1 15 15.1 14.9 13.8C14.8 12.5 13.8 12 13.9 10.7C13.95 10.1 13.4 9.9 12.7 9.6Z"
-        fill="#FFE9C2"
-      />
-    )}
-  </svg>
-);
 function MiniShape({ shapeKey }) {
-  const m = cachedMask(shapeKey);
+  const m = parseMask(shapeKey);
   return (
     <svg viewBox={`0 0 ${m.cols} ${m.rows}`} style={{ width: "100%", height: "100%" }}>
-      <path d={m.d} fill={C.accent} opacity={0.85} />
+      {[...m.cells].map((i) => (
+        <rect key={i} x={(i % m.cols) + 0.14} y={((i / m.cols) | 0) + 0.14} width={0.72} height={0.72} rx={0.24} fill={C.accent} opacity={0.85} />
+      ))}
     </svg>
   );
 }
@@ -7177,41 +3160,19 @@ const TinyArrow = () => (
 
 const makeCSS = (C) => `
 @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@600;800;900&family=DM+Mono:wght@500&display=swap');
-
-/* The React root only paints its own box. Anything outside it — the strip
-   behind a rubber-band scroll, a rounding gap at a screen edge — falls back
-   to the browser's white, which reads as a flash against the dark theme.
-   Colouring the document itself keeps the app one solid surface. */
-html,body,#root{background:${C.bg};margin:0}
-/* Android's WebView silently inflates text it judges too small, which pushes
-   carefully sized labels out of their pills. Opt out and keep the tuned sizes. */
-html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
-/* Long-pressing an arrow is a game gesture, not a request for the system
-   text/copy menu. */
-body{-webkit-touch-callout:none;-webkit-font-smoothing:antialiased}
-/* Scrollbars belong to documents, not to a game screen. */
-::-webkit-scrollbar{width:0;height:0;display:none}
-*{scrollbar-width:none}
-
 svg { shape-rendering: geometricPrecision; }
-@keyframes settleIn{0%{opacity:0;transform:translateY(9px) scale(.94)}62%{transform:translateY(-1px) scale(1.015)}100%{opacity:1;transform:translateY(0) scale(1)}}
-/* No will-change here. This class sits on every arrow on the board — sixty-four
-   of them on a typical level — and it never comes off, so the hint asked the
-   compositor for sixty-four permanent layers to serve one 300ms entrance. That
-   is the exact misuse the property warns about: it is a promise about the next
-   frame, not a decoration. The entrance is a cheap transform and opacity fade;
-   it does not need the help, and the layers cost real memory on a phone. */
-.settle{animation:settleIn 300ms cubic-bezier(.2,1.02,.3,1) backwards;animation-delay:var(--d,0ms)}
+@keyframes settleIn{0%{opacity:0;transform:translateY(6px)}100%{opacity:1;transform:translateY(0)}}
+.settle{animation:settleIn 165ms cubic-bezier(.2,.9,.3,1) backwards;animation-delay:var(--d,0ms)}
 @keyframes snakeOut{to{stroke-dashoffset:var(--off)}}
-.snake{animation:snakeOut 340ms cubic-bezier(.5,0,.28,1) forwards;will-change:stroke-dashoffset}
+.snake{animation:snakeOut 240ms cubic-bezier(.45,0,.7,.1) forwards;will-change:stroke-dashoffset}
 @keyframes chevOut{to{transform:translate(var(--tx),var(--ty))}}
-.chev-out{animation:chevOut 340ms cubic-bezier(.5,0,.28,1) forwards;will-change:transform}
+.chev-out{animation:chevOut 240ms cubic-bezier(.45,0,.7,.1) forwards;will-change:transform}
 @keyframes depFade{0%,72%{opacity:1}100%{opacity:0}}
-.dep-fade{animation:depFade 340ms cubic-bezier(.4,0,1,1) forwards}
+.dep-fade{animation:depFade 240ms linear forwards}
 @keyframes ringOut{0%{opacity:.5;transform:scale(.35)}100%{opacity:0;transform:scale(1.7)}}
-.ring{animation:ringOut 460ms cubic-bezier(.14,.84,.26,1) forwards;transform-box:fill-box;transform-origin:center;will-change:transform,opacity}
+.ring{animation:ringOut 320ms cubic-bezier(.16,.9,.3,1) forwards;transform-box:fill-box;transform-origin:center;will-change:transform,opacity}
 @keyframes nudge{0%,100%{transform:translateX(0)}22%{transform:translateX(-9px)}55%{transform:translateX(9px)}80%{transform:translateX(-4px)}}
-.shake{animation:nudge 420ms cubic-bezier(.36,.07,.19,.97);will-change:transform}
+.shake{animation:nudge 340ms ease}
 @keyframes flashDim{0%,100%{opacity:1}50%{opacity:.3}}
 .flash{animation:flashDim 340ms ease infinite}
 @keyframes hintPulse{0%,100%{opacity:1}50%{opacity:.25}}
@@ -7219,75 +3180,37 @@ svg { shape-rendering: geometricPrecision; }
 @keyframes hbreak{0%{transform:scale(1)}35%{transform:scale(1.4)}100%{transform:scale(1)}}
 .hbreak{animation:hbreak 430ms ease;display:inline-flex}
 @keyframes starpop{0%{transform:scale(0) rotate(-25deg);opacity:0}70%{transform:scale(1.25) rotate(7deg);opacity:1}100%{transform:scale(1) rotate(0);opacity:1}}
-@keyframes scoreTick{0%{transform:scale(1)}28%{transform:scale(1.13)}100%{transform:scale(1)}}
-.score-tick{animation:scoreTick 340ms cubic-bezier(.24,1.3,.4,1);will-change:transform}
-@keyframes comboIn{0%{opacity:0;transform:translateY(4px) scale(.86)}55%{transform:translateY(0) scale(1.06)}100%{opacity:1;transform:scale(1)}}
-.combo-in{animation:comboIn 300ms cubic-bezier(.24,1.3,.4,1)}
-@keyframes leftTick{0%{opacity:.35}100%{opacity:1}}
-.left-tick{animation:leftTick 260ms ease-out}
-@keyframes heartLow{0%,100%{transform:scale(1)}50%{transform:scale(1.16)}}
-.heart-low{animation:heartLow 1100ms ease-in-out infinite}
-.starpop{animation:starpop 620ms cubic-bezier(.26,1.42,.42,1) backwards}
+.starpop{animation:starpop 460ms cubic-bezier(.34,1.56,.64,1) backwards}
+@keyframes badgeIn{0%{transform:scale(.4);opacity:0}100%{transform:scale(1);opacity:1}}
+.badge-in{animation:badgeIn 160ms cubic-bezier(.34,1.56,.64,1)}
 @keyframes popUp{0%{transform:translateY(0);opacity:0}20%{transform:translateY(calc(var(--rise,60px) * -0.3));opacity:1}100%{transform:translateY(calc(var(--rise,60px) * -1));opacity:0}}
-.pop{animation:popUp 1000ms cubic-bezier(.12,.88,.24,1) forwards;pointer-events:none;will-change:transform,opacity}
+.pop{animation:popUp 820ms cubic-bezier(.15,.95,.3,1) forwards;pointer-events:none;will-change:transform,opacity}
 @keyframes ovin{from{opacity:0;transform:scale(.97)}to{opacity:1;transform:scale(1)}}
-.ovin{animation:ovin 340ms cubic-bezier(.16,.86,.26,1)}
+.ovin{animation:ovin 240ms ease-out}
 .confetti{position:absolute;top:-20px;width:9px;height:15px;border-radius:2px;animation-name:fall;animation-timing-function:linear;animation-iteration-count:infinite}
 @keyframes fall{0%{transform:translateY(0) rotate(0)}100%{transform:translateY(105vh) rotate(540deg)}}
 
-/* A press and a release are not the same movement, and using one curve for
-   both is what made this feel a beat behind the finger.
+/* every button gives instant physical feedback */
+button { transition: transform 110ms cubic-bezier(.34,1.4,.64,1), background 180ms ease, opacity 180ms ease; }
+button:active:not(:disabled) { transform: scale(.93); }
 
-   Going down was running 160ms on a curve whose control point sits above one —
-   an overshoot — so the button squashed past its target and bounced, on the way
-   IN. A press should be immediate and firm: the finger is already there, and
-   any delay before the screen agrees reads as lag. Coming back up is where the
-   spring belongs, because nothing is waiting on it.
+@keyframes screenIn { from { opacity: 0; transform: translateY(14px) scale(.985); } to { opacity: 1; transform: none; } }
+.screen-in { animation: screenIn 260ms cubic-bezier(.18,.9,.26,1) both; will-change: transform, opacity; }
 
-   So: 70ms and flat on the way down, 260ms with the overshoot on the way up. */
-button { transition: transform 260ms cubic-bezier(.2,1.12,.32,1), background 200ms cubic-bezier(.4,0,.2,1), opacity 200ms cubic-bezier(.4,0,.2,1), box-shadow 200ms cubic-bezier(.4,0,.2,1); }
-button:active:not(:disabled) { transform: scale(.96); transition-duration: 70ms; transition-timing-function: cubic-bezier(.3,0,.7,1); }
+@keyframes boardIn { from { opacity: 0; transform: scale(.9); } to { opacity: 1; transform: scale(1); } }
+.board-in { animation: boardIn 300ms cubic-bezier(.16,.92,.26,1) backwards; transform-origin: center; }
 
-@keyframes screenIn { from { opacity: 0; transform: translateY(18px) scale(.978); } to { opacity: 1; transform: none; } }
-.boot-mark{animation:bootIn 520ms cubic-bezier(.2,.9,.3,1) both}
-@keyframes bootIn{0%{opacity:0;transform:scale(.94)}100%{opacity:1;transform:scale(1)}}
-/* The app itself fades up rather than appearing between two frames. Without it
-   the boot mark is replaced by a full screen in a single frame, which reads as
-   a flicker however fast the load was. */
-.app-in{animation:appIn 300ms ease-out both}
-@keyframes appIn{0%{opacity:0}100%{opacity:1}}
-.screen-in { animation: screenIn 380ms cubic-bezier(.16,.84,.24,1) both; will-change: transform, opacity; }
+@keyframes hudIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: none; } }
+.hud-in { animation: hudIn 260ms cubic-bezier(.2,.85,.3,1) both; }
 
-@keyframes boardIn { from { opacity: 0; transform: scale(.88); } to { opacity: 1; transform: scale(1); } }
-.board-in { animation: boardIn 420ms cubic-bezier(.16,.9,.24,1) backwards; transform-origin: center; will-change: transform, opacity; }
+@keyframes cardIn { from { opacity: 0; transform: translateY(16px) scale(.96); } to { opacity: 1; transform: none; } }
+.card-in { animation: cardIn 300ms cubic-bezier(.2,1.06,.3,1) both; will-change: transform, opacity; }
 
-@keyframes hudIn { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: none; } }
-.hud-in { animation: hudIn 360ms cubic-bezier(.16,.86,.26,1) both; }
-
-@keyframes cardIn { from { opacity: 0; transform: translateY(20px) scale(.955); } to { opacity: 1; transform: none; } }
-/* backwards, not both. This class sits on the four home cards, which are
-   buttons — and both holds the animation's final transform on the element
-   forever afterwards. An animation's applied value outranks a rule in the
-   cascade, so it was overriding button:active: the three most prominent
-   controls in the app, Daily and Studio and Gridlock, did not move at all when
-   pressed. backwards still holds the opening state during the stagger delay,
-   which is the part that is actually needed, and lets go once it has run. */
-.card-in { animation: cardIn 440ms cubic-bezier(.18,1.02,.28,1) backwards; }
-
-@keyframes navPop { 0% { transform: scale(1); } 40% { transform: scale(1.22) rotate(-3deg); } 70% { transform: scale(.97) rotate(1deg); } 100% { transform: scale(1) rotate(0); } }
-.nav-on { animation: navPop 420ms cubic-bezier(.28,1.32,.44,1); }
+@keyframes navPop { 0% { transform: scale(1); } 45% { transform: scale(1.18); } 100% { transform: scale(1); } }
+.nav-on { animation: navPop 280ms cubic-bezier(.34,1.5,.64,1); }
 
 button:focus-visible{outline:3px solid ${C.accent};outline-offset:3px}
-@keyframes revealIn{0%{opacity:0;transform:scale(.93)}62%{transform:scale(1.02)}100%{opacity:1;transform:scale(1)}}
-.reveal-fill{animation:revealIn 520ms cubic-bezier(.22,1.05,.32,1) backwards;transform-box:fill-box;transform-origin:center;will-change:transform,opacity}
-
-@media (prefers-reduced-motion: reduce){
-.settle,.snake,.chev-out,.dep-fade,.ring,.shake,.flash,.hint,.hbreak,.starpop,.ovin,.confetti,.pop,.score-tick,.combo-in,.heart-low,.left-tick,
-.screen-in,.board-in,.hud-in,.card-in,.nav-on,.reveal-fill,.boot-mark,.app-in{animation-duration:1ms!important;animation-iteration-count:1!important}
-button{transition-duration:1ms!important}
-button:active:not(:disabled){transform:none}
-*{scroll-behavior:auto!important}
-}
+@media (prefers-reduced-motion: reduce){.settle,.snake,.chev-out,.dep-fade,.ring,.shake,.flash,.hint,.hbreak,.starpop,.ovin,.confetti,.badge-in,.pop{animation-duration:1ms!important}}
 `;
 
 let CSS = makeCSS(C);
@@ -7295,205 +3218,150 @@ let CSS = makeCSS(C);
 /* ═══════════  styles  ═══════════ */
 
 const BOARD_W = "min(93vw, 412px)";
+const CELL_CAP = 62;
+const VIEW_PAD = 0.6;  // just enough margin for the stroke, no wasted screen
+const DOT_PAD = 2;   // just past the viewBox edge; more is invisible and costs a render
 
-/* Type, radius and spacing come off three small scales.
-
-   Measured before this: twenty distinct font sizes between 8 and 34, including
-   8, 8.5, 9.5, 10, 10.5, 11, 11.5, 12, 12.5, 13 and 13.5 — nobody can see the
-   difference between eleven and eleven and a half, but a screen built from
-   values picked one at a time by eye is exactly what reads as unconsidered.
-   The gaps were worse: every whole number from one to twelve.
-
-   The scales are built around the values the interface already leaned on, so
-   most of it does not move and nothing moves by more than two pixels.
-
-     type    9  11  12  13  15  18  22  28  34
-     radius  4  8  12  14  18  22        (999 stays a pill)
-     gap     2  4  8  12  16
-*/
 const makeStyles = (C) => ({
-  playRoot: { position: "fixed", inset: 0, height: "100dvh", boxSizing: "border-box", paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "calc(56px + env(safe-area-inset-bottom, 0px))", touchAction: "none", overscrollBehavior: "none", background: C.bg, color: C.ink, fontFamily: "'Nunito', system-ui, sans-serif", display: "flex", flexDirection: "column", WebkitTapHighlightColor: "transparent", userSelect: "none", overflow: "hidden" },
+  playRoot: { position: "fixed", inset: 0, height: "100dvh", boxSizing: "border-box", paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "env(safe-area-inset-bottom, 0px)", touchAction: "none", overscrollBehavior: "none", background: C.bg, color: C.ink, fontFamily: "'Nunito', system-ui, sans-serif", display: "flex", flexDirection: "column", WebkitTapHighlightColor: "transparent", userSelect: "none", overflow: "hidden" },
   hud: { display: "flex", alignItems: "center", gap: 8, padding: "12px 14px 8px" },
-  hudBtn: { width: 44, height: 44, borderRadius: "50%", background: C.card, border: `1px solid ${C.edge}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: C.sh1, flexShrink: 0 },
-  /* minWidth:0 is what actually lets this shrink. A flex child will not go
-     below its content width without it, so a long shape name would push the
-     HUD wider instead of ellipsing — and with nothing stopping the wrap it
-     broke to a second line, shoving the hearts down. The HUD then changed
-     height from level to level depending on the name. */
-  hudMid: { flex: 1, minWidth: 0, textAlign: "center" },
+  hudBtn: { width: 42, height: 42, borderRadius: "50%", background: C.card, border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 2px 8px rgba(27,36,64,0.08)", flexShrink: 0 },
+  hudMid: { flex: 1, textAlign: "center" },
   leftCount: { fontWeight: 800, fontSize: 12, color: C.muted },
-  gridCard: { width: BOARD_W, textAlign: "left", background: C.card, border: `1px solid ${C.edge}`, borderRadius: 18, padding: "14px 16px", marginTop: 10, boxShadow: C.sh1, cursor: "pointer" },
-  gridCardRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 },
-  gridRoundTag: { fontWeight: 900, fontSize: 13, color: C.accent, flexShrink: 0 },
-  gridBestTag: { fontWeight: 800, fontSize: 11, color: C.muted, marginTop: 6 },
-  guideHead: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: "transparent", border: "none", padding: "10px 0 8px", cursor: "pointer" },
-  guideHeadText: { fontWeight: 900, fontSize: 15, color: C.ink },
-  guideChev: { fontWeight: 900, fontSize: 18, color: C.muted, lineHeight: 1 },
-  guideBody: { paddingBottom: 6 },
-  guideRule: { fontSize: 12, fontWeight: 700, color: C.ink, lineHeight: 1.5, marginBottom: 12 },
-  guideRow: { display: "flex", gap: 8, alignItems: "flex-start", padding: "9px 0", borderTop: `1px solid ${C.line}` },
-  guideArt: { flexShrink: 0, width: 72, paddingTop: 2 },
-  guideTitle: { fontWeight: 900, fontSize: 13, color: C.ink },
-  guideHow: { fontSize: 12, fontWeight: 600, color: C.muted, lineHeight: 1.5, marginTop: 2 },
-  goalLine: { fontWeight: 800, fontSize: 11, lineHeight: "14px", height: 14, letterSpacing: "0.02em", marginTop: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
-  diffLabel: { fontWeight: 900, fontSize: 15, letterSpacing: "0.01em", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  diffLabel: { fontWeight: 900, fontSize: 15, letterSpacing: "0.01em" },
   hudHearts: { display: "flex", gap: 4, justifyContent: "center", alignItems: "center", marginTop: 3 },
-  hintPill: { display: "flex", alignItems: "center", gap: 4, background: C.card, border: `1px solid ${C.edge}`, borderRadius: 999, padding: "10px 14px", cursor: "pointer", boxShadow: C.sh1, flexShrink: 0, transition: "opacity 260ms cubic-bezier(.4,0,.2,1)" },
+  hintPill: { display: "flex", alignItems: "center", gap: 5, background: C.card, border: "none", borderRadius: 999, padding: "10px 14px", cursor: "pointer", boxShadow: "0 2px 8px rgba(27,36,64,0.08)", flexShrink: 0 },
   hintTxt: { fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 13, color: C.accent },
-  topTrack: { height: 5, margin: "0 16px 4px", borderRadius: 999, background: C.line, overflow: "hidden", boxShadow: `inset 0 1px 2px ${C.bg}` },
-  topFill: { height: "100%", borderRadius: 999, background: `linear-gradient(90deg, ${C.accent}, ${C.flow})`, transition: "width 420ms cubic-bezier(.22,.9,.26,1)", boxShadow: `0 0 10px ${C.accent}66` },
-  playViewport: { flex: 1, minHeight: 0, width: "100%", overflow: "hidden", touchAction: "none", overscrollBehavior: "contain", background: `radial-gradient(120% 78% at 50% 34%, ${C.card} 0%, ${C.bg} 68%)` },
-  gridToggle: { width: 46, height: 46, borderRadius: 999, background: C.card, border: `1px solid ${C.edge}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: C.sh1, flexShrink: 0 },
-  footGroup: { display: "flex", alignItems: "center", gap: 8 },
-  footSpacer: { display: "block", width: 46, flexShrink: 0 },
-  playFoot: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "12px 16px 20px", borderTop: `1px solid ${C.edge}` },
-  footBtn: { position: "relative", display: "flex", alignItems: "center", gap: 4, background: C.card, border: `1px solid ${C.edge}`, borderRadius: 999, padding: "11px 16px", cursor: "pointer", boxShadow: C.sh1, transition: "opacity 260ms cubic-bezier(.4,0,.2,1)" },
+  topTrack: { height: 5, margin: "0 16px 4px", borderRadius: 999, background: C.line, overflow: "hidden" },
+  topFill: { height: "100%", borderRadius: 999, background: C.accent, transition: "width 320ms cubic-bezier(.4,0,.2,1)" },
+  playViewport: { flex: 1, minHeight: 0, width: "100%", overflow: "hidden", touchAction: "none", overscrollBehavior: "contain" },
+  gridToggle: { position: "absolute", right: 18, bottom: 92, width: 50, height: 50, borderRadius: 16, background: C.card, border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 4px 14px rgba(27,36,64,0.12)" },
+  playFoot: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 18px 20px" },
+  footBtn: { position: "relative", display: "flex", alignItems: "center", gap: 5, background: C.card, border: "none", borderRadius: 999, padding: "11px 16px", cursor: "pointer", boxShadow: "0 2px 8px rgba(27,36,64,0.08)" },
   footNum: { fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 12, color: C.accent },
-  scoreWrap: { display: "flex", flexDirection: "column", alignItems: "center", gap: 2, flexShrink: 0, minWidth: 92 },
-  scorePill: { fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 28, lineHeight: 1, letterSpacing: "-0.035em", color: C.ink, fontVariantNumeric: "tabular-nums", textAlign: "center" },
-  comboCap: { fontSize: 9, fontWeight: 900, letterSpacing: "0.1em", textTransform: "uppercase", color: C.flow },
-  scoreCap: { fontSize: 9, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: C.muted },
+  scorePill: { fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 19, color: C.ink },
 
-  shellBody: { flex: 1, minHeight: 0, width: BOARD_W, overflowY: "auto", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch", scrollBehavior: "smooth", paddingBottom: 8 },
+  shellBody: { flex: 1, minHeight: 0, width: BOARD_W, overflowY: "auto", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch", paddingBottom: 8 },
   home: { display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 6 },
-  streakGoal: { fontWeight: 700, fontSize: 12, color: C.muted, letterSpacing: 0 },
-  streakChip: { display: "flex", alignItems: "center", gap: 8, background: C.card, border: `1px solid ${C.edge}`, borderRadius: 999, padding: "8px 18px 8px 14px", boxShadow: C.sh1, marginBottom: 16 },
-  streakCount: { fontWeight: 900, fontSize: 15, color: C.ink, letterSpacing: "0.01em" },
+  streakChip: { background: C.card, borderRadius: 999, padding: "7px 16px", fontWeight: 900, fontSize: 14, boxShadow: "0 2px 8px rgba(27,36,64,0.07)", marginBottom: 16 },
   homeCards: { display: "flex", gap: 12, width: "100%" },
-  homeCard: { flex: 1, background: `linear-gradient(180deg, ${C.card} 0%, ${C.card} 62%, ${C.bg} 190%)`, border: `1px solid ${C.edge}`, borderRadius: 18, padding: "14px 12px 12px", cursor: "pointer", boxShadow: C.sh2, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontFamily: "'Nunito',sans-serif" },
-  homeCardTitle: { fontWeight: 900, fontSize: 18, letterSpacing: "-0.01em", color: C.ink },
+  homeCard: { flex: 1, background: C.card, border: "none", borderRadius: 20, padding: "14px 12px 12px", cursor: "pointer", boxShadow: "0 4px 16px rgba(27,36,64,0.08)", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontFamily: "'Nunito',sans-serif" },
+  homeCardTitle: { fontWeight: 900, fontSize: 17, color: C.ink },
   homeCardSub: { fontSize: 11, fontWeight: 700, color: C.muted },
   homeCardArt: { width: 74, height: 62, margin: "8px 0" },
   homeCardBtn: { width: "100%", background: C.accent, color: "#fff", borderRadius: 999, padding: "9px 0", fontWeight: 900, fontSize: 13 },
   brandWrap: { textAlign: "center", margin: "auto 0", padding: "34px 0" },
-  brand: { fontWeight: 900, fontSize: 34, letterSpacing: "-0.035em", color: C.ink, lineHeight: 1.05 },
-  homeLevel: { fontWeight: 900, fontSize: 28, letterSpacing: "-0.03em", color: C.accent, marginTop: 8, lineHeight: 1.1 },
+  brand: { fontWeight: 900, fontSize: 33, letterSpacing: "-0.03em", color: C.ink },
+  homeLevel: { fontWeight: 900, fontSize: 21, color: C.accent, marginTop: 8 },
   homeDiff: { fontWeight: 900, fontSize: 15, marginTop: 2 },
-  continueBtn: { width: "100%", background: C.accent, color: "#fff", border: "none", borderRadius: 999, padding: "17px 0", fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 18, cursor: "pointer", boxShadow: `0 10px 26px ${C.accent}4d` },
+  continueBtn: { width: "100%", background: C.accent, color: "#fff", border: "none", borderRadius: 999, padding: "17px 0", fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 17, cursor: "pointer", boxShadow: "0 8px 22px rgba(47,123,246,0.3)" },
   homeFoot: { fontSize: 12, fontWeight: 700, color: C.muted, marginTop: 12 },
 
-  nav: { width: BOARD_W, display: "flex", gap: 4, background: C.card, border: `1px solid ${C.edge}`, borderRadius: 22, padding: 6, marginTop: 8, boxShadow: C.sh2 },
-  navBtn: { flex: 1, background: "transparent", border: "none", borderRadius: 14, padding: "9px 1px", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, cursor: "pointer", fontFamily: "'Nunito',sans-serif", transition: "background 260ms cubic-bezier(.4,0,.2,1)" },
+  nav: { width: BOARD_W, display: "flex", gap: 4, background: C.card, borderRadius: 22, padding: 6, marginTop: 8, boxShadow: "0 4px 16px rgba(27,36,64,0.09)" },
+  navBtn: { flex: 1, background: "transparent", border: "none", borderRadius: 16, padding: "9px 1px", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, cursor: "pointer", fontFamily: "'Nunito',sans-serif" },
   navOn: { background: C.bg },
-  navLabel: { fontSize: 9, fontWeight: 800, color: C.muted },
-  page: { height: "100dvh", boxSizing: "border-box", overflow: "hidden", background: C.bg, color: C.ink, fontFamily: "'Nunito', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", padding: "calc(10px + env(safe-area-inset-top, 0px)) 14px calc(66px + env(safe-area-inset-bottom, 0px))", WebkitTapHighlightColor: "transparent", userSelect: "none", touchAction: "manipulation" },
-  settings: { width: BOARD_W, background: `linear-gradient(180deg, ${C.card} 0%, ${C.card} 78%, ${C.bg} 240%)`, border: `1px solid ${C.edge}`, borderRadius: 18, padding: 14, marginBottom: 12, boxShadow: C.sh2 },
+  navLabel: { fontSize: 8.5, fontWeight: 800, color: C.muted },
+  page: { height: "100dvh", boxSizing: "border-box", overflow: "hidden", background: C.bg, color: C.ink, fontFamily: "'Nunito', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", padding: "calc(10px + env(safe-area-inset-top, 0px)) 14px calc(10px + env(safe-area-inset-bottom, 0px))", WebkitTapHighlightColor: "transparent", userSelect: "none", touchAction: "manipulation" },
+  settings: { width: BOARD_W, background: C.card, borderRadius: 18, padding: 14, marginBottom: 12, boxShadow: "0 8px 26px rgba(27,36,64,0.12)" },
   tglRow: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: "transparent", border: "none", padding: "9px 2px", cursor: "pointer", textAlign: "left" },
-  tglLabel: { display: "block", fontWeight: 800, fontSize: 13, color: C.ink },
+  tglLabel: { display: "block", fontWeight: 800, fontSize: 13.5, color: C.ink },
   tglHint: { display: "block", fontSize: 11, color: C.muted, fontWeight: 600, marginTop: 1 },
-  tglTrack: { width: 40, height: 22, borderRadius: 999, padding: 2, flexShrink: 0, transition: "background 260ms cubic-bezier(.4,0,.2,1)" },
-  tglKnob: { display: "block", width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "transform 260ms cubic-bezier(.26,1.36,.4,1)", boxShadow: "0 1px 4px rgba(0,0,0,0.28)", willChange: "transform" },
+  tglTrack: { width: 40, height: 22, borderRadius: 999, padding: 2, flexShrink: 0, transition: "background 200ms ease" },
+  tglKnob: { display: "block", width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "transform 200ms cubic-bezier(.34,1.4,.64,1)", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" },
   tip: { marginTop: 8, padding: "10px 12px", background: C.bg, borderRadius: 12, fontSize: 12, fontWeight: 600, color: C.muted, lineHeight: 1.5 },
-  quickGrid: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 4 },
-  quickBtn: { display: "flex", flexDirection: "column", alignItems: "center", gap: 4, background: C.bg, border: `1px solid ${C.edge}`, borderRadius: 14, padding: "10px 4px", cursor: "pointer", transition: "opacity 200ms ease" },
-  quickName: { fontSize: 9, fontWeight: 800, color: C.muted, fontFamily: "'Nunito',sans-serif" },
-  studioGrid: { display: "grid", gridTemplateColumns: "repeat(11, 1fr)", gap: 2, touchAction: "none", marginBottom: 12 },
+  studioGrid: { display: "grid", gridTemplateColumns: "repeat(11, 1fr)", gap: 3, touchAction: "none", marginBottom: 12 },
   studioCell: { aspectRatio: "1 / 1", border: "none", borderRadius: 4, padding: 0, cursor: "pointer" },
-  studioRow: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" },
+  studioRow: { display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" },
   chip: { flex: 1, minWidth: 74, background: C.bg, border: "none", borderRadius: 999, padding: "9px 10px", fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 12, color: C.ink, cursor: "pointer" },
   codeInput: { flex: 2, minWidth: 120, background: C.bg, border: "none", borderRadius: 999, padding: "10px 14px", fontFamily: "'DM Mono', monospace", fontSize: 12, color: C.ink, outline: "none" },
   savedRow: { display: "flex", gap: 8, flexWrap: "wrap" },
   savedItem: { position: "relative" },
   savedBtn: { background: C.bg, border: "none", borderRadius: 12, padding: 6, cursor: "pointer", display: "block" },
-  /* A nineteen-pixel delete button is a target most thumbs miss, and the one
-     next to it removes a board the player drew. The visible disc stays the same
-     size — the tap area is grown with transparent padding and the disc is drawn
-     as a background, so it looks identical and is twice as easy to hit. */
-  savedX: { position: "absolute", top: -14, right: -14, width: 44, height: 44, border: "none", background: "none", color: "#fff", fontSize: 9, fontWeight: 800, cursor: "pointer", lineHeight: 1, display: "grid", placeItems: "center", padding: 0 },
-  savedXDot: { width: 19, height: 19, borderRadius: "50%", background: C.danger, display: "grid", placeItems: "center" },
+  savedX: { position: "absolute", top: -5, right: -5, width: 19, height: 19, borderRadius: "50%", background: C.danger, color: "#fff", border: "none", fontSize: 10, fontWeight: 800, cursor: "pointer", lineHeight: 1 },
   studioMsg: { marginTop: 10, fontSize: 12, fontWeight: 800, color: C.accent, textAlign: "center" },
-  themeTile: { display: "flex", flexDirection: "column", alignItems: "center", gap: 4, background: C.bg, border: "2px solid transparent", borderRadius: 12, padding: 7, cursor: "pointer" },
-  themeName: { fontSize: 9, fontWeight: 800, color: C.muted, letterSpacing: "0.02em" },
-  zenInf: { fontSize: 18, fontWeight: 900, color: C.go, marginRight: 6 },
+  themeTile: { display: "flex", flexDirection: "column", alignItems: "center", gap: 5, background: C.bg, border: "2px solid transparent", borderRadius: 12, padding: 7, cursor: "pointer" },
+  themeName: { fontSize: 9.5, fontWeight: 800, color: C.muted, letterSpacing: "0.02em" },
+  zenInf: { fontSize: 17, fontWeight: 900, color: C.go, marginRight: 6 },
   themeRow: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 2px" },
-  swatch: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 2, padding: 4, borderRadius: 8, border: "2px solid transparent", background: C.bg, cursor: "pointer" },
-  swatchDot: { width: 8, height: 8, borderRadius: 4 },
-  colTitle: { fontWeight: 900, fontSize: 13, marginBottom: 10, padding: "0 2px" },
-  chapterCard: { width: "100%", background: `linear-gradient(180deg, ${C.card} 0%, ${C.card} 70%, ${C.bg} 200%)`, border: `1px solid ${C.edge}`, borderRadius: 18, padding: 14, boxShadow: C.sh2, marginTop: 14 },
-  chapRow: { display: "flex", alignItems: "center", gap: 12 },
-  chapBadge: { width: 34, height: 34, borderRadius: 12, color: "#fff", fontWeight: 900, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  swatch: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 2, padding: 4, borderRadius: 10, border: "2px solid transparent", background: C.bg, cursor: "pointer" },
+  swatchDot: { width: 8, height: 8, borderRadius: 2 },
+  colTitle: { fontWeight: 900, fontSize: 14, marginBottom: 10, padding: "0 2px" },
+  chapterCard: { width: "100%", background: C.card, borderRadius: 18, padding: 14, boxShadow: "0 4px 16px rgba(27,36,64,0.08)", marginTop: 14 },
+  chapRow: { display: "flex", alignItems: "center", gap: 11 },
+  chapBadge: { width: 34, height: 34, borderRadius: 12, color: "#fff", fontWeight: 900, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
   chapName: { fontWeight: 900, fontSize: 15, color: C.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
   chapSub: { fontSize: 11, fontWeight: 700, color: C.muted, marginTop: 1 },
   chapSticker: { flexShrink: 0 },
   chapTrack: { height: 6, borderRadius: 999, background: C.bg, overflow: "hidden", marginTop: 11 },
-  chapFill: { height: "100%", borderRadius: 999, transition: "width 520ms cubic-bezier(.22,.9,.26,1)" },
-  chapHint: { fontSize: 11, fontWeight: 700, color: C.muted, marginTop: 7, textAlign: "center" },
+  chapFill: { height: "100%", borderRadius: 999, transition: "width 400ms cubic-bezier(.4,0,.2,1)" },
+  chapHint: { fontSize: 10.5, fontWeight: 700, color: C.muted, marginTop: 7, textAlign: "center" },
   emptyNote: { fontSize: 12, fontWeight: 600, color: C.muted, background: C.bg, borderRadius: 12, padding: "12px 14px", lineHeight: 1.5 },
   stickerGrid: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 },
-  stickerItem: { display: "flex", flexDirection: "column", alignItems: "center", gap: 2, background: C.bg, border: "2px solid", borderRadius: 14, padding: "10px 4px" },
-  stickerName: { fontSize: 9, fontWeight: 800, color: C.muted, textAlign: "center", lineHeight: 1.2 },
-  stickerCh: { fontSize: 9, fontWeight: 800, color: C.muted, opacity: 0.7 },
-  badgeList: { display: "flex", flexDirection: "column", gap: 4 },
-  badgeRow: { display: "flex", alignItems: "center", gap: 8, background: C.bg, borderRadius: 12, padding: "9px 12px" },
+  stickerItem: { display: "flex", flexDirection: "column", alignItems: "center", gap: 3, background: C.bg, border: "2px solid", borderRadius: 14, padding: "10px 4px" },
+  stickerName: { fontSize: 8.5, fontWeight: 800, color: C.muted, textAlign: "center", lineHeight: 1.2 },
+  stickerCh: { fontSize: 8, fontWeight: 800, color: C.muted, opacity: 0.7 },
+  badgeList: { display: "flex", flexDirection: "column", gap: 6 },
+  badgeRow: { display: "flex", alignItems: "center", gap: 10, background: C.bg, borderRadius: 12, padding: "9px 12px" },
   badgeDot: { width: 11, height: 11, borderRadius: "50%", flexShrink: 0 },
   badgeName: { display: "block", fontWeight: 800, fontSize: 13, color: C.ink },
-  badgeNeed: { display: "block", fontSize: 11, fontWeight: 600, color: C.muted, marginTop: 1 },
-  badgeTick: { fontWeight: 900, color: C.gold, fontSize: 13 },
+  badgeNeed: { display: "block", fontSize: 10.5, fontWeight: 600, color: C.muted, marginTop: 1 },
+  badgeTick: { fontWeight: 900, color: C.gold, fontSize: 14 },
   rankBar: { display: "flex", gap: 8, marginBottom: 12 },
-  rankChip: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 4, background: C.bg, borderRadius: 12, padding: "8px 4px" },
+  rankChip: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, background: C.bg, borderRadius: 12, padding: "8px 4px" },
   rankDot: { width: 10, height: 10, borderRadius: "50%" },
   rankNum: { fontWeight: 900, fontSize: 15, color: C.ink },
-  rankLbl: { fontSize: 9, fontWeight: 800, color: C.muted },
-  rankTag: { fontSize: 9, fontWeight: 900, letterSpacing: "0.08em" },
+  rankLbl: { fontSize: 9.5, fontWeight: 800, color: C.muted },
+  rankTag: { fontSize: 8, fontWeight: 900, letterSpacing: "0.08em" },
   foundGrid: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 },
-  foundItem: { display: "flex", flexDirection: "column", alignItems: "center", gap: 2, background: C.bg, borderRadius: 12, padding: "9px 4px" },
-  foundName: { fontSize: 9, fontWeight: 800, color: C.muted, textAlign: "center", lineHeight: 1.2 },
-  colGrid: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 },
+  foundItem: { display: "flex", flexDirection: "column", alignItems: "center", gap: 3, background: C.bg, borderRadius: 12, padding: "9px 4px" },
+  foundName: { fontSize: 8.5, fontWeight: 800, color: C.muted, textAlign: "center", lineHeight: 1.2 },
+  colGrid: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 },
   colItem: { display: "flex", flexDirection: "column", alignItems: "center", gap: 4, background: C.bg, borderRadius: 14, padding: "12px 6px" },
   colName: { fontSize: 11, fontWeight: 800, color: C.muted },
-  adBtn: { width: "100%", background: C.go, color: "#fff", border: "none", borderRadius: 999, padding: "14px 0", fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 13, cursor: "pointer", marginBottom: 9, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 },
+  adBtn: { width: "100%", background: C.go, color: "#fff", border: "none", borderRadius: 999, padding: "14px 0", fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 14, cursor: "pointer", marginBottom: 9, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 },
   adPlay: { fontSize: 11 },
-  adNote: { fontSize: 11, fontWeight: 700, color: C.muted, textAlign: "center", marginTop: 8 },
-  watchRow: { background: C.bg, borderRadius: 14, padding: "12px 14px", marginBottom: 8 },
-  watchTop: { display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 },
-  watchCount: { fontWeight: 900, fontSize: 13, color: C.go, fontVariantNumeric: "tabular-nums", flexShrink: 0 },
+  adNote: { fontSize: 11.5, fontWeight: 700, color: C.muted, textAlign: "center", marginTop: 8 },
   buyRow: { display: "flex", alignItems: "center", gap: 12, background: C.bg, borderRadius: 14, padding: "12px 14px", marginBottom: 8 },
-  buyName: { display: "block", fontWeight: 900, fontSize: 13, color: C.ink },
+  buyName: { display: "block", fontWeight: 900, fontSize: 14, color: C.ink },
   buyHint: { display: "block", fontSize: 11, fontWeight: 600, color: C.muted, marginTop: 2, lineHeight: 1.4 },
   buyBtn: { background: C.accent, color: "#fff", border: "none", borderRadius: 999, padding: "10px 20px", fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 13, cursor: "pointer", flexShrink: 0 },
-  buyDone: { fontSize: 12, fontWeight: 800, color: C.go, background: C.bg, borderRadius: 12, padding: "11px 14px", marginBottom: 8 },
+  buyDone: { fontSize: 12.5, fontWeight: 800, color: C.go, background: C.bg, borderRadius: 12, padding: "11px 14px", marginBottom: 8 },
   restoreBtn: { width: "100%", background: "transparent", border: "none", padding: "9px 0", fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 12, color: C.muted, cursor: "pointer", marginBottom: 12 },
-  lvNote: { fontSize: 11, fontWeight: 600, color: C.muted, lineHeight: 1.5, marginBottom: 14 },
+  lvNote: { fontSize: 11.5, fontWeight: 600, color: C.muted, lineHeight: 1.5, marginBottom: 14 },
   lvChapter: { marginBottom: 18 },
-  lvHead: { display: "flex", alignItems: "center", gap: 8, marginBottom: 9 },
-  // nowrap and ellipsis do nothing on a flex child without minWidth:0 — the box
-  // simply grows past its share and shoves the star count off the row.
-  lvChapName: { flex: 1, minWidth: 0, fontWeight: 900, fontSize: 13, color: C.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  lvHead: { display: "flex", alignItems: "center", gap: 9, marginBottom: 9 },
+  lvChapName: { flex: 1, fontWeight: 900, fontSize: 14, color: C.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
   lvChapStars: { fontSize: 11, fontWeight: 800, color: C.muted, flexShrink: 0 },
-  lvGrid: { display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8 },
+  lvGrid: { display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 7 },
   lvCell: { background: C.bg, border: "2px solid", borderRadius: 12, padding: "9px 2px 7px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, fontFamily: "'Nunito',sans-serif" },
   lvNum: { fontWeight: 900, fontSize: 13, color: C.ink },
-  lvStars: { fontSize: 9, color: C.gold, letterSpacing: "-0.5px", minHeight: 11 },
-  tutBar: { display: "inline-flex", alignItems: "center", gap: 8, maxWidth: "calc(100% - 40px)", alignSelf: "center", background: C.card, border: `1.5px solid ${C.accent}44`, borderRadius: 999, padding: "7px 8px 7px 10px", marginBottom: 8, boxShadow: `0 6px 18px ${C.accent}1f` },
-  tutStep: { fontWeight: 900, fontSize: 9, color: "#fff", background: C.accent, borderRadius: 999, padding: "2px 7px", flexShrink: 0, letterSpacing: 0.2 },
-  tutText: { fontSize: 11, fontWeight: 700, color: C.ink, lineHeight: 1.3 },
-  tutSkip: { background: "transparent", border: "none", borderRadius: 999, padding: "4px 7px", fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 11, color: C.muted, cursor: "pointer", flexShrink: 0 },
+  lvStars: { fontSize: 8.5, color: C.gold, letterSpacing: "-0.5px", minHeight: 11 },
+  tutBar: { display: "flex", alignItems: "center", gap: 10, width: "calc(100% - 28px)", alignSelf: "center", background: C.accent, borderRadius: 14, padding: "11px 13px", marginBottom: 8 },
+  tutStep: { fontWeight: 900, fontSize: 11, color: "#fff", background: "rgba(255,255,255,0.22)", borderRadius: 999, padding: "3px 8px", flexShrink: 0 },
+  tutText: { flex: 1, fontSize: 12.5, fontWeight: 700, color: "#fff", lineHeight: 1.35 },
+  tutSkip: { background: "rgba(255,255,255,0.2)", border: "none", borderRadius: 999, padding: "6px 11px", fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 11, color: "#fff", cursor: "pointer", flexShrink: 0 },
   coach: { width: "calc(100% - 28px)", alignSelf: "center", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, background: C.coachBg, border: "none", borderRadius: 12, padding: "8px 12px", marginBottom: 8, cursor: "pointer", textAlign: "left" },
   coachText: { fontSize: 12, fontWeight: 600, color: C.ink, fontFamily: "'Nunito',sans-serif" },
-  coachMore: { fontSize: 11, color: C.accent, fontWeight: 900, flexShrink: 0 },
-  coachX: { fontSize: 12, color: C.muted, fontWeight: 800, padding: "2px 2px 2px 6px", flexShrink: 0 },
+  coachX: { fontSize: 12, color: C.muted, fontWeight: 800 },
   inl: { display: "inline-flex" },
   shieldTag: { fontSize: 15, marginRight: 2 },
-  zenTag: { fontSize: 9, fontWeight: 900, letterSpacing: "0.15em", color: C.go, background: "#E4F6EE", borderRadius: 999, padding: "4px 10px" },
+  zenTag: { fontSize: 10, fontWeight: 900, letterSpacing: "0.15em", color: C.go, background: "#E4F6EE", borderRadius: 999, padding: "4px 10px" },
   svgFill: { width: "100%", height: "100%", display: "block", overflow: "visible", touchAction: "none", pointerEvents: "auto" },
-  overlay: { position: "absolute", inset: 0, borderRadius: 22, background: C.overlay, display: "flex", alignItems: "center", justifyContent: "center", backdropFilter: "blur(3px)" },
+  overlay: { position: "absolute", inset: 0, borderRadius: 24, background: C.overlay, display: "flex", alignItems: "center", justifyContent: "center", backdropFilter: "blur(3px)" },
   ovCard: { textAlign: "center", padding: 24, width: "100%", maxWidth: 280 },
-  ovTitle: { fontWeight: 900, fontSize: 22, marginBottom: 6 },
+  ovTitle: { fontWeight: 900, fontSize: 21, marginBottom: 6 },
   ovSub: { fontSize: 13, color: C.muted, marginBottom: 20, fontWeight: 600, lineHeight: 1.45 },
-  primary: { display: "block", width: "100%", background: C.accent, color: "#fff", border: "none", borderRadius: 999, padding: "14px 30px", fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 15, cursor: "pointer", boxShadow: `0 8px 22px ${C.accent}52` },
+  primary: { display: "block", width: "100%", background: C.accent, color: "#fff", border: "none", borderRadius: 999, padding: "14px 30px", fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 15, cursor: "pointer", boxShadow: "0 6px 18px rgba(47,123,246,0.32)" },
   ghost: { display: "block", width: "100%", marginTop: 8, background: "transparent", color: C.muted, border: "none", padding: 10, fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 13, cursor: "pointer" },
-  winWrap: { position: "fixed", inset: 0, background: "radial-gradient(90% 60% at 50% 22%, #58B4FF 0%, #2E96FF 42%, #1668D8 100%)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", zIndex: 40, padding: 20 },
+  winWrap: { position: "fixed", inset: 0, background: "linear-gradient(180deg,#1E8BFF 0%,#3AA0FF 55%,#5FB6FF 100%)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", zIndex: 40, padding: 20 },
   winInner: { position: "relative", textAlign: "center", width: "100%", maxWidth: 320 },
   winKicker: { color: "rgba(255,255,255,0.92)", fontWeight: 800, fontSize: 15 },
-  winTitle: { color: "#fff", fontWeight: 900, fontSize: 28, letterSpacing: "-0.02em", margin: "6px 0 18px" },
-  winCard: { background: C.card, borderRadius: 22, padding: 20, boxShadow: "0 18px 48px rgba(0,20,60,0.34)" },
-  winShapeName: { textAlign: "center", fontWeight: 900, fontSize: 18, color: C.ink, marginTop: 10, letterSpacing: "-0.01em" },
-  winRank: { textAlign: "center", fontWeight: 900, fontSize: 11, letterSpacing: "0.12em", marginTop: 4 },
-  winNext: { textAlign: "center", fontWeight: 700, fontSize: 11, color: C.muted, marginTop: 8, lineHeight: 1.35 },
-  winStars: { display: "flex", gap: 8, justifyContent: "center", margin: "18px 0 6px" },
+  winTitle: { color: "#fff", fontWeight: 900, fontSize: 27, letterSpacing: "-0.02em", margin: "6px 0 18px" },
+  winCard: { background: C.card, borderRadius: 22, padding: 20, boxShadow: "0 14px 40px rgba(0,40,90,0.28)" },
+  winStars: { display: "flex", gap: 10, justifyContent: "center", margin: "18px 0 6px" },
   winMeta: { color: "rgba(255,255,255,0.92)", fontSize: 13, fontWeight: 700, marginBottom: 18 },
-  winBtn: { display: "block", width: "100%", background: "#fff", color: C.accent, border: "none", borderRadius: 999, padding: "14px 30px", fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 15, cursor: "pointer", boxShadow: "0 8px 24px rgba(0,20,60,0.28)" },
-  winGhost: { display: "block", width: "100%", marginTop: 10, background: "transparent", color: "#fff", border: "none", padding: 10, fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 13, cursor: "pointer" },
+  winBtn: { display: "block", width: "100%", background: "#fff", color: C.accent, border: "none", borderRadius: 999, padding: "14px 30px", fontFamily: "'Nunito',sans-serif", fontWeight: 900, fontSize: 15, cursor: "pointer", boxShadow: "0 6px 20px rgba(0,40,90,0.22)" },
+  winGhost: { display: "block", width: "100%", marginTop: 10, background: "transparent", color: "#fff", border: "none", padding: 10, fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 14, cursor: "pointer" },
 });
 
 let S = makeStyles(C);
