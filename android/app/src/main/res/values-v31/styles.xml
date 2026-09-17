@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12 (API 31) replaced the old windowBackground splash with a new
+  splash-screen API. Setting only windowBackground (as values/styles.xml
+  does) leaves the new splash untouched, so Android 12+ phones drew the
+  launcher icon on its default white rounded square. These two attributes
+  are what the new API actually reads.
+-->
+<resources>
+
+    <style name="AppTheme.NoActionBarLaunch" parent="AppTheme.NoActionBar">
+        <item name="android:windowSplashScreenBackground">@color/splashBackground</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@color/splashBackground</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="android:windowBackground">@color/splashBackground</item>
+    </style>
+
+</resources>
