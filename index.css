@@ -1,0 +1,21 @@
+/* Default background matches the boot screen. Without this, the browser's
+   own white shows for the first few frames while React mounts — the source
+   of the launch flash. Once React mounts, App.jsx's theme CSS takes over. */
+html, body, #root {
+  background: #080C1A;
+  margin: 0;
+  padding: 0;
+}
+
+#root {
+  width: 100%;
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+* {
+  box-sizing: border-box;
+}

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#080C1A" />
+    <title>Arrow Escape</title>
+    <style>
+      /* Safaid flash ka poora ilaaj yahan hai. Browser page ka pehla frame
+         banata hai is CSS se pehle, is liye ye inline hona zaroori hai —
+         alag file ka intezar nahi ho sakta.
+
+         #080C1A bilkul wohi rang hai jo App.jsx ka boot screen use karta hai
+         (boot screen `background: "#080C1A"` fixed rakhta hai). Is liye
+         index.html se boot screen tak koi rang nahi badalta. */
+      html, body { background: #080C1A; margin: 0; }
+      #root { min-height: 100dvh; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+

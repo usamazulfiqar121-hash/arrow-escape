@@ -1,5 +1,10 @@
 {
   "appId": "com.usamaali.arrowescape",
   "appName": "Arrow Escape",
-  "webDir": "dist"
+  "webDir": "dist",
+  "backgroundColor": "#080C1A",
+  "android": {
+    "backgroundColor": "#080C1A",
+    "allowMixedContent": false
+  }
 }
