@@ -32,11 +32,7 @@ const IDS = TESTING ? GOOGLE_TEST_IDS : PROD_IDS;
 // AdMob.initialize() must resolve before any prepare/show call, but
 // window.ArrowAds has to exist synchronously before the app mounts. So the
 // object is created immediately; every method just awaits this promise first.
-  if (DEBUG_ALERT) { try { window.alert(msg); } catch (e) {} }
-// so a banner problem is never mislabeled as an initialize failure.
-// TEMPORARY — surfaces exactly what's happening on screen since there's no
-// ADB access to read console logs on the test device. Remove this whole
-// block once ads are confirmed working; it must never ship to real users.
+
 /* Off again: it did its job. The rewarded ad unit id was wrong — the banner
    worked because its id was right, and every rewarded request was going to a
    unit that did not exist. With this on, the real error was visible in one tap
@@ -44,7 +40,7 @@ const IDS = TESTING ? GOOGLE_TEST_IDS : PROD_IDS;
 
    Set it back to true the next time ads misbehave. It alerts on success as well
    as failure, which is why it cannot be left on: three dialogs on every launch. */
-  if (DEBUG_ALERT) { try { window.alert(msg); } catch (e) {} }
+const DEBUG_ALERT = false;
 function debugLog(msg) {
   console.log(msg);
   if (DEBUG_ALERT) { try { window.alert(msg); } catch (e) {} }
@@ -52,7 +48,6 @@ function debugLog(msg) {
 function debugError(label, e) {
   const msg = label + ": " + (e?.message || e?.toString?.() || JSON.stringify(e));
   console.error(msg);
-  if (DEBUG_ALERT) { try { window.alert(msg); } catch (e) {} }
   if (DEBUG_ALERT) { try { window.alert(msg); } catch (e) {} }
 }
 

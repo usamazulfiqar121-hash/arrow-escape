@@ -7,7 +7,7 @@ android {
         applicationId "com.usamaali.arrowescape"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 68
+        versionCode 69
         versionName "3.33.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
