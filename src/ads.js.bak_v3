@@ -48,10 +48,6 @@ const initPromise = (async () => {
   }
   try {
     if (bannerSuppressed) return;
-    // Wait 3s before inserting the native banner view — it forces a WebView
-    // re-layout and would otherwise stutter the intro animations.
-    await new Promise((r) => setTimeout(r, 3000));
-    if (bannerSuppressed) return;
     await AdMob.showBanner({
       adId: IDS.banner,
       adSize: BannerAdSize.ADAPTIVE_BANNER,

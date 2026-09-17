@@ -9,9 +9,7 @@ createRoot(document.getElementById('root')).render(
   </StrictMode>,
 )
 
-// Ads AFTER React mounts — the icon-tap jitter came from AdMob.initialize()
-// and showBanner() running before React even had a chance to paint, which
-// blocked the WebView main thread during the very moment the user was
-// watching the app open. Delaying it to after first paint removes the whole
-// cold-start stutter without losing any ad functionality.
-setTimeout(() => { import('./ads.js').catch(() => {}); }, 900);
+// Ads after cold-start settle. AdMob.showBanner() injects a native view into
+// the WebView and can trigger a full layout pass — at 900ms it landed mid
+// card-stagger. 2200ms is past every boot animation.
+setTimeout(() => { import('./ads.js').catch(() => {}); }, 2200);
