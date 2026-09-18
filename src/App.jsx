@@ -5021,7 +5021,7 @@ export default function ArrowEscapeV3() {
           cachedMask("catArt");
           cachedMask("rocketArt");
         } catch {}
-        setTimeout(() => setBooted(true), 700);
+        setTimeout(() => setBooted(true), 500);
       }
     })();
   }, []);
@@ -7333,9 +7333,9 @@ button { transition: transform 260ms cubic-bezier(.2,1.12,.32,1), background 200
 button:active:not(:disabled) { transform: scale(.96); transition-duration: 70ms; transition-timing-function: cubic-bezier(.3,0,.7,1); }
 
 @keyframes screenIn { from { opacity: 0; transform: translateY(18px) scale(.978); } to { opacity: 1; transform: none; } }
-.boot-body{stroke-dasharray:38;stroke-dashoffset:38;animation:bootBody 380ms cubic-bezier(.2,.9,.3,1) both}
-.boot-head{stroke-dasharray:19.8;stroke-dashoffset:19.8;animation:bootHead 220ms cubic-bezier(.2,.9,.3,1) 260ms both}
-.boot-word{animation:bootWord 260ms cubic-bezier(.2,.9,.3,1) 420ms both}
+.boot-body{stroke-dasharray:38;stroke-dashoffset:38;animation:bootBody 280ms cubic-bezier(.2,.9,.3,1) both}
+.boot-head{stroke-dasharray:19.8;stroke-dashoffset:19.8;animation:bootHead 160ms cubic-bezier(.2,.9,.3,1) 150ms both}
+.boot-word{animation:bootWord 200ms cubic-bezier(.2,.9,.3,1) 300ms both}
 @keyframes bootBody{to{stroke-dashoffset:0}}
 @keyframes bootHead{to{stroke-dashoffset:0}}
 @keyframes bootWord{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
