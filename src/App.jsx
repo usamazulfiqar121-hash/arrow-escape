@@ -7280,7 +7280,7 @@ svg { shape-rendering: geometricPrecision; }
    is the exact misuse the property warns about: it is a promise about the next
    frame, not a decoration. The entrance is a cheap transform and opacity fade;
    it does not need the help, and the layers cost real memory on a phone. */
-.settle{animation:settleIn 300ms cubic-bezier(.2,1.02,.3,1) backwards;animation-delay:var(--d,0ms)}
+.settle{animation:settleIn 200ms cubic-bezier(.2,1.08,.3,1) backwards;animation-delay:var(--d,0ms)}
 @keyframes snakeOut{to{stroke-dashoffset:var(--off)}}
 .snake{animation:snakeOut 340ms cubic-bezier(.5,0,.28,1) forwards;will-change:stroke-dashoffset}
 @keyframes chevOut{to{transform:translate(var(--tx),var(--ty))}}
@@ -7344,10 +7344,10 @@ button:active:not(:disabled) { transform: scale(.96); transition-duration: 70ms;
    a flicker however fast the load was. */
 .app-in{animation:appIn 300ms ease-out both}
 @keyframes appIn{0%{opacity:0}100%{opacity:1}}
-.screen-in { animation: screenIn 380ms cubic-bezier(.16,.84,.24,1) both; will-change: transform, opacity; }
+.screen-in { animation: screenIn 280ms cubic-bezier(.16,.88,.24,1) both; will-change: transform, opacity; }
 
 @keyframes boardIn { from { opacity: 0; transform: scale(.88); } to { opacity: 1; transform: scale(1); } }
-.board-in { animation: boardIn 420ms cubic-bezier(.16,.9,.24,1) backwards; transform-origin: center; will-change: transform, opacity; }
+.board-in { animation: boardIn 300ms cubic-bezier(.16,.94,.26,1) backwards; transform-origin: center; will-change: transform, opacity; }
 
 @keyframes hudIn { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: none; } }
 .hud-in { animation: hudIn 360ms cubic-bezier(.16,.86,.26,1) both; }
