@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.jsx'
+import { initFirebase } from './firebase'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
@@ -9,7 +10,9 @@ createRoot(document.getElementById('root')).render(
   </StrictMode>,
 )
 
-// Ads after cold-start settle. AdMob.showBanner() injects a native view into
-// the WebView and can trigger a full layout pass — at 900ms it landed mid
-// card-stagger. 2200ms is past every boot animation.
-setTimeout(() => { import('./ads.js').catch(() => {}); }, 2200);
+// Firebase analytics — init after React mounts, so it never competes
+// with the first paint
+setTimeout(() => { initFirebase(); }, 2500);
+
+// Ads after Firebase — last thing that loads, so nothing else has to wait
+setTimeout(() => { import('./ads.js').catch(() => {}); }, 3200);

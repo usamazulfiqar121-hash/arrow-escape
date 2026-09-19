@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useMemo, useRef, useEffect } from "react";
+import { track } from './firebase';
 
 /* Fonts come from Google at runtime, via an @import at the top of the CSS
    block below. Nothing to install and nothing to add to the entry file, so
@@ -5477,7 +5478,7 @@ export default function ArrowEscapeV3() {
           setTimeout(() => setHeartPop(false), 430);
           const left = Math.max(hearts - 1, 0);
           setHearts(left);
-          if (left === 0) setTimeout(() => { setPhase("gameover"); Snd.lose(); }, 520);
+          if (left === 0) { track('game_over', { level: level, mode: mode, taps: taps, mistakes: mistakes }); setTimeout(() => { setPhase("gameover"); Snd.lose(); }, 520); }
         }
         return;
       }
@@ -5525,10 +5526,12 @@ export default function ArrowEscapeV3() {
       nextAlive.delete(piece.id);
       if (setup.goal && setup.goal.kind === "rescue" && piece.id === setup.goal.target) rescued.current = true;
       aliveRef.current = nextAlive;
+      track('arrow_cleared', { level: level, mode: mode, combo: nextCombo, freed: freed });
       const willClear = nextAlive.size === 0;
       setAlive(nextAlive);
 
       if (willClear) {
+        track('level_cleared', { level: level, mode: mode, taps: taps, mistakes: mistakes, time_sec: elapsedNow() });
         // nothing left to resume into — remove the saved snapshot from the
         // tap before this one now, rather than leave it sitting there for a
         // kill-before-advancing to resurrect a board that is already won
